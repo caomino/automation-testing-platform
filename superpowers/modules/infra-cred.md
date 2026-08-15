@@ -3,7 +3,7 @@
 > 窗口只读本文件 + `GLOBALS.md`。改 `contracts` 禁碰。
 
 ## 1. 职责
-凭证抽象接口：Web 阶段用本地加密文件（AES-256-GCM），后期可换 safeStorage（外壳无关）。密码仅存加密存储（S5 陕西人大 `admin/Sxrd@2025`）。
+凭证抽象接口：Web 阶段用本地加密文件（AES-256-GCM），后期可换 safeStorage（外壳无关）。密码仅存加密存储（S5 陕西人大 `admin/<REDACTED>`）。
 
 ## 2. 契约要点（去 docs 看细节）
 - 接口：save/get/delete/list（AES-256-GCM 实现已在 `src/index.ts` 落地，经核查非断点）
