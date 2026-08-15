@@ -5,6 +5,43 @@
 
 ---
 
+## 0. 🚨 安全红线（血的教训 · 违反即数据事故 · 优先级最高）
+
+> **事故记录 2026-08-15 18:46**：`D:\newTest\.git` 被**硬删除**（不在回收站、未被搬移），4 个提交历史 + 10 个分支引用 + 5 个 worktree 元数据全灭。源码因工作树完好而零损失。当时有 **2 个窗口并发操作同一仓库**，无法确证责任方。
+>
+> **根因不是工具，是缺规则**：12 个 worktree 隔离了 `node_modules`，但仍**共享同一个 `.git`** —— 隔离没有覆盖版本库，单点依旧。
+
+### 0.1 单写者原则（Single Writer）
+
+- **只有 1 个窗口是「主窗口」**，独占以下权力，其他窗口一律禁止：
+  - 对主仓 `D:\newTest` 的任何 git 写操作（commit / merge / rebase / branch / worktree add|remove）
+  - 在主仓根跑 `pnpm install`（同步 lock）
+  - 改 `packages/contracts/**`、改 `docs/**`、改本文件
+- **其他窗口 = 纯开发窗口**：只在**自己的** `D:\newTest-wt-<模块>` 内改自己包的源码。**对 `D:\newTest` 只读。**
+
+### 0.2 绝对禁止清单
+
+1. **禁止对 `D:\newTest\.git` 做任何操作**（删除 / 移动 / 重命名 / 改内容）。它是全部窗口的共享命脉。
+2. **禁止对任何以 `D:\newTest` 开头的路径做批量删除/搬移**（`rm -rf`、`[System.IO.Directory]::Move`、`Remove-Item -Recurse`），唯一例外：明确指向 `<某 worktree>/node_modules` 且已 `pwd` 确认路径后。
+3. **禁止 kill 其他窗口的后台任务**（可能打断正在写库的 git 进程）。要停先确认该任务归属。
+4. **禁止在非自己的 worktree 目录内执行写操作**。
+5. **禁止 `git worktree add` 到已存在的非空目录**，也禁止手工删 worktree 目录（须 `git worktree remove`，否则留孤儿元数据）。
+
+### 0.3 后台任务写法禁令（38 分钟假卡死的真凶）
+
+- ❌ **禁止在后台任务里用管道**：`( cd X && pnpm install | tail -3 )` → 子 shell + 管道在 Git Bash 后台会**僵死等 EOF**，进程早退出但 shell 永挂。
+  - 实测证据：`.modules.yaml` 18:06 已写完（install 成功），shell 到 19:22 仍 running，系统零 `node.exe`。
+- ✅ **必须重定向到日志文件**：`pnpm install > D:/test-platform-smoke/wt-logs/<m>.log 2>&1`，再用 Read 看日志。
+- ✅ 批量循环里的每条命令都要独立重定向；先确保日志目录已存在（`mkdir -p` 必须**先单独跑完**，别和循环并行）。
+
+### 0.4 备份机制（强制）
+
+- 主仓已配本地裸仓镜像远端：`backup` → `D:\newTest-backup.git`（工作空间外）。
+- **每次提交后立刻**：`git push backup main`。这是防"再次误删 `.git`"的兜底。
+- 远端 GitHub 待配（缺凭据）；配好后同样每次提交后推送。
+
+---
+
 ## 1. 多窗口 / 多 agent 开发模型（方案 B · git worktree 隔离）
 
 - 每个开发窗口 = 一个**独立 git worktree + 独立分支 + 独立 node_modules**。
