@@ -1,0 +1,32 @@
+{
+  "name": "test-platform",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@9.15.9",
+  "type": "module",
+  "description": "商业自动化测试平台 · monorepo（contracts 先行，stage 解耦）",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm -r --filter=!app build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "verify": "pnpm -r verify",
+    "coverage": "pnpm -r coverage",
+    "madge": "madge --circular --extensions ts packages/*/src",
+    "clean": "pnpm -r exec rm -rf dist"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@typescript-eslint/eslint-plugin": "^8.18.0",
+    "@typescript-eslint/parser": "^8.18.0",
+    "typescript-eslint": "^8.18.0",
+    "eslint": "^9.17.0",
+    "madge": "^8.0.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

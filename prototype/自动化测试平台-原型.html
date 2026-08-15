@@ -1,0 +1,767 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1440">
+<title>自动化测试平台 · 原型 v1.5（10 屏）</title>
+<style>
+:root{--bg:#F1F5F9;--card:#fff;--line:#E6E8EC;--line2:#EEF2F7;--text:#0F172A;--t2:#334155;--mut:#64748B;--pri:#2563EB;--priT:#1D4ED8;--priS:#EFF6FF;--ok:#16A34A;--warn:#B45309;--warnS:#FEF3C7;--dng:#B91C1C;--dngS:#FEF2F2;--alt:#F8FAFC}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.55 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+a{color:inherit;text-decoration:none}
+.topbar{position:sticky;top:0;z-index:10;background:#fff;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;padding:0 24px;height:56px}
+.brand{font-weight:700}.brand .dot{display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--pri);margin-right:8px;vertical-align:middle}
+.crumbs{color:var(--mut);font-size:13px}.crumbs .sep{margin:0 8px;color:#CBD5E1}
+.topbar .sp{flex:1}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;background:var(--priS);color:var(--priT);font-size:12px;font-weight:600}
+.pill .d{width:6px;height:6px;border-radius:50%;background:var(--pri)}
+.btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 12px;font-size:13px;color:var(--t2);cursor:pointer;transition:.15s}
+.btn:hover{border-color:var(--pri);color:var(--priT)}
+.btn.pri{background:var(--pri);color:#fff;border-color:var(--pri)}.btn.pri:hover{background:#1D4ED8}
+.btn.ghost{border-color:transparent;background:transparent}.btn.ghost:hover{background:#F1F5F9}
+.btn.sm{padding:4px 8px;font-size:12px}
+.btn.dng{color:var(--dng);border-color:#FECACA}
+.wrap{display:grid;grid-template-columns:220px 1fr;min-height:calc(100vh - 56px)}
+.side{background:#fff;border-right:1px solid var(--line);padding:18px 12px;position:sticky;top:56px;height:calc(100vh - 56px);overflow:auto}
+.side h6{margin:14px 10px 6px;font-size:11px;color:var(--mut);letter-spacing:1px;text-transform:uppercase}
+.side a.nav{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;color:var(--t2);font-size:13px;margin-bottom:2px;cursor:pointer}
+.side a.nav:hover{background:#F1F5F9;color:var(--text)}
+.side a.nav.active{background:var(--priS);color:var(--priT);font-weight:600}
+.side a.nav .n{width:22px;height:22px;border-radius:6px;background:#E2E8F0;color:#475569;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}
+.side a.nav.active .n{background:var(--pri);color:#fff}
+main{padding:24px 28px 80px}
+.screen{display:none}.screen.active{display:block}
+.ph{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:14px;gap:16px;flex-wrap:wrap}
+.ph h2{margin:0 0 4px;font-size:22px}.ph .sub{color:var(--mut);font-size:13px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px}
+.card h4{margin:0 0 10px;font-size:14px}
+.grid{display:grid;gap:16px}.g2{grid-template-columns:1fr 1fr}.g3{grid-template-columns:repeat(3,1fr)}.g4{grid-template-columns:repeat(4,1fr)}
+.stat .v{font-size:22px;font-weight:700}.stat .l{color:var(--mut);font-size:12px;margin-top:2px}.stat .d{font-size:11px;margin-top:6px}
+.up{color:var(--ok)}
+.tbl-wrap{border:1px solid var(--line);border-radius:12px;overflow:auto;background:#fff}
+table{width:100%;border-collapse:collapse;font-size:13px}
+thead th{background:var(--line2);color:var(--t2);font-weight:600;text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap}
+tbody td{padding:10px 12px;border-bottom:1px solid #EEF2F7;color:var(--t2);vertical-align:top}
+tbody tr:nth-child(2n){background:var(--alt)}tbody tr:hover{background:#F1F5F9}
+td.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--text)}
+td.merge{background:#F8FAFC;color:var(--mut)}
+.op{display:inline-flex;gap:4px}.op .btn.sm{width:24px;height:24px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:6px}
+.tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600}
+.tag.ok{background:#DCFCE7;color:#166534}.tag.warn{background:var(--warnS);color:var(--warn)}.tag.danger{background:var(--dngS);color:var(--dng)}.tag.info{background:var(--priS);color:var(--priT)}.tag.gray{background:#F1F5F9;color:#475569}.tag.review{background:#FFE4E6;color:#9F1239}
+.tree{font-size:13px}.tree ul{list-style:none;padding-left:18px;margin:0;border-left:1px dashed var(--line)}
+.tree li{padding:3px 0;position:relative}.tree li::before{content:"";position:absolute;left:-10px;top:14px;width:8px;border-top:1px dashed var(--line)}
+.tree .root{font-weight:600;padding:6px 0}.tree .node{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:6px;cursor:pointer}.tree .node:hover{background:#F1F5F9}.tree .node.active{background:var(--priS);color:var(--priT)}
+.meta-head{background:var(--line2);border-radius:8px;padding:10px 14px;font-size:12px;color:var(--t2)}.meta-head .rowline{display:flex;gap:18px;flex-wrap:wrap}.meta-head b{color:var(--text)}
+.editable{background:#FEFCE8;border:1px dashed #FACC15;border-radius:4px;padding:2px 6px;cursor:text;font-size:12px}.editable:hover{background:#FEF3C7}
+.mask{position:fixed;inset:0;background:rgba(15,23,42,.45);display:none;align-items:center;justify-content:center;z-index:50}.mask.on{display:flex}
+.modal{background:#fff;border-radius:14px;width:560px;max-width:92vw;max-height:88vh;overflow:auto;box-shadow:0 20px 50px rgba(15,23,42,.18)}
+.modal.wide{width:760px}
+.modal .hd{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;background:#fff}
+.modal .hd h3{margin:0;font-size:16px}.modal .bd{padding:18px 20px}.modal .ft{padding:12px 20px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px;background:#F8FAFC;position:sticky;bottom:0}
+.field{display:flex;flex-direction:column;gap:6px;margin-bottom:12px}.field label{font-size:12px;color:var(--mut);font-weight:600}.field input,.field select{border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px;outline:none}.field input:focus,.field select:focus{border-color:var(--pri);box-shadow:0 0 0 3px rgba(37,99,235,.15)}.field .hint{font-size:11px;color:var(--mut)}
+.captured{background:var(--priS);border:1px dashed var(--pri);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--priT);display:flex;justify-content:space-between;align-items:center}
+.thumb{width:48px;height:36px;border:1px solid var(--line);border-radius:6px;background:linear-gradient(135deg,#E2E8F0,#CBD5E1);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;transition:.15s}.thumb:hover{border-color:var(--pri);box-shadow:0 0 0 3px rgba(37,99,235,.15)}.thumb::after{content:"📷";font-size:16px}
+.toggle{display:inline-flex;align-items:center;gap:8px}.toggle .sw{width:36px;height:20px;border-radius:999px;background:#CBD5E1;position:relative;cursor:pointer;transition:.2s}.toggle .sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#fff;transition:.2s}.toggle.on .sw{background:var(--pri)}.toggle.on .sw::after{left:18px}
+.lightbox{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;align-items:center;justify-content:center;z-index:60}.lightbox.on{display:flex}.lightbox img{max-width:90vw;max-height:90vh;border-radius:8px}.lightbox .close{position:absolute;top:20px;right:20px;color:#fff;font-size:28px;cursor:pointer}
+.toast{position:fixed;bottom:24px;right:24px;background:#0F172A;color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;z-index:70;opacity:0;transition:.3s}.toast.on{opacity:1}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--mut)}.legend span{display:inline-flex;align-items:center;gap:6px}.legend i{width:10px;height:10px;border-radius:3px;display:inline-block}
+hr{border:none;border-top:1px solid var(--line);margin:16px 0}
+/* Topbar 只读上下文路径 chip（切换只在工作台/屏⑨，此处仅展示） */
+.crumb-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:6px;font-size:12px;color:var(--t2)}
+.crumb-chip code{font-family:ui-monospace,monospace;font-size:11px;color:var(--mut);background:#F1F5F9;padding:1px 4px;border-radius:3px}
+.crumb-chip.active{background:var(--priS);color:var(--priT);font-weight:600}
+.crumb-chip.active code{background:#fff;color:var(--priT)}
+/* 模块选择树 */
+.tree .node .ck{margin-right:4px;cursor:pointer}
+.tree .node.sel{background:var(--priS);color:var(--priT)}
+.mod-sel-bar{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line2);margin-bottom:10px}
+.mod-sel-bar .cnt{font-size:12px;color:var(--mut);margin-left:auto}
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><span class="dot"></span>TestMaster · 商业版</div>
+  <!-- 只读上下文路径：项目 › 系统(URL) › 子系统(URL)。切换系统在工作台（①）与项目管理（⑨）；切换项目只在屏⑨，此处仅跟随展示 -->
+  <div class="crumbs" id="topPath">
+    <span class="crumb-chip">📁 延安市医疗集团</span><span class="sep">›</span>
+    <span class="crumb-chip">🖥️ 区域影像 <code>yayx.med.local</code></span><span class="sep">›</span>
+    <span class="crumb-chip active">📂 检查室管理 <code>yayx.med.local/console/exam-room-config</code></span>
+  </div>
+  <div class="sp"></div>
+  <span class="pill" id="topPill"><span class="d"></span>✓ 已登录 · 检查室管理</span>
+  <button class="btn sm">连接系统</button>
+  <button class="btn pri sm">播放下一步 ▷</button>
+</header>
+
+<div class="wrap">
+<aside class="side">
+  <h6>流水线</h6>
+  <a class="nav active" onclick="go('s1')"><span class="n">1</span>工作台</a>
+  <a class="nav" onclick="go('s2')"><span class="n">2</span>系统探索</a>
+  <a class="nav" onclick="go('s3')"><span class="n">3</span>功能点审核</a>
+  <a class="nav" onclick="go('s4')"><span class="n">4</span>测试用例</a>
+  <a class="nav" onclick="go('s5')"><span class="n">5</span>执行</a>
+  <a class="nav" onclick="go('s6')"><span class="n">6</span>缺陷</a>
+  <h6>系统</h6>
+  <a class="nav" onclick="go('s8')"><span class="n">⚙</span>日志管理</a>
+  <a class="nav" onclick="go('s7')"><span class="n">AI</span>AI 模型配置</a>
+  <h6>项目</h6>
+  <a class="nav" onclick="go('s9')"><span class="n">9</span>项目管理</a>
+  <a class="nav" onclick="go('s10')"><span class="n">10</span>知识库</a>
+</aside>
+
+<main>
+
+<!-- ====== Screen 1 · 工作台 ====== -->
+<section class="screen active" id="s1">
+  <div class="ph"><div><h2>① 工作台</h2><div class="sub">所有系统底层都是单系统 · 登录方式三选一：免登录 / 账号密码登录 / 人工接管登录（除免登录外需账号密码）· 仅子系统 URL 经父门户浏览器捕获，其余手动输入地址</div></div>
+    <div class="row"><button class="btn" onclick="go('s9')">项目配置（⑨）</button><button class="btn pri" onclick="openM('m-newsub')">+ 新建系统/子系统</button></div></div>
+  <!-- 当前系统卡（工作台主体 · 以当前系统为单位 · 项目名内嵌 · 切换系统在此） -->
+  <span id="curProjName" style="display:none">延安市医疗集团</span><span id="curProjType" style="display:none">门户</span>
+  <div class="card" style="margin-bottom:16px;border-left:3px solid var(--pri)">
+    <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <div>
+        <span style="color:var(--mut);font-size:13px">📁 延安市医疗集团</span>
+        <b style="font-size:18px;margin-left:6px" id="curSysName">📂 检查室管理</b>
+        <span class="tag gray" id="curSysType">子系统</span>
+        <span id="curSysParent" style="font-size:12px;color:var(--mut)">· 父：区域影像</span>
+      </div>
+      <div style="margin-left:auto;position:relative">
+        <button class="btn sm" onclick="toggleSysMenu()">🔀 切换系统 ▾</button>
+        <div id="sys-menu" style="display:none;position:absolute;top:34px;right:0;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:20;min-width:300px;padding:6px">
+          <div style="padding:6px 10px;font-size:11px;color:var(--mut);border-bottom:1px solid var(--line2)">切换当前系统 · 全应用跟随（含 topbar / 各 stage 数据）</div>
+          <a style="display:flex;justify-content:space-between;padding:8px 10px;border-radius:6px;cursor:pointer;font-size:13px" onclick="setCtx('区域影像','yayx.med.local','')"><span>🖥️ 区域影像</span><span class="tag info" style="font-size:10px">门户</span></a>
+          <a style="display:flex;justify-content:space-between;padding:8px 10px;border-radius:6px;cursor:pointer;font-size:13px;background:var(--priS);color:var(--priT)" onclick="setCtx('检查室管理','yayx.med.local/console/exam-room-config','区域影像')"><span>📂 检查室管理</span><span class="tag info" style="font-size:10px">子系统 · 当前</span></a>
+          <a style="display:flex;justify-content:space-between;padding:8px 10px;border-radius:6px;cursor:pointer;font-size:13px" onclick="setCtx('检查项目管理','yayx.med.local/console/exam-project','区域影像')"><span>📂 检查项目管理</span><span class="tag gray" style="font-size:10px">子系统</span></a>
+          <a style="display:flex;justify-content:space-between;padding:8px 10px;border-radius:6px;cursor:pointer;font-size:13px" onclick="setCtx('影像归档','yayx.med.local/console/archive','区域影像')"><span>📂 影像归档</span><span class="tag gray" style="font-size:10px">子系统</span></a>
+          <a style="display:flex;justify-content:space-between;padding:8px 10px;border-radius:6px;cursor:pointer;font-size:13px" onclick="setCtx('妇幼信息系统','fyxx.med.local','')"><span>🖥️ 妇幼信息系统</span><span class="tag gray" style="font-size:10px">单系统</span></a>
+          <hr style="margin:6px 0"><a style="display:block;padding:8px 10px;border-radius:6px;cursor:pointer;font-size:13px" onclick="go('s9');toggleSysMenu()">☰ 进入项目管理（⑨ 全项目/系统管理）</a>
+        </div>
+      </div>
+    </div>
+    <div class="hint" style="margin-top:8px">工作台以<b id="curSysName2">检查室管理</b>为单位：登录 → 探索 → 功能点 → 用例 → 执行 → 缺陷，各阶段数据独立 · 切换系统在此或屏⑨ · 项目切换走屏⑨</div>
+  </div>
+  <!-- 4 stat cards（随当前系统刷新，全部为本系统数据） -->
+  <div class="grid g4">
+    <div class="card stat"><div class="l">登录状态</div><div class="v" id="curSysLogin" style="font-size:14px;color:var(--ok)">✓ 已登录</div><div class="d" id="curSysLoginDetail">Cookie 经父门户会话 · 子系统 ✓</div></div>
+    <div class="card stat"><div class="l">阶段进度</div><div class="v" id="curSysStage" style="font-size:14px">探索✓ 功能点✓ 用例✓ 执行⏳</div><div class="d" id="curSysStageDetail">本系统独立阶段状态</div></div>
+    <div class="card stat"><div class="l">用例数（本系统）</div><div class="v" id="curSysCases">85</div><div class="d" id="curSysCasesDetail">本系统已生成</div></div>
+    <div class="card stat"><div class="l">执行情况（本系统）</div><div class="v" id="curSysExec" style="font-size:16px">12 / 27 ✓</div><div class="d" id="curSysExecDetail">通过 12 · 跳过 0 · 待执行 15</div></div>
+  </div>
+  <!-- 快速操作（以本系统为单位 · 先登录再探索） -->
+  <div class="card" style="margin-top:16px"><h4>快速操作（当前系统 · <span id="curSysName3">检查室管理</span>）</h4>
+    <div class="row">
+      <button class="btn pri" onclick="openLoginModal()">🔐 登录系统</button>
+      <button class="btn pri" onclick="goExplore()">🔍 进入探索</button>
+      <button class="btn pri" onclick="go('s4')">🧪 生成用例</button>
+      <button class="btn pri" onclick="go('s5')">▶ 开始执行</button>
+      <button class="btn pri" onclick="go('s6')">🐛 缺陷</button>
+    </div>
+    <div class="hint" style="margin-top:8px">🔐 登录系统按<b>项目管理中配置的登录方式</b>（免登录/账号密码/人工接管）执行，弹窗内只读；未登录时进入探索会先弹出登录。</div></div>
+  <!-- 最近活动（当前系统） -->
+  <div class="card" style="margin-top:16px"><h4>最近活动（<span id="curSysName4">检查室管理</span>）</h4>
+    <div id="curSysActivity" style="font-size:13px;line-height:1.9">
+      <div>• 10:42 检查室/新增 → 用例已生成（+3）</div>
+      <div>• 10:30 探索补录：导入导出下方入树 2 条</div>
+      <div>• 09:15 上次执行：12 通过 / 0 失败 / 3 跳过</div>
+    </div></div>
+  <!-- 快捷链接（去其他系统/项目级管理） -->
+  <div class="row" style="margin-top:12px"><span style="font-size:12px;color:var(--mut)">管理其他系统/项目级配置：</span><button class="btn sm" onclick="go('s9')">⑨ 项目管理（含项目系统列表）</button><button class="btn sm" onclick="go('s10')">⑩ 知识库</button></div>
+</section>
+
+<!-- ====== Screen 2 · 探索 ====== -->
+<section class="screen" id="s2">
+  <div class="ph"><div><h2>② 系统探索</h2><div class="sub">模块树可 CRUD · 人工补录两段式：弹窗录制 → 写入待入树列表 → 选中模块树行 → 行内入树插入下方</div></div>
+    <div class="row"><button class="btn">开始/继续探索</button><button class="btn pri" onclick="startManualSupplement()">👆 人工补充（自动开浏览器）</button><button class="btn">导出模块树</button></div></div>
+  <div class="grid g2">
+    <div class="card"><h4>模块树（☑多选 · 选中行 = 待入树插入位置 · 右键补录）</h4>
+      <div class="tree"><div class="root">🖥️ 区域影像 / 检查室管理</div>
+        <ul><li><div class="node"><input type="checkbox" class="ck"><span onclick="openM('m-modedit')" oncontextmenu="showTreeCtx(event,'列表与查询 / 检查室列表')">📂 列表与查询 <span class="tag ok">已覆盖</span></span></div>
+            <ul><li><div class="node"><input type="checkbox" class="ck"><span onclick="openM('m-modedit')" oncontextmenu="showTreeCtx(event,'检查室列表')">🔹 检查室列表</span></div></li><li><div class="node"><input type="checkbox" class="ck"><span onclick="openM('m-modedit')" oncontextmenu="showTreeCtx(event,'关键字查询')">🔹 关键字查询</span></div></li></ul></li>
+          <li><div class="node"><input type="checkbox" class="ck"><span onclick="openM('m-modedit')" oncontextmenu="showTreeCtx(event,'新增与编辑')">📂 新增与编辑 <span class="tag warn">needs_review</span></span></div>
+            <ul><li><div class="node"><input type="checkbox" class="ck"><span oncontextmenu="showTreeCtx(event,'新增检查室')">🔹 新增检查室</span></div></li><li><div class="node"><input type="checkbox" class="ck"><span oncontextmenu="showTreeCtx(event,'编辑检查室')">🔹 编辑检查室</span></div></li></ul></li>
+          <li><div class="node sel"><input type="checkbox" class="ck"><span onclick="openM('m-modedit')" oncontextmenu="showTreeCtx(event,'导入导出')">📂 导入导出 <span class="tag review">未探索</span> <span class="tag info" style="font-size:10px">已选中 · 插入目标</span></span></div></li></ul></div>
+      <hr><div class="row"><button class="btn sm" onclick="openM('m-modedit')">+ 新增模块</button><button class="btn sm" onclick="openM('m-modedit')">编辑选中</button><button class="btn sm dng" onclick="toast('已删除选中模块')">删除选中</button></div></div>
+    <div class="card"><h4>📥 待入树列表（人工补录数据 · 默认折叠，显示待入树条数）</h4>
+      <div class="meta-head"><b>两段式工作流</b><br>① 点「人工补充」→ 弹窗录制（自动开浏览器）<br>② 弹窗确认 → 录制数据写入本列表<br>③ 左侧模块树<b>选中目标行</b>（示例：已选中「导入导出」）<br>④ 点本列表行内 [入树] → 插入到选中行下方</div>
+      <hr><div class="tbl-wrap"><table><thead><tr><th>#</th><th>录制路径</th><th>所在模块</th><th>置信</th><th>状态</th><th style="width:200px">操作</th></tr></thead>
+        <tbody><!-- data:example -->
+          <tr><td>1</td><td class="mono">检查室/导出 → 模板下载</td><td>导入导出</td><td><span class="tag info">0.92</span></td><td><span class="tag warn">待入树</span></td><td><div class="op"><button class="btn sm pri" title="插入到模块树选中行（导入导出）下方" onclick="toast('已入树：插入到「导入导出」下方')">入树</button><button class="btn sm" onclick="openM('m-modedit')">修改</button><button class="btn sm dng" onclick="this.closest('tr').remove();toast('已删除')">删除</button></div></td></tr>
+          <tr><td>2</td><td class="mono">检查室/导入 → Excel 上传</td><td>导入导出</td><td><span class="tag info">0.88</span></td><td><span class="tag warn">待入树</span></td><td><div class="op"><button class="btn sm pri" title="插入到模块树选中行（导入导出）下方" onclick="toast('已入树：插入到「导入导出」下方')">入树</button><button class="btn sm" onclick="openM('m-modedit')">修改</button><button class="btn sm dng" onclick="this.closest('tr').remove();toast('已删除')">删除</button></div></td></tr>
+          <tr><td>3</td><td class="mono">检查室/列表（已存在）</td><td>列表与查询</td><td><span class="tag gray">—</span></td><td><span class="tag ok">已去重</span></td><td><span style="color:var(--mut);font-size:12px">—</span></td></tr>
+        </tbody></table></div>
+      <div class="row" style="margin-top:10px"><button class="btn sm pri" onclick="toast('2 条已批量插入到选中行下方')">✓ 全部入树</button><button class="btn sm" onclick="toast('已忽略')">✗ 忽略</button><span style="font-size:12px;color:var(--mut);margin-left:8px">未选中模块树行时 [入树] 置灰；先在左侧选中目标位置</span></div></div>
+  </div>
+  <div class="card" style="margin-top:16px"><h4>覆盖率（一眼可判）</h4>
+    <div class="legend"><span><i style="background:#16A34A"></i>已覆盖</span><span><i style="background:#B45309"></i>needs_review</span><span><i style="background:#9F1239"></i>未探索</span><span style="margin-left:auto">进度：<b>14/18 模块</b> · frontier：4 待补</span></div></div>
+</section>
+
+<!-- ====== Screen 3 · 功能点审核 ====== -->
+<section class="screen" id="s3">
+  <div class="ph"><div><h2>③ 功能点审核</h2><div class="sub">九列 + 纵向合并 + 增删 + 整体确认 · 镜像 TestMaster · 严格遵循金标准</div></div>
+    <div class="row"><button class="btn">加载固定模板</button><button class="btn">加载本轮版本</button><button class="btn" title="调用 AI 从探索数据生成功能点建议">AI 提效功能点</button><button class="btn">保存草稿</button><button class="btn">导出 Excel</button><button class="btn pri" onclick="openM('m-confirm')">✓ 整体确认</button></div></div>
+  <div class="row" style="margin-bottom:8px"><button class="btn sm" title="未选中行：表格底部新增一行合并模块头（colspan 跨列）；选中行：选中行下方插入合并模块头">+ 添加新模块（合并单元格）</button><button class="btn sm" title="在该行正下方新增功能点行（九列，不合并单元格）">+ 插入行（不合并）</button><button class="btn sm" onclick="copyFeat()">📋 复制到 Excel</button><span class="tag info" style="margin-left:auto">已确认 v1</span><span class="tag warn">2 needs_review</span></div>
+  <!-- 九列契约：主规格 §5.3/§17.2 FeatureColumnIndexes（列0-8固定顺序） -->
+  <div class="tbl-wrap"><table>
+    <thead><tr><th style="width:50px">序号</th><th style="width:80px">测试类型</th><th style="width:70px">需求章节</th><th style="width:130px">系统名称</th><th style="width:100px">主模块</th><th style="width:90px">子模块</th><th style="width:100px">功能点</th><th style="width:110px">测试点</th><th style="width:140px">测试点标识</th><th style="width:80px">操作</th></tr></thead>
+    <tbody><!-- data:example -->
+      <tr><td>1</td><td>功能性测试</td><td>3.2.1</td><td rowspan="4" class="merge">区域影像系统</td><td rowspan="4" class="merge">配置</td><td rowspan="4" class="merge">检查室</td><td rowspan="4" class="merge">检查室管理</td><td>查询</td><td class="mono">QYYX_PZ_JCX_01</td><td><div class="op"><button class="btn sm" onclick="toast('插入行')">+</button><button class="btn sm" onclick="toast('删除行')">×</button></div></td></tr>
+      <tr><td>2</td><td>功能性测试</td><td>3.2.1</td><td>列表展示</td><td class="mono">QYYX_PZ_JCX_02</td><td><div class="op"><button class="btn sm">+</button><button class="btn sm">×</button></div></td></tr>
+      <tr><td>3</td><td>功能性测试</td><td>3.2.2</td><td>新增</td><td class="mono">QYYX_PZ_JCX_03</td><td><div class="op"><button class="btn sm">+</button><button class="btn sm">×</button></div></td></tr>
+      <tr><td>4</td><td>功能性测试</td><td>3.2.3</td><td>编辑</td><td class="mono">QYYX_PZ_JCX_04</td><td><div class="op"><button class="btn sm">+</button><button class="btn sm">×</button></div></td></tr>
+      <tr style="border-top:2px solid var(--line)"><td>5</td><td>功能性测试</td><td>4.1.1</td><td rowspan="3" class="merge">区域影像系统</td><td rowspan="3" class="merge">报告</td><td rowspan="3" class="merge">检查报告</td><td rowspan="3" class="merge">报告管理</td><td>查询</td><td class="mono">QYYX_BG_JCBG_01</td><td><div class="op"><button class="btn sm">+</button><button class="btn sm">×</button></div></td></tr>
+      <tr><td>6</td><td>功能性测试</td><td>4.1.1</td><td>列表展示 <span class="tag warn">needs_review</span></td><td class="mono">QYYX_BG_JCBG_02</td><td><div class="op"><button class="btn sm">+</button><button class="btn sm">×</button></div></td></tr>
+      <tr><td>7</td><td>功能性测试</td><td>4.1.2</td><td>打印</td><td class="mono">QYYX_BG_JCBG_03</td><td><div class="op"><button class="btn sm">+</button><button class="btn sm">×</button></div></td></tr>
+    </tbody></table></div>
+</section>
+
+<!-- ====== Screen 4 · 测试用例（重做） ====== -->
+<section class="screen" id="s4">
+  <div class="ph"><div><h2>④ 测试用例</h2><div class="sub">选择模块生成用例 · meta 头=Excel 内可编辑行 + 左侧配置面板 + 只读AI引用 + 全可编辑 + 复杂逻辑自动识别弹提示</div></div>
+    <div class="row"><button class="btn">导入 Excel</button><button class="btn">导出 Excel</button><button class="btn" onclick="copyCases()">📋 复制到 Excel（含格式与合并单元格）</button></div></div>
+  <!-- 生成范围：默认只显示状态行，选择面板按需弹模态（scope = selected_modules | all） -->
+  <div class="card" style="margin-bottom:12px;padding:10px 16px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <b style="font-size:13px">📋 生成范围</b>
+      <span style="font-size:12px;color:var(--mut)" id="caseSelCnt">已选 3 / 5 模块</span>
+      <div style="margin-left:auto" class="row">
+        <button class="btn sm" onclick="openM('m-casesel')">⚙ 选择模块</button>
+        <button class="btn pri sm" onclick="toast('为选中模块生成用例…')">生成选中</button>
+        <button class="btn sm" onclick="toast('为全部模块生成用例…')">全部生成</button>
+      </div>
+    </div>
+  </div>
+  <!-- 左配置面板 + 右Excel -->
+  <div style="display:grid;grid-template-columns:260px 1fr;gap:16px">
+    <!-- 左：配置面板（无模型下拉） -->
+    <div class="card"><h4>配置面板（快速填充 meta）</h4>
+      <div class="field"><label>系统名称</label><input value="区域影像系统"></div>
+      <div class="field"><label>测试点标识</label><input class="mono" value="QYYX_PZ_JCX"></div>
+      <div class="field"><label>测试点（功能点）</label><input value="检查室"></div>
+      <div class="field"><label>用例编号前缀</label><input class="mono" value="QYYX_PZ_JCX" disabled><div class="hint">自动 = 测试点标识</div></div>
+      <div class="field"><label>测试人员</label><input value="陈新、王乐"></div>
+      <div class="field"><label>委托单位人员</label><input value="延安医疗集团"></div>
+      <div class="field"><label>开发单位人员</label><input value="—"></div>
+      <div class="field"><label>初次测试时间</label><input value="2026-08-14"></div>
+      <div class="field"><label>回归测试时间</label><input value="—"></div>
+      <div class="field"><label>测试结论判定规则</label><input value="默认"></div>
+      <div class="field"><label>预置条件</label><input value="已登录门户"></div>
+      <hr>
+      <div style="font-size:12px;color:var(--mut);margin-bottom:8px">当前 AI：<b style="color:var(--priT)">Gemini-1.5-Pro</b> <span class="tag gray">来自配置</span></div>
+      <button class="btn sm" onclick="go('s7')">⚙ 去 AI 配置</button>
+      <hr>
+      <div class="toggle" id="aiToggle" onclick="tog('aiToggle')"><div class="sw"></div><span>AI 辅助生成（默认关）</span></div>
+      <button class="btn pri sm" style="width:100%;margin-top:8px" onclick="applyMeta()">应用配置到 Excel</button>
+    </div>
+    <!-- 右：Excel（meta 可编辑行 + 八列全可编辑） -->
+    <div class="card" style="padding:0;overflow:hidden">
+      <div class="tbl-wrap" style="border:none;border-radius:0">
+        <table>
+          <!-- meta 头 = Excel 内顶部可编辑行 -->
+          <tbody>
+            <tr style="background:var(--line2)"><td colspan="2"><b>系统名称</b></td><td colspan="6"><span class="editable" id="m-sys">区域影像系统</span></td></tr>
+            <tr style="background:var(--line2)"><td colspan="2"><b>测试点标识</b></td><td colspan="6"><span class="editable" id="m-mark">QYYX_PZ_JCX</span></td></tr>
+            <tr style="background:var(--line2)"><td colspan="2"><b>测试点</b></td><td colspan="6"><span class="editable" id="m-tp">检查室</span></td></tr>
+            <tr style="background:var(--line2)"><td colspan="2"><b>测试人员</b></td><td colspan="6"><span class="editable" id="m-tester">陈新、王乐</span></td></tr>
+            <tr style="background:var(--line2)"><td colspan="2"><b>委托/开发</b></td><td colspan="6"><span class="editable">延安医疗集团 / —</span></td></tr>
+            <tr style="background:var(--line2)"><td colspan="2"><b>初次/回归时间</b></td><td colspan="6"><span class="editable">2026-08-14 / —</span></td></tr>
+            <tr style="background:var(--line2)"><td colspan="2"><b>规则 / 预置条件</b></td><td colspan="6"><span class="editable">默认 / 已登录门户</span></td></tr>
+          </tbody>
+          <!-- 列头行（在meta头下方，用例数据上方） -->
+          <tbody><tr style="background:var(--line2);color:var(--t2);font-weight:600"><th style="width:140px;text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);white-space:nowrap">用例编号</th><th style="width:100px;text-align:left;padding:10px 12px;border-bottom:1px solid var(--line)">测试内容</th><th style="width:60px;text-align:left;padding:10px 12px;border-bottom:1px solid var(--line)">步骤</th><th style="text-align:left;padding:10px 12px;border-bottom:1px solid var(--line)">输入及操作说明</th><th style="text-align:left;padding:10px 12px;border-bottom:1px solid var(--line)">预期结果</th><th style="width:80px;text-align:left;padding:10px 12px;border-bottom:1px solid var(--line)">初次结果</th><th style="width:80px;text-align:left;padding:10px 12px;border-bottom:1px solid var(--line)">回归结果</th><th style="width:70px;text-align:left;padding:10px 12px;border-bottom:1px solid var(--line)">结论</th></tr></tbody>
+          <tbody><!-- data:example -->
+            <tr><td class="mono">QYYX_PZ_JCX_01</td><td><span class="editable">查询</span></td><td><span class="editable">Step 1</span></td><td><span class="editable">在【检查室】页面录入查询条件，点击【查询】</span></td><td><span class="editable">查询成功，列表展示匹配的检查室</span></td><td><span class="editable">\</span></td><td><span class="editable">\</span></td><td><span class="editable">\</span></td></tr>
+            <tr><td class="mono">QYYX_PZ_JCX_01</td><td><span class="editable">查询</span></td><td><span class="editable">Step 2</span></td><td><span class="editable">使用不存在的编码点击【查询】</span></td><td><span class="editable">列表为空，明确提示，不报错</span></td><td><span class="editable">\</span></td><td><span class="editable">\</span></td><td><span class="editable">\</span></td></tr>
+            <tr><td class="mono">QYYX_PZ_JCX_03</td><td><span class="editable">新增</span></td><td><span class="editable">Step 1</span></td><td><span class="editable">点击【新增】，录入字段，点击【保存】</span></td><td><span class="editable">保存成功，列表新增记录可查询</span></td><td><span class="editable">\</span></td><td><span class="editable">\</span></td><td><span class="editable">\</span></td></tr>
+            <tr><td class="mono">QYYX_PZ_JCX_03</td><td><span class="editable">新增</span></td><td><span class="editable">Step 2</span></td><td><span class="editable">清空必填项后点击【保存】</span></td><td><span class="editable">字段级必填校验，保存失败</span></td><td><span class="editable">\</span></td><td><span class="editable">\</span></td><td><span class="editable">\</span></td></tr>
+            <tr style="background:#FEFCE8"><td class="mono">QYYX_PZ_JCX_04</td><td><span class="editable">编辑</span></td><td><span class="editable">Step 1</span></td><td><span class="editable">选择记录点击【编辑】，修改字段，点击【保存】</span></td><td><span class="editable">保存成功，列表展示更新后数据</span></td><td><span class="editable">\</span></td><td><span class="editable">\</span></td><td><span class="editable">\</span></td></tr>
+            <tr><td colspan="8" style="background:var(--line2);color:var(--mut);font-style:italic">软件截图：（执行时自动填充）</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ====== Screen 5 · 执行 ====== -->
+<section class="screen" id="s5">
+  <div class="ph"><div><h2>⑤ 执行</h2><div class="sub">选择模块执行 · 浏览器×OS 矩阵 · Playwright 直连 · <b style="color:var(--dng)">数据隔离红线</b></div></div>
+    <div class="row"><button class="btn">选择浏览器/OS</button><button class="btn">导出结果</button></div></div>
+  <!-- 执行范围：树形列表（系统→模块），勾选模块执行，每行带用例状态 -->
+  <div class="card" style="margin-bottom:12px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:4px 0 10px;border-bottom:1px solid var(--line2)">
+      <b style="font-size:13px">📋 执行范围（树形 · 带入已生成用例的模块）</b>
+      <label style="font-size:12px;color:var(--mut)"><input type="checkbox" onchange="toggleAllExec(this)"> 全选</label>
+      <span style="font-size:12px;color:var(--mut)" id="execSelCnt">已选 1 / 3 模块</span>
+      <div style="margin-left:auto" class="row">
+        <button class="btn pri sm" onclick="toast('开始执行选中模块…')">▶ 执行选中</button>
+        <button class="btn sm" onclick="toast('开始执行全部模块…')">▶ 执行全部</button>
+      </div>
+    </div>
+    <div class="tree" style="margin-top:10px">
+      <div class="root">🖥️ 区域影像 · 3 模块 · 27 用例 · 已执行 12</div>
+      <ul><!-- data:example -->
+        <li><div class="node"><input type="checkbox" class="exec-ck" checked onchange="updateExecCnt()"> 📂 检查室管理 <span class="tag gray" style="font-size:10px">10 用例</span> <span class="tag ok" style="font-size:10px">✓ 8</span> <span class="tag warn" style="font-size:10px">⏳ 2</span> <span class="tag gray" style="font-size:10px">✗ 0</span></div></li>
+        <li><div class="node"><input type="checkbox" class="exec-ck" onchange="updateExecCnt()"> 📂 检查项目管理 <span class="tag gray" style="font-size:10px">12 用例</span> <span class="tag gray" style="font-size:10px">未执行</span> <span class="tag warn" style="font-size:10px">功能点待确认</span></div></li>
+        <li><div class="node"><input type="checkbox" class="exec-ck" onchange="updateExecCnt()"> 📂 影像归档 <span class="tag gray" style="font-size:10px">5 用例</span> <span class="tag gray" style="font-size:10px">未执行</span></div></li>
+      </ul>
+    </div>
+  </div>
+  <div class="card"><h4>浏览器 × 操作系统 矩阵（点击查看详情）</h4>
+    <div class="tbl-wrap"><table><thead><tr><th></th><th>Win11·Chrome</th><th>Win11·Edge</th><th>macOS·Safari</th><th>Win10·Chrome</th></tr></thead>
+      <tbody><!-- data:example -->
+        <tr><th>QYYX_PZ_JCX_01 (4步)</th><td><span class="tag ok" onclick="openM('m-execdetail')" style="cursor:pointer">✓ 通过</span></td><td><span class="tag warn">⏳ 运行中</span></td><td><span class="tag gray">待运行</span></td><td><span class="tag gray">待运行</span></td></tr>
+        <tr><th>QYYX_PZ_JCX_03 (6步)</th><td><span class="tag warn">⏳ 运行中</span></td><td><span class="tag gray">待运行</span></td><td><span class="tag gray">待运行</span></td><td><span class="tag gray">待运行</span></td></tr>
+      </tbody></table></div></div>
+  <div class="grid g2" style="margin-top:16px">
+    <div class="card" style="border-color:#FECACA;background:var(--dngS)"><h4 style="color:var(--dng)">🛡 数据隔离红线（P5 verify）</h4>
+      <ul style="margin:0;padding-left:18px;color:var(--t2);font-size:13px"><li>仅<b>新增</b> <code>owner=本任务</code> 数据</li><li>读历史/他人数据<b>只读不改</b></li><li>回滚/清理<b>只删本任务新增行</b></li><li>执行前后快照比对，断言无历史变更</li></ul>
+      <button class="btn sm pri" style="margin-top:8px" onclick="openM('m-isoverify')">▶ 运行隔离 verify</button></div>
+    <div class="card"><h4>本任务数据快照</h4>
+      <div class="meta-head" style="background:#fff"><div class="rowline"><div>新增：<b>12 行</b></div><div>修改：<b>0 行</b>（红线）</div><div>删除：<b>0 行</b></div><div>历史变化：<b style="color:var(--ok)">无</b> ✓</div></div></div></div>
+  </div>
+</section>
+
+<!-- ====== Screen 6 · 缺陷（截图实质化） ====== -->
+<section class="screen" id="s6">
+  <div class="ph"><div><h2>⑥ 缺陷</h2><div class="sub">独立 stage · 六列固定 · 按模块筛选 · 截图可点击放大 · 导入导出</div></div>
+    <div class="row"><select class="btn" style="background:#fff"><option>全部模块</option><option>检查室管理</option><option>检查项目管理</option></select><button class="btn">导入</button><button class="btn">导出</button><button class="btn pri" onclick="toast('新建缺陷')">+ 新建缺陷</button></div></div>
+  <div class="tbl-wrap"><table>
+    <thead><tr><th style="width:50px">序号</th><th>问题描述</th><th style="width:90px">问题截图</th><th style="width:70px">级别</th><th style="width:90px">质量特性</th><th style="width:180px">产生环境</th></tr></thead>
+    <tbody><!-- data:example -->
+      <tr><td>1</td><td>查询时输入超长名称(>200字符)页面脚本异常</td><td><div class="thumb" onclick="openLightbox()"></div><div style="font-size:10px;color:var(--mut);margin-top:2px">screenshot_01.png</div></td><td><span class="tag warn">中</span></td><td>健壮性</td><td class="mono">Win11·Chrome·QYYX_PZ_JCX_01/S2</td></tr>
+      <tr><td>2</td><td>新增保存成功后列表未刷新，需手动刷新</td><td><div class="thumb" onclick="openLightbox()"></div><div style="font-size:10px;color:var(--mut);margin-top:2px">screenshot_02.png</div></td><td><span class="tag danger">高</span></td><td>功能正确性</td><td class="mono">Win11·Edge·QYYX_PZ_JCX_03/S1</td></tr>
+      <tr><td>3</td><td>权限：低权限账号仍可访问URL直接进入编辑页</td><td><div class="thumb" onclick="openLightbox()"></div><div style="font-size:10px;color:var(--mut);margin-top:2px">screenshot_03.png</div></td><td><span class="tag danger">高</span></td><td>安全性</td><td class="mono">macOS·Safari·QYYX_PZ_JCX_04/S1</td></tr>
+      <tr><td>4</td><td>导出文件中文乱码，列宽不可读</td><td><span class="tag gray" onclick="openM('m-upload')" style="cursor:pointer">＋ 上传</span></td><td><span class="tag warn">中</span></td><td>易用性</td><td class="mono">Win10·Chrome·QYYX_PZ_JCX_05/S1</td></tr>
+    </tbody></table></div>
+</section>
+
+<!-- ====== Screen 8 · 日志管理（独立完整页，非弹窗） ====== -->
+<section class="screen" id="s8">
+  <div class="ph"><div><h2>⑧ 日志管理</h2><div class="sub">外部目录 · 滚动 · 保留（可配）· 按任务分文件 · 手动清理 · 项目外不污染</div></div>
+    <div class="row"><button class="btn" onclick="toast('已打开日志目录（OS 资源管理器）')">📁 打开目录</button><button class="btn pri" onclick="toast('已保存配置')">保存配置</button></div></div>
+  <div class="grid g4">
+    <div class="card stat"><div class="l">日志目录</div><div class="v" style="font-size:13px">%LOCALAPPDATA%\test-platform\logs</div><div class="d">config/default.yaml 可覆盖</div></div>
+    <div class="card stat"><div class="l">当前占用</div><div class="v">32.7 MB</div><div class="d">3 子系统 · 8 任务</div></div>
+    <div class="card stat"><div class="l">保留策略</div><div class="v" style="font-size:18px">30 天滚动</div><div class="d">单文件 10 MB · 最多 30 文件</div></div>
+    <div class="card stat"><div class="l">下次自动清理</div><div class="v" style="font-size:18px">今晚 02:00</div><div class="d">每日 + 启动时扫</div></div>
+  </div>
+  <div class="grid g2" style="margin-top:16px">
+    <div class="card"><h4>保留天数（自动过期删除）</h4>
+      <div class="row" style="margin-bottom:10px"><label><input type="radio" name="rd8" checked> 30 天</label><label><input type="radio" name="rd8"> 60 天</label><label><input type="radio" name="rd8"> 90 天</label><label><input type="radio" name="rd8"> 自定义 <input style="width:60px" value="180"> 天</label></div>
+      <div class="field" style="margin-bottom:0"><label>单文件滚动阈值（MB）</label><input value="10"></div>
+      <div class="field" style="margin-bottom:0"><label>最多保留文件数</label><input value="30"></div></div>
+    <div class="card"><h4>清理动作</h4>
+      <div class="row"><button class="btn sm" onclick="toast('已清理过期日志（释放 0 B）')">清理过期</button><button class="btn sm dng" onclick="toast('已清空全部（回收站可恢复）')">一键清空全部</button></div>
+      <hr><h4 style="font-size:13px">按子系统/任务清理</h4>
+      <div class="row"><select class="btn" style="background:#fff"><option>检查室管理（23.4 MB）</option><option>检查项目管理（8.1 MB）</option><option>影像归档（1.2 MB）</option></select><button class="btn sm" onclick="toast('已清理选中（软删回收站）')">清理</button></div></div>
+  </div>
+  <div class="card" style="margin-top:16px"><h4>日志文件（按子系统分组）</h4>
+    <div class="tbl-wrap"><table><thead><tr><th>子系统</th><th>任务</th><th>文件名</th><th>大小</th><th>最后写入</th><th>操作</th></tr></thead>
+      <tbody>
+        <tr><td rowspan="3">检查室管理</td><td>T2026081401-探索</td><td class="mono">explore.log</td><td>4.2 MB</td><td>12:31</td><td><button class="btn sm" onclick="toast('查看中…')">查看</button> <button class="btn sm dng" onclick="toast('已删除（回收站）')">删除</button></td></tr>
+        <tr><td>T2026081402-功能点</td><td class="mono">feature.log</td><td>1.8 MB</td><td>11:58</td><td><button class="btn sm">查看</button> <button class="btn sm dng">删除</button></td></tr>
+        <tr><td>T2026081403-用例</td><td class="mono">case.log</td><td>17.4 MB</td><td>10:42</td><td><button class="btn sm">查看</button> <button class="btn sm dng">删除</button></td></tr>
+        <tr><td>检查项目管理</td><td>T2026081301-探索</td><td class="mono">explore.log</td><td>8.1 MB</td><td>昨天</td><td><button class="btn sm">查看</button> <button class="btn sm dng">删除</button></td></tr>
+        <tr><td>影像归档</td><td>T2026081001-功能点</td><td class="mono">feature.log</td><td>1.2 MB</td><td>4 天前</td><td><button class="btn sm">查看</button> <button class="btn sm dng">删除</button></td></tr>
+      </tbody></table></div></div>
+</section>
+
+<!-- ====== Screen 7 · AI 模型配置（新） ====== -->
+<section class="screen" id="s7">
+  <div class="ph"><div><h2>⑦ AI 模型配置</h2><div class="sub">独立页 · 多厂商 · 中转站 · 自定义 · 测试连接 · 设默认 · 业务屏只读引用</div></div>
+    <div class="row"><button class="btn pri" onclick="openM('m-aiedit')">+ 添加配置</button></div></div>
+  <div class="card"><h4>已配置的 AI 模型</h4>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th style="width:40px">启</th><th>名称</th><th>厂商</th><th>Base URL</th><th>模型</th><th>默认</th><th style="width:90px">操作</th></tr></thead>
+      <tbody><!-- data:example -->
+        <tr><td><div class="toggle on"><div class="sw"></div></div></td><td>生产-Gemini</td><td>Google</td><td class="mono">https://generativelanguage.googleapis.com</td><td class="mono">gemini-1.5-pro</td><td><span class="tag info">默认</span></td><td><button class="btn sm" onclick="openM('m-aiedit')">编辑</button> <button class="btn sm" onclick="toast('测试中…')">测试</button></td></tr>
+        <tr><td><div class="toggle on"><div class="sw"></div></div></td><td>测试-中转站A</td><td>OpenAI(中转)</td><td class="mono">https://api2d.net/v1</td><td class="mono">gpt-4o</td><td><span class="tag gray">—</span></td><td><button class="btn sm" onclick="openM('m-aiedit')">编辑</button> <button class="btn sm" onclick="toast('测试中…')">测试</button></td></tr>
+        <tr><td><div class="toggle"><div class="sw"></div></div></td><td>DeepSeek</td><td>DeepSeek</td><td class="mono">https://api.deepseek.com</td><td class="mono">deepseek-chat</td><td><span class="tag gray">—</span></td><td><button class="btn sm" onclick="openM('m-aiedit')">编辑</button> <button class="btn sm" onclick="toast('测试中…')">测试</button></td></tr>
+        <tr><td><div class="toggle"><div class="sw"></div></div></td><td>自定义-内网反代</td><td>自定义</td><td class="mono">https://ai-proxy.internal.local/v1</td><td class="mono">claude-3.5-sonnet</td><td><span class="tag gray">—</span></td><td><button class="btn sm" onclick="openM('m-aiedit')">编辑</button> <button class="btn sm" onclick="toast('测试中…')">测试</button></td></tr>
+      </tbody></table></div>
+    <hr><div class="meta-head"><b>说明</b>：apiKey 经 safeStorage 加密存储，不明文落盘。中转站 = baseUrl 覆盖（api2d/openai-hk/自建反代等）。自定义厂商 = name+baseUrl+apiKey+model 全自定义。业务屏（如 Screen4）仅显示"当前AI: 生产-Gemini (来自配置)"只读引用，不在此选模型。</div>
+  </div>
+</section>
+
+<!-- ====== Screen 9 · 项目管理（独立屏，无弹窗：当前项目卡 + 列表 CRUD + 屏内表单） ====== -->
+<section class="screen" id="s9">
+  <div class="ph"><div><h2>⑨ 项目管理</h2><div class="sub">当前项目 + 项目增删改查 + 点击行切换 · 全部屏内操作（无弹窗）· 新建选类型：门户 / 单系统 / 子系统</div></div>
+    <div class="row"><button class="btn pri" onclick="toggleNpForm()">+ 新建项目</button></div></div>
+
+  <!-- 新建项目（屏内表单，默认隐藏） -->
+  <div class="card" id="np-form" style="display:none;margin-bottom:16px;border:1px dashed var(--pri);background:#FBFDFF">
+    <h4>新建项目 · 选择类型（决定 URL 获取方式；登录方式三类型配置一致）</h4>
+    <div class="field"><label>项目名称 *</label><input placeholder="如：延安市医疗集团"></div>
+    <div class="field"><label>项目类型 *</label>
+      <div class="row">
+        <label style="padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer"><input type="radio" name="np-type" value="portal" onchange="npType()"> 🖥️ 门户 · 作为登录入口，可挂多个子系统</label>
+        <label style="padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer"><input type="radio" name="np-type" value="standalone" onchange="npType()"> 💻 单系统 · 直接登录，走全流程</label>
+        <label style="padding:6px 12px;border:1px solid var(--line);border-radius:8px;cursor:pointer"><input type="radio" name="np-type" value="subsystem" onchange="npType()"> 📂 子系统 · 经父门户浏览器捕获 URL</label>
+      </div>
+      <div class="hint">所有系统底层都是单系统；登录方式三选一（免登录 / 账号密码登录 / 人工接管登录），三种类型配置一致；仅子系统 URL 经浏览器捕获</div></div>
+    <!-- 类型相关字段（随选择切换） -->
+    <div id="np-portal" style="display:none">
+      <div class="field"><label>门户 URL *（手动输入地址）</label><input type="url" placeholder="https://…"></div>
+      <div class="field"><label>登录方式 *</label><select><option>账号密码登录</option><option>人工接管登录</option><option>免登录</option></select></div>
+      <div class="field"><label>账号 / 密码 *（除免登录外必填）</label><div class="row"><input placeholder="账号" style="flex:1"><input type="password" placeholder="密码（safeStorage 加密存储）" style="flex:1"></div></div>
+    </div>
+    <div id="np-standalone" style="display:none">
+      <div class="field"><label>系统 URL *（手动输入地址）</label><input type="url" placeholder="https://…"></div>
+      <div class="field"><label>登录方式 *</label><select><option>账号密码登录</option><option>人工接管登录</option><option>免登录</option></select></div>
+      <div class="field"><label>账号 / 密码 *（除免登录外必填）</label><div class="row"><input placeholder="账号" style="flex:1"><input type="password" placeholder="密码（safeStorage 加密存储）" style="flex:1"></div></div>
+    </div>
+    <div id="np-subsystem" style="display:none">
+      <div class="field"><label>父门户 *（从所有门户系统中选，跨项目）</label><select><option>区域影像（延安市医疗集团项目）</option><option>集团统一门户（陕西集团项目）</option></select></div>
+      <div class="meta-head" style="margin-bottom:12px">父门户路径：<b>区域影像</b> <code>yayx.med.local</code>（登录入口 · 浏览器经此会话进入子系统）</div>
+      <div class="field"><label>子系统 URL *（经父门户浏览器会话捕获，不手敲）</label>
+        <div class="captured"><span>📡 <code>https://yayx.med.local/console/exam-room-config</code></span><button class="btn sm pri">从浏览器捕获</button></div></div>
+      <div class="field"><label>登录方式 *（三选一，与其他类型一致）</label><select><option>人工接管登录</option><option>账号密码登录</option><option>免登录</option></select></div>
+      <div class="field"><label>账号 / 密码 *（除免登录外必填）</label><div class="row"><input placeholder="账号" style="flex:1"><input type="password" placeholder="密码（safeStorage 加密存储）" style="flex:1"></div></div>
+    </div>
+    <div class="row" style="margin-top:14px"><button class="btn pri" onclick="createProj()">🚀 创建并启动浏览器登录</button><button class="btn" onclick="toggleNpForm()">取消</button></div>
+  </div>
+
+  <!-- 当前项目卡 -->
+  <div class="card" style="margin-bottom:16px;border-left:3px solid var(--pri)">
+    <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+      <div><b style="font-size:16px">📁 <span id="s9CurName">延安市医疗集团</span></b> <span class="tag info" id="s9CurType">门户</span> <span class="tag ok">当前</span></div>
+      <div style="color:var(--mut);font-size:12px">3 系统（门户1·单系统1·子系统3）· 320 用例 · 创建 2026-08-01 · 今天 10:42</div>
+      <div style="margin-left:auto" class="row"><button class="btn sm" onclick="toggleEpForm()">✏ 编辑</button></div>
+    </div>
+    <!-- 编辑态（屏内展开） -->
+    <div id="ep-form" style="display:none;margin-top:12px;border-top:1px solid var(--line);padding-top:12px">
+      <div class="grid g2">
+        <div class="field"><label>项目名称</label><input value="延安市医疗集团"></div>
+        <div class="field"><label>项目描述</label><input value="区域影像 + 妇幼信息系统集成测试"></div>
+        <div class="field"><label>默认日志保留天数</label><input value="30"></div>
+        <div class="field"><label>默认 AI 辅助</label><select><option>关闭（推荐）</option><option>开启</option></select></div>
+      </div>
+      <div class="row"><button class="btn sm pri" onclick="toggleEpForm();toast('项目已更新')">保存修改</button><button class="btn sm" onclick="toggleEpForm()">取消</button></div>
+    </div>
+  </div>
+
+  <!-- 所有项目列表 -->
+  <div class="card"><h4>所有项目（点击行 = 切换当前项目，全应用跟随）</h4>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th style="width:40px">当前</th><th>项目名称</th><th>类型</th><th>系统</th><th>用例</th><th>创建于</th><th>最近活跃</th><th>状态</th><th style="width:140px">操作</th></tr></thead>
+      <tbody><!-- data:example -->
+        <tr style="cursor:pointer" onclick="switchProj('延安市医疗集团','portal')">
+          <td style="color:var(--pri);font-size:16px">●</td><td><b>延安市医疗集团</b></td><td><span class="tag info">门户</span></td><td>3</td><td>320</td><td>2026-08-01</td><td>今天</td><td><span class="tag ok">活跃</span></td>
+          <td><button class="btn sm" onclick="event.stopPropagation();toggleEpForm()">编辑</button> <button class="btn sm dng" onclick="event.stopPropagation();toggleDelForm()">删除</button></td></tr>
+        <tr style="cursor:pointer" onclick="switchProj('延安市妇幼','standalone')">
+          <td></td><td>延安市妇幼</td><td><span class="tag gray">单系统</span></td><td>1</td><td>180</td><td>2026-07-15</td><td>3 天前</td><td><span class="tag gray">空闲</span></td>
+          <td><button class="btn sm" onclick="event.stopPropagation();toggleEpForm()">编辑</button> <button class="btn sm dng" onclick="event.stopPropagation();toggleDelForm()">删除</button></td></tr>
+        <tr style="cursor:pointer" onclick="switchProj('陕西省中医院','subsystem')">
+          <td></td><td>陕西省中医院</td><td><span class="tag gray">子系统</span><br><span style="font-size:11px;color:var(--mut)">父门户：集团统一门户</span></td><td>1</td><td>540</td><td>2026-06-20</td><td>1 周前</td><td><span class="tag gray">空闲</span></td>
+          <td><button class="btn sm" onclick="event.stopPropagation();toggleEpForm()">编辑</button> <button class="btn sm dng" onclick="event.stopPropagation();toggleDelForm()">删除</button></td></tr>
+      </tbody></table></div>
+    <!-- 删除确认（屏内展开，输入项目名解锁） -->
+    <div id="del-form" style="display:none;margin-top:12px;border:1px solid #FECACA;background:var(--dngS);border-radius:8px;padding:14px">
+      <b style="color:var(--dng)">⚠ 删除项目（不可逆，级联删除）</b><br>
+      将同时删除该项目下所有系统、功能点、测试用例、执行记录和缺陷数据。<br>
+      项目：<b>延安市医疗集团</b>（3 系统 · 320 用例）
+      <div class="row" style="margin-top:10px">
+        <input id="del-name" placeholder="输入项目名称确认" style="border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:13px" oninput="delCheck()">
+        <button class="btn dng" id="del-btn" disabled onclick="toggleDelForm();toast('项目已删除')">确认删除</button>
+        <button class="btn" onclick="toggleDelForm()">取消</button>
+      </div>
+    </div>
+  </div>
+  <!-- 本项目系统列表（切换当前系统 / 全应用跟随） -->
+  <div class="card" style="margin-top:16px"><h4>当前项目「延安市医疗集团」系统列表（点击行 = 切换当前系统，全应用跟随；进入 = 进入该系统，工作台以该系统为单位刷新）</h4>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>系统</th><th>类型</th><th>URL</th><th>登录方式</th><th>父门户</th><th>阶段进度</th><th style="width:100px"></th></tr></thead>
+      <tbody>
+        <tr style="cursor:pointer" onclick="setCtx('区域影像','yayx.med.local','')"><td><b>🖥️ 区域影像</b></td><td><span class="tag info">门户</span></td><td class="mono">yayx.med.local <span class="tag gray" style="font-size:10px">手动输入</span></td><td>账号密码登录</td><td>—（可作其他系统的父门户）</td><td>探索✓ 功能点✓ 用例✓ 执行⏳</td><td><button class="btn sm pri" onclick="event.stopPropagation();setCtx('区域影像','yayx.med.local','');go('s1')">进入</button></td></tr>
+        <tr style="cursor:pointer;background:var(--priS)" onclick="setCtx('检查室管理','yayx.med.local/console/exam-room-config','区域影像')"><td><b>📂 检查室管理</b> <span class="tag info" style="font-size:10px">当前</span></td><td><span class="tag gray">子系统</span></td><td class="mono">…/console/exam-room-config <span class="tag info" style="font-size:10px">浏览器捕获</span></td><td>人工接管登录</td><td>区域影像</td><td>探索✓ 功能点✓ 用例✓ 执行⏳</td><td><button class="btn sm pri" onclick="event.stopPropagation();setCtx('检查室管理','yayx.med.local/console/exam-room-config','区域影像');go('s1')">进入</button></td></tr>
+        <tr style="cursor:pointer" onclick="setCtx('检查项目管理','yayx.med.local/console/exam-project','区域影像')"><td>📂 检查项目管理</td><td><span class="tag gray">子系统</span></td><td class="mono">…/console/exam-project <span class="tag info" style="font-size:10px">浏览器捕获</span></td><td>账号密码登录</td><td>区域影像</td><td>探索✓ 功能点⏳</td><td><button class="btn sm" onclick="event.stopPropagation();setCtx('检查项目管理','yayx.med.local/console/exam-project','区域影像');go('s1')">进入</button></td></tr>
+        <tr style="cursor:pointer" onclick="setCtx('影像归档','yayx.med.local/console/archive','区域影像')"><td>📂 影像归档</td><td><span class="tag gray">子系统</span></td><td class="mono">…/console/archive <span class="tag info" style="font-size:10px">浏览器捕获</span></td><td>免登录</td><td>区域影像</td><td>探索⏳</td><td><button class="btn sm" onclick="event.stopPropagation();setCtx('影像归档','yayx.med.local/console/archive','区域影像');go('s1')">进入</button></td></tr>
+        <tr style="cursor:pointer" onclick="setCtx('妇幼信息系统','fyxx.med.local','')"><td>🖥️ 妇幼信息系统</td><td><span class="tag gray">单系统</span></td><td class="mono">fyxx.med.local <span class="tag gray" style="font-size:10px">手动输入</span></td><td>账号密码登录</td><td>—</td><td>探索✓ 功能点✓ 用例✓ 执行✓</td><td><button class="btn sm" onclick="event.stopPropagation();setCtx('妇幼信息系统','fyxx.med.local','');go('s1')">进入</button></td></tr>
+      </tbody></table></div>
+    <div class="row" style="margin-top:10px"><button class="btn sm" onclick="openM('m-newsub')">+ 新建系统</button><span style="font-size:12px;color:var(--mut);margin-left:8px">登录方式三选一（免登录 / 账号密码登录 / 人工接管登录），三种类型配置一致；仅子系统 URL 经父门户浏览器会话捕获</span></div></div>
+</section>
+
+<!-- ====== Screen 10 · 知识库（🌐 通用 + 各系统单文本框 · 系统提示词优先） ====== -->
+<section class="screen" id="s10">
+  <div class="ph"><div><h2>⑩ 知识库</h2><div class="sub">对 AI 设置规则和指令 · 🌐 通用 + 每系统一份提示词（各一个文本框） · 内容重复/冲突时：系统提示词优先级 &gt; 通用提示词</div></div>
+    <div class="row"><button class="btn pri" onclick="toast('提示词已保存')">💾 保存</button></div></div>
+  <div style="display:grid;grid-template-columns:240px 1fr;gap:16px">
+    <div class="card"><h4>范围（跟随当前项目）</h4>
+      <div style="display:flex;flex-direction:column;gap:2px">
+        <a class="nav active" id="kb-nav-g" onclick="selKB('g')"><span class="n">🌐</span>通用提示词</a>
+        <a class="nav" id="kb-nav-s1" onclick="selKB('s1')"><span class="n">🖥️</span>区域影像</a>
+        <a class="nav" id="kb-nav-s2" onclick="selKB('s2')"><span class="n">📂</span>检查室管理</a>
+        <a class="nav" id="kb-nav-s3" onclick="selKB('s3')"><span class="n">📂</span>检查项目管理</a>
+        <a class="nav" id="kb-nav-s4" onclick="selKB('s4')"><span class="n">📂</span>影像归档</a>
+        <a class="nav" id="kb-nav-s5" onclick="selKB('s5')"><span class="n">🖥️</span>妇幼信息系统</a>
+      </div>
+      <div class="hint" style="margin-top:10px">系统列表跟随当前项目（延安市医疗集团）切换</div></div>
+    <div class="card"><h4 id="kbTitle">🌐 通用提示词（全平台所有 AI 调用生效）</h4>
+      <textarea id="kbText" style="width:100%;min-height:340px;border:1px solid var(--line);border-radius:8px;padding:12px;font:13px/1.7 inherit;outline:none;resize:vertical;color:var(--text)"></textarea>
+      <div class="hint" style="margin-top:8px">AI 调用（功能点生成 / 用例生成 / AI 辅助执行）时自动注入：<b>系统提示词（高优先）+ 通用提示词（低优先）</b>；内容重复或冲突时，以系统提示词为准。</div>
+      <div class="row" style="margin-top:10px"><button class="btn pri sm" onclick="toast('已保存')">💾 保存</button><button class="btn sm" onclick="selKB(curKB)">↺ 重置</button></div></div>
+  </div>
+</section>
+
+</main>
+</div>
+
+<!-- ====== Modals ====== -->
+<!-- 新建系统（加入当前项目） -->
+<div class="mask" id="m-newsub"><div class="modal"><div class="hd"><h3>新建系统 · 加入当前项目</h3><button class="btn ghost" onclick="closeM('m-newsub')">✕</button></div>
+  <div class="bd">
+    <div class="field"><label>系统名称 *</label><input value="检查室配置管理"><div class="hint">子系统类型时自动识别页面标题</div></div>
+    <div class="field"><label>系统类型 *</label><select onchange="nsType(this.value)"><option>子系统</option><option>门户</option><option>单系统</option></select></div>
+    <div id="ns-manual" style="display:none"><div class="field"><label>URL *（手动输入地址）</label><input class="mono" placeholder="https://…"></div></div>
+    <div id="ns-sub">
+      <div class="field"><label>父门户 *（从所有门户系统中选，跨项目）</label><select><option>区域影像（延安市医疗集团）</option><option>集团统一门户（陕西集团）</option></select></div>
+      <div class="meta-head" style="margin-bottom:12px">父门户路径：<b>区域影像</b> <code>yayx.med.local</code></div>
+      <div class="field"><label>子系统 URL *（经父门户浏览器会话捕获，不手敲）</label>
+        <div class="captured"><span>📡 <code>https://yayx.med.local/console/exam-room-config</code></span><button class="btn sm pri">从浏览器捕获</button></div></div>
+    </div>
+    <div class="field"><label>登录方式 *（三选一，所有类型一致）</label><select><option>人工接管登录</option><option>账号密码登录</option><option>免登录</option></select></div>
+    <div class="field"><label>账号 / 密码 *（除免登录外必填）</label><div class="row"><input placeholder="账号" style="flex:1"><input type="password" placeholder="密码（safeStorage 加密存储）" style="flex:1"></div></div>
+  </div>
+  <div class="ft"><button class="btn" onclick="closeM('m-newsub')">取消</button><button class="btn pri" onclick="closeM('m-newsub');toast('系统已创建并接入')">✓ 创建并接入</button></div></div></div>
+
+<!-- 用例生成 · 选择模块（默认隐藏，按钮触发） -->
+<div class="mask" id="m-casesel"><div class="modal"><div class="hd"><h3>选择生成范围</h3><button class="btn ghost" onclick="closeM('m-casesel')">✕</button></div>
+  <div class="bd">
+    <label style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;font-size:13px"><input type="checkbox" onchange="toggleAllMod(this,'case')"> 全选 / 全不选</label>
+    <div style="margin-top:12px;display:flex;flex-direction:column;gap:8px">
+      <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;font-size:13px"><input type="checkbox" class="case-ck" onchange="updateModCnt('case')" checked> 📂 检查室管理 <span class="tag gray" style="font-size:10px;margin-left:auto">4 功能点</span></label>
+      <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;font-size:13px"><input type="checkbox" class="case-ck" onchange="updateModCnt('case')" checked> 📂 检查项目管理 <span class="tag gray" style="font-size:10px;margin-left:auto">3 功能点</span></label>
+      <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;font-size:13px"><input type="checkbox" class="case-ck" onchange="updateModCnt('case')"> 📂 影像归档 <span class="tag gray" style="font-size:10px;margin-left:auto">0 功能点</span></label>
+      <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;font-size:13px"><input type="checkbox" class="case-ck" onchange="updateModCnt('case')" checked> 📂 报告管理 <span class="tag gray" style="font-size:10px;margin-left:auto">3 功能点</span></label>
+      <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;font-size:13px"><input type="checkbox" class="case-ck" onchange="updateModCnt('case')"> 📂 公共知识库 <span class="tag gray" style="font-size:10px;margin-left:auto">0 功能点</span></label>
+    </div>
+  </div>
+  <div class="ft"><button class="btn" onclick="closeM('m-casesel')">取消</button><button class="btn pri" onclick="closeM('m-casesel');toast('生成范围已更新')">✓ 确认</button></div></div></div>
+
+<!-- 复杂逻辑自动识别弹提示 -->
+<div class="mask" id="m-complex"><div class="modal"><div class="hd"><h3>⚠ 检测到复杂逻辑</h3></div>
+  <div class="bd"><div class="meta-head" style="background:var(--warnS);border:1px solid #FACC15">
+    <b>启发式检测结果</b><br>功能点「编辑」涉及：<br>• 多步骤流程（选择→编辑→保存→列表刷新）<br>• 条件分支（必填校验/格式校验/取消）<br>• 跨模块（列表状态同步）<br><br>建议开启 <b>AI 辅助生成</b> 以获得更完整的场景覆盖（带证据门）。</div>
+    <div class="field" style="margin-top:14px"><label>当前 AI 辅助状态</label>
+      <div class="toggle" id="aiToggle2" onclick="tog('aiToggle2')"><div class="sw"></div><span>AI 辅助生成（默认关）</span></div></div></div>
+  <div class="ft"><button class="btn" onclick="closeM('m-complex');toast('仅用模板生成')">仅模板生成</button><button class="btn pri" onclick="tog('aiToggle2');closeM('m-complex');toast('已开启 AI 辅助，开始生成…')">开启 AI 并生成</button></div></div></div>
+
+<!-- 登录弹窗（非独立页面：仅由工作台快速操作 / 探索前置门触发 · 登录方式带入项目管理中配置的值，只读） -->
+<div class="mask" id="m-login"><div class="modal"><div class="hd"><h3>🔐 登录系统 · <span id="loginSysName">检查室管理</span></h3><button class="btn ghost" onclick="closeM('m-login')">✕</button></div>
+  <div class="bd">
+    <div class="meta-head"><b>系统类型</b>：<span id="loginType">子系统</span><br><b>父门户</b>：<span id="loginParent">区域影像</span><br><b>登录方式</b>：<span id="loginMode">人工接管登录</span> <span class="tag gray" title="在项目管理中配置，此处只读">来自项目管理 · 只读</span></div>
+    <div id="login-cred-fields" style="margin-top:12px">
+      <div class="field"><label>账号 *（项目管理中配置，已回填）</label><input id="loginUser" value="yayx_admin" placeholder="输入账号"></div>
+      <div class="field"><label>密码 *（safeStorage 加密存储，已保存可修改）</label><input type="password" id="loginPass" placeholder="••••••••（已加密保存）"></div>
+    </div>
+    <div class="field"><label>登录流程说明（按配置的登录方式执行）</label>
+      <div class="hint" id="loginFlowHint">人工接管：启动可见浏览器 → 您在浏览器中手动完成登录 → 平台捕获会话（cookies/headers/tokens）→ 自动继续后续流程</div>
+      <div class="hint" style="margin-top:6px;color:var(--mut)">登录方式在 📁 项目管理 → 新建/编辑系统时配置；如需更换请前往项目管理修改。</div></div>
+  </div>
+  <div class="ft"><button class="btn" onclick="closeM('m-login')">取消</button><button class="btn pri" onclick="doLogin()">🚀 按配置方式启动登录</button></div></div></div>
+
+<!-- 人工补充 -->
+<div class="mask" id="m-manual"><div class="modal wide"><div class="hd"><h3>👆 人工补充 · 浏览器已自动打开</h3><button class="btn ghost" onclick="closeM('m-manual')">✕</button></div>
+  <div class="bd">
+    <div class="captured" style="background:#DCFCE7;border-color:#16A34A"><span>✅ 可见浏览器已自动打开 · 正在录制人工点击</span><button class="btn sm dng" onclick="toast('已停止录制')">⏹ 停止录制</button></div>
+    <div class="field" style="margin-top:12px"><label>说明</label>
+      <div class="hint">弹窗只负责录制：确认后录制数据写入「📥 待入树列表」（探索屏右侧）；插入位置 = 之后在模块树选中行 + 列表行内 [入树] 决定</div></div>
+    <div class="field"><label>人工选择后记录的数据</label>
+      <div class="meta-head" style="background:#fff"><div class="rowline">
+        <div><b>URL</b> <code>yayx.med.local/exam-room/import</code></div>
+        <div><b>页面标题</b> 检查室-导入</div>
+        <div><b>点击路径</b> 检查室 › 导入 › 模板下载</div>
+        <div><b>会话状态</b> <span class="tag ok">已捕获</span></div>
+      </div></div></div>
+    <div class="tbl-wrap" style="margin-top:12px"><table><thead><tr><th>#</th><th>录制路径</th><th>推断模块</th><th>置信</th><th>状态</th></tr></thead>
+      <tbody><!-- data:example --><tr><td>1</td><td class="mono">检查室/导出 → 模板下载</td><td>导入导出</td><td><span class="tag info">0.92</span></td><td><span class="tag warn">待入树</span></td></tr>
+      <tr><td>2</td><td class="mono">检查室/导入 → Excel 上传</td><td>导入导出</td><td><span class="tag info">0.88</span></td><td><span class="tag warn">待入树</span></td></tr></tbody></table></div></div>
+  <div class="ft"><button class="btn" onclick="closeM('m-manual')">取消</button><button class="btn pri" onclick="closeM('m-manual');toast('已写入待入树列表（2 条待入树）→ 请选中模块树行后行内入树')">✓ 写入待入树列表</button></div></div></div>
+
+<!-- 模块编辑 -->
+<div class="mask" id="m-modedit"><div class="modal"><div class="hd"><h3>编辑模块</h3><button class="btn ghost" onclick="closeM('m-modedit')">✕</button></div>
+  <div class="bd"><div class="field"><label>模块名称</label><input value="列表与查询"></div><div class="field"><label>所属子系统</label><select><option>检查室管理</option></select></div><div class="field"><label>状态</label><select><option>已覆盖</option><option>needs_review</option><option>未探索</option></select></div></div>
+  <div class="ft"><button class="btn" onclick="closeM('m-modedit')">取消</button><button class="btn pri" onclick="closeM('m-modedit');toast('已保存')">保存</button></div></div></div>
+
+<!-- 整体确认 -->
+<div class="mask" id="m-confirm"><div class="modal"><div class="hd"><h3>整体确认</h3></div>
+  <div class="bd"><p>确认后，已确认的功能点将用于生成测试用例。未确认/needs_review 的功能点不会生成用例。</p><div class="meta-head">已确认 5 条 · needs_review 2 条 · 共 7 条</div></div>
+  <div class="ft"><button class="btn" onclick="closeM('m-confirm')">取消</button><button class="btn pri" onclick="closeM('m-confirm');toast('已整体确认，可生成用例')">✓ 确认</button></div></div></div>
+
+<!-- 执行详情 -->
+<div class="mask" id="m-execdetail"><div class="modal wide"><div class="hd"><h3>执行详情 · QYYX_PZ_JCX_01 · Win11·Chrome</h3><button class="btn ghost" onclick="closeM('m-execdetail')">✕</button></div>
+  <div class="bd"><div class="tbl-wrap"><table><thead><tr><th>步骤</th><th>操作</th><th>预期</th><th>实际</th><th>结果</th></tr></thead>
+    <tbody><!-- data:example --><tr><td>Step 1</td><td>录入查询条件点击【查询】</td><td>列表展示匹配数据</td><td>列表展示正确</td><td><span class="tag ok">✓</span></td></tr>
+    <tr><td>Step 2</td><td>使用不存在编码查询</td><td>列表为空，明确提示</td><td>列表为空，提示正确</td><td><span class="tag ok">✓</span></td></tr></tbody></table></div></div>
+  <div class="ft"><button class="btn pri" onclick="closeM('m-execdetail')">关闭</button></div></div></div>
+
+<!-- 隔离 verify -->
+<div class="mask" id="m-isoverify"><div class="modal"><div class="hd"><h3>数据隔离 verify 运行结果</h3><button class="btn ghost" onclick="closeM('m-isoverify')">✕</button></div>
+  <div class="bd"><div class="meta-head" style="background:#DCFCE7;border:1px solid #16A34A"><b>✓ 通过</b><br>• 新增：12 行（owner=本任务）✓<br>• 历史数据修改：0 行 ✓<br>• 历史数据删除：0 行 ✓<br>• 快照比对：无历史变更 ✓</div></div>
+  <div class="ft"><button class="btn pri" onclick="closeM('m-isoverify')">关闭</button></div></div></div>
+
+<!-- 截图上传 -->
+<div class="mask" id="m-upload"><div class="modal"><div class="hd"><h3>上传问题截图</h3><button class="btn ghost" onclick="closeM('m-upload')">✕</button></div>
+  <div class="bd"><div style="border:2px dashed var(--line);border-radius:12px;padding:40px;text-align:center;color:var(--mut);cursor:pointer" onclick="toast('选择文件/粘贴/拖拽')"><div style="font-size:32px">📷</div><div>点击选择文件 · 或粘贴 · 或拖拽到此处</div></div></div>
+  <div class="ft"><button class="btn" onclick="closeM('m-upload')">取消</button><button class="btn pri" onclick="closeM('m-upload');toast('已上传')">上传</button></div></div></div>
+
+<!-- AI 配置编辑 -->
+<div class="mask" id="m-aiedit"><div class="modal wide"><div class="hd"><h3>AI 模型配置</h3><button class="btn ghost" onclick="closeM('m-aiedit')">✕</button></div>
+  <div class="bd">
+    <div class="field"><label>名称 *</label><input value="生产-Gemini"></div>
+    <div class="field"><label>厂商 *</label><select><option>Google</option><option>OpenAI</option><option>Anthropic</option><option>DeepSeek</option><option>通义千问</option><option>智谱</option><option>自定义 (custom)</option></select><div class="hint">选"自定义"可填任意 baseUrl + apiKey（支持中转站/内网反代）</div></div>
+    <div class="field"><label>Base URL *（支持中转站覆盖）</label><input class="mono" value="https://generativelanguage.googleapis.com"><div class="hint">中转站示例：api2d.net / openai-hk.com / 自建反代</div></div>
+    <div class="field"><label>API Key *（safeStorage 加密）</label><input type="password" value="••••••••••••"><div class="hint">加密存储，不明文落盘</div></div>
+    <div class="field"><label>模型名 *</label><input class="mono" value="gemini-1.5-pro"></div>
+    <div class="row"><div class="toggle on"><div class="sw"></div><span>启用</span></div><label style="margin-left:16px"><input type="checkbox"> 设为默认</label></div></div>
+  <div class="ft"><button class="btn" onclick="closeM('m-aiedit')">取消</button><button class="btn sm" onclick="toast('测试连接中…')">测试连接</button><button class="btn pri" onclick="closeM('m-aiedit');toast('已保存')">保存</button></div></div></div>
+
+<!-- Lightbox -->
+<div class="lightbox" id="lightbox" onclick="closeLightbox()"><span class="close">✕</span><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='800' height='500'%3E%3Crect width='800' height='500' fill='%23F1F5F9'/%3E%3Ctext x='400' y='250' text-anchor='middle' font-size='24' fill='%2364748B'%3E截图预览（占位）%3C/text%3E%3C/svg%3E" alt="screenshot"></div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<!-- 模块树右键菜单 -->
+<div id="tree-ctx" style="display:none;position:fixed;background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.12);z-index:55;padding:4px;min-width:180px">
+  <div style="padding:6px 12px;font-size:11px;color:var(--mut);border-bottom:1px solid var(--line2)" id="tree-ctx-target">选中项</div>
+  <a style="display:block;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:13px" onclick="ctxManual()" onmouseover="this.style.background='var(--priS)'" onmouseout="this.style.background=''">👆 人工补录（录制 → 待入树列表）</a>
+  <a style="display:block;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:13px" onclick="openM('m-modedit');document.getElementById('tree-ctx').style.display='none'" onmouseover="this.style.background='var(--priS)'" onmouseout="this.style.background=''">✏ 编辑模块</a>
+</div>
+
+<script>
+function go(id){document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));document.getElementById(id).classList.add('active');document.querySelectorAll('.side a.nav').forEach(a=>a.classList.remove('active'));window.scrollTo({top:0})}
+function openM(id){document.getElementById(id).classList.add('on')}
+function closeM(id){document.getElementById(id).classList.remove('on')}
+function openLightbox(){document.getElementById('lightbox').classList.add('on')}
+function closeLightbox(){document.getElementById('lightbox').classList.remove('on')}
+function tog(id){document.getElementById(id).classList.toggle('on')}
+function toast(msg){var t=document.getElementById('toast');t.textContent=msg;t.classList.add('on');setTimeout(function(){t.classList.remove('on')},2500)}
+function applyMeta(){toast('配置已应用到 Excel 顶部行')}
+/* 模块选择：全选/计数（用例生成模态） */
+function toggleAllMod(src,prefix){document.querySelectorAll('.'+prefix+'-ck').forEach(function(c){c.checked=src.checked});updateModCnt(prefix)}
+function updateModCnt(prefix){var cks=document.querySelectorAll('.'+prefix+'-ck');var sel=0;cks.forEach(function(c){if(c.checked)sel++});var el=document.getElementById(prefix+'SelCnt');if(el)el.textContent='已选 '+sel+' / '+cks.length+' 模块'}
+/* 执行树：全选/计数 */
+function toggleAllExec(src){document.querySelectorAll('.exec-ck').forEach(function(c){c.checked=src.checked});updateExecCnt()}
+function updateExecCnt(){var cks=document.querySelectorAll('.exec-ck');var sel=0;cks.forEach(function(c){if(c.checked)sel++});document.getElementById('execSelCnt').textContent='已选 '+sel+' / '+cks.length+' 模块'}
+/* 工作台：项目切换下拉 */
+/* toggleProjMenu 已在下方定义（兼容 proj-menu 已移除） */
+/* 切换当前项目：更新工作台卡 + 屏⑨卡 + topbar（全应用跟随） */
+var PROJ_PATHS={'延安市医疗集团':'<span class="crumb-chip">📁 延安市医疗集团</span><span class="sep">›</span><span class="crumb-chip">🖥️ 区域影像 <code>yayx.med.local</code></span><span class="sep">›</span><span class="crumb-chip active">📂 检查室管理 <code>yayx.med.local/console/exam-room-config</code></span>','延安市妇幼':'<span class="crumb-chip">📁 延安市妇幼</span><span class="sep">›</span><span class="crumb-chip active">🖥️ 妇幼信息系统 <code>fyxx.med.local</code></span>','陕西省中医院':'<span class="crumb-chip">📁 陕西省中医院</span><span class="sep">›</span><span class="crumb-chip active">📂 挂号预约 <code>sxzy.hosp.local/reg/appointment</code></span>'}
+var PROJ_TYPES={'延安市医疗集团':'门户','延安市妇幼':'单系统','陕西省中医院':'子系统'}
+function switchProj(name,type){var menu=document.getElementById('proj-menu');if(menu)menu.style.display='none';
+  document.getElementById('topPath').innerHTML=PROJ_PATHS[name];
+  var a=document.getElementById('curProjName'),b=document.getElementById('curProjType'),c=document.getElementById('s9CurName'),d=document.getElementById('s9CurType');
+  if(a)a.textContent=name;if(b)b.textContent=type||PROJ_TYPES[name];if(c)c.textContent=name;if(d)d.textContent=type||PROJ_TYPES[name];
+  toast('已切换项目：'+name+'（全应用上下文已跟随）')}
+/* 系统列表：进入某系统 → topbar 路径跟随（当前项目内） */
+var curSys='检查室管理';
+/* 每系统视图数据（curSys 变化时由 refreshSysCtx 全量刷新工作台 + topbar） */
+var SYS_CTX_DATA={
+ '区域影像':{type:'门户',loginMode:'账号密码登录',login:'✓ 已登录',loginDetail:'Cookie 主会话 · 3 子系统共享',stage:'探索✓ 功能点✓ 用例✓ 执行⏳',stageDetail:'自身被测 + 子系统门户',cases:'320',casesDetail:'本系统 + 3 子系统合计',exec:'12 / 27',execDetail:'通过 12 · 跳过 0 · 待执行 15',activity:['• 10:42 用例生成 → +12','• 10:30 探索补录：报表模块入树 2 条','• 09:15 上次执行：12✓ 0✗ 3⊘']},
+ '检查室管理':{type:'子系统',loginMode:'人工接管登录',login:'✓ 已登录',loginDetail:'Cookie 经父门户会话 · 子系统 ✓',stage:'探索✓ 功能点✓ 用例✓ 执行⏳',stageDetail:'本系统独立阶段',cases:'85',casesDetail:'本系统已生成',exec:'12 / 27',execDetail:'通过 12 · 跳过 0 · 待执行 15',activity:['• 10:42 检查室/新增 → 用例已生成（+3）','• 10:30 探索补录：导入导出下方入树 2 条','• 09:15 上次执行：12 通过 / 0 失败 / 3 跳过']},
+ '检查项目管理':{type:'子系统',loginMode:'账号密码登录',login:'✓ 已登录',loginDetail:'Cookie 经父门户会话',stage:'探索✓ 功能点⏳ 用例— 执行—',stageDetail:'功能点审核中',cases:'42',casesDetail:'本系统已生成',exec:'0 / 0',execDetail:'用例未生成，无法执行',activity:['• 10:20 探索完成（覆盖率 87%）','• 09:55 功能点审核启动']},
+ '影像归档':{type:'子系统',loginMode:'免登录',login:'— 未启动',loginDetail:'免登录 · 直接访问 URL',stage:'探索⏳ 功能点— 用例— 执行—',stageDetail:'尚未启动探索',cases:'0',casesDetail:'本系统 0 用例',exec:'0 / 0',execDetail:'未启动',activity:['• 09:30 系统接入（免登录）','• 待探索']},
+ '妇幼信息系统':{type:'单系统',loginMode:'账号密码登录',login:'✓ 已登录',loginDetail:'独立凭证 · 不复用门户会话',stage:'探索✓ 功能点✓ 用例✓ 执行✓',stageDetail:'全阶段已完成',cases:'130',casesDetail:'本系统已生成',exec:'130 / 130',execDetail:'通过 128 · 跳过 2 · 失败 0',activity:['• 14:20 执行完成：130 通过','• 13:45 用例生成：+30','• 11:00 功能点审核：v2 定稿']}};
+function refreshSysCtx(){
+  var d=SYS_CTX_DATA[curSys]||SYS_CTX_DATA['检查室管理'];
+  var icon=d.type==='门户'?'🖥️ ':'📂 ';
+  document.getElementById('curSysName').textContent=icon+curSys;
+  document.getElementById('curSysName2').textContent=curSys;
+  var n3=document.getElementById('curSysName3');if(n3)n3.textContent=curSys;
+  var n4=document.getElementById('curSysName4');if(n4)n4.textContent=curSys;
+  var t=document.getElementById('curSysType');t.textContent=d.type;t.className=d.type==='门户'?'tag info':'tag gray';
+  document.getElementById('curSysParent').textContent=(d.type==='子系统')?'· 父：区域影像':'';
+  document.getElementById('curSysLogin').textContent=d.login;
+  document.getElementById('curSysLoginDetail').textContent=d.loginDetail;
+  document.getElementById('curSysStage').textContent=d.stage;
+  document.getElementById('curSysStageDetail').textContent=d.stageDetail;
+  document.getElementById('curSysCases').textContent=d.cases;
+  document.getElementById('curSysCasesDetail').textContent=d.casesDetail;
+  document.getElementById('curSysExec').textContent=d.exec;
+  document.getElementById('curSysExecDetail').textContent=d.execDetail;
+  var act=document.getElementById('curSysActivity');if(act){act.innerHTML='';d.activity.forEach(function(l){var dv=document.createElement('div');dv.textContent=l;act.appendChild(dv)})}
+  var pill=document.getElementById('topPill');if(pill)pill.innerHTML='<span class="d"></span>'+d.login.split(' · ')[0]+' · '+curSys;
+}
+function setCtx(sys,url,parent){curSys=sys;
+  var proj=document.getElementById('curProjName').textContent;
+  var html='<span class="crumb-chip">📁 '+proj+'</span><span class="sep">›</span>';
+  if(parent)html+='<span class="crumb-chip">🖥️ '+parent+' <code>yayx.med.local</code></span><span class="sep">›</span>';
+  html+='<span class="crumb-chip active">'+(parent?'📂 ':'🖥️ ')+sys+' <code>'+url+'</code></span>';
+  document.getElementById('topPath').innerHTML=html;
+  refreshSysCtx();toast('已进入：'+sys+'（页面上下文已跟随）')}
+function toggleSysMenu(){var m=document.getElementById('sys-menu');m.style.display=m.style.display==='block'?'none':'block'}
+/* 登录弹窗（非独立页面：仅工作台快速操作 / 探索前置门触发；登录方式带入项目管理中配置的 loginMode，弹窗内只读） */
+var LOGIN_FLOWS={'免登录':'免登录：直接访问 URL，无需登录，点击下方按钮确认即可进入探索','账号密码登录':'账号密码：启动浏览器 → 自动填充项目管理中配置的账号密码 → 若遇验证码/MFA 则人工接管补完 → 登录完成','人工接管登录':'人工接管：启动可见浏览器 → 您在浏览器中手动完成登录 → 平台捕获会话（cookies/headers/tokens）→ 自动继续'};
+function openLoginModal(){
+  var d=SYS_CTX_DATA[curSys]||{};
+  var mode=d.loginMode||'账号密码登录';   /* 来自项目管理中该系统配置的登录方式 */
+  document.getElementById('loginSysName').textContent=curSys;
+  document.getElementById('loginType').textContent=d.type||'';
+  document.getElementById('loginParent').textContent=d.type==='子系统'?'区域影像':'—';
+  document.getElementById('loginMode').textContent=mode;
+  document.getElementById('login-cred-fields').style.display=(mode==='免登录')?'none':'block';
+  document.getElementById('loginFlowHint').textContent=LOGIN_FLOWS[mode]||'';
+  openM('m-login')}
+function doLogin(){
+  var d=SYS_CTX_DATA[curSys]||{};
+  var mode=d.loginMode||'账号密码登录';   /* 按项目管理中配置的登录方式执行 */
+  closeM('m-login');
+  if(mode==='免登录'){toast('免登录系统 · 直接进入探索');go('s2');return}
+  /* 模拟登录成功 → 更新 SYS_CTX_DATA 登录状态 */
+  if(SYS_CTX_DATA[curSys]){SYS_CTX_DATA[curSys].login='✓ 已登录';SYS_CTX_DATA[curSys].loginDetail=mode==='人工接管登录'?'人工接管登录完成 · 会话已捕获':'账号密码自动填充 · 登录成功'}
+  refreshSysCtx();
+  toast('登录成功 · 会话已捕获，可进入探索')}
+function goExplore(){
+  var d=SYS_CTX_DATA[curSys]||{};
+  if(d.login&&d.login.indexOf('✓')>=0){go('s2')}
+  else{toast('当前系统未登录，请先登录');openLoginModal()}}
+function toggleProjMenu(){var m=document.getElementById('proj-menu');if(m)m.style.display=m.style.display==='block'?'none':'block'}
+/* 屏⑨：新建项目表单（类型切换） */
+function toggleNpForm(){var f=document.getElementById('np-form');f.style.display=f.style.display==='none'?'block':'none'}
+function npType(){var v=document.querySelector('input[name=np-type]:checked');var p=document.getElementById('np-portal'),s=document.getElementById('np-standalone'),u=document.getElementById('np-subsystem');
+  p.style.display='none';s.style.display='none';u.style.display='none';
+  if(!v)return;if(v.value==='portal')p.style.display='block';if(v.value==='standalone')s.style.display='block';if(v.value==='subsystem')u.style.display='block'}
+function createProj(){toggleNpForm();toast('项目已创建，正在启动可见浏览器登录…')}
+/* 屏⑨：编辑/删除（屏内展开） */
+function toggleEpForm(){var f=document.getElementById('ep-form');f.style.display=f.style.display==='none'?'block':'none'}
+function toggleDelForm(){var f=document.getElementById('del-form');f.style.display=f.style.display==='none'?'block':'none';var i=document.getElementById('del-name');if(i)i.value='';delCheck()}
+function delCheck(){var i=document.getElementById('del-name'),b=document.getElementById('del-btn');if(b)b.disabled=!i.value||i.value!==document.getElementById('s9CurName').textContent}
+function showTreeCtx(e,label){e.preventDefault();var el=document.getElementById('tree-ctx');el.style.display='block';el.style.left=e.clientX+'px';el.style.top=e.clientY+'px';document.getElementById('tree-ctx-target').textContent=label}
+function ctxManual(){document.getElementById('tree-ctx').style.display='none';openM('m-manual')}
+/* m-newsub：类型切换（门户/单系统=手动输入 URL；子系统=父门户+浏览器捕获） */
+function nsType(v){document.getElementById('ns-manual').style.display=(v==='子系统')?'none':'block';document.getElementById('ns-sub').style.display=(v==='子系统')?'block':'none'}
+/* 屏⑩ 知识库：🌐 通用 + 各系统各一个文本框；注入顺序：系统提示词（高优先）> 通用提示词（低优先） */
+var curKB='g';
+var KB_DATA={
+ g:{title:'🌐 通用提示词（全平台所有 AI 调用生效）',text:'你是资深软件测试工程师。\n生成功能点与测试用例时遵循：\n1. 用例编号规则：测试点标识_两位序号（如 QYYX_PZ_JCX_01）\n2. 每个功能点至少覆盖：正常路径 + 边界值 + 异常输入\n3. 预期结果必须可验证、可观测\n4. 使用中文，术语与需求文档保持一致'},
+ s1:{title:'🖥️ 区域影像 · 系统提示词（优先级 > 通用）',text:'区域影像系统补充规则：\n1. 影像数据涉及 DICOM 术语，命名需与系统一致\n2. 查询类功能需覆盖多条件组合查询\n3. 涉及患者隐私字段，用例中使用占位数据'},
+ s2:{title:'📂 检查室管理 · 系统提示词（优先级 > 通用）',text:'检查室管理补充规则：\n1. 检查室编号格式：字母+数字（如 A101）\n2. 新增/编辑需覆盖必填校验与编号唯一性\n3. 删除有关联设备的检查室应阻止并给出提示'},
+ s3:{title:'📂 检查项目管理 · 系统提示词（优先级 > 通用）',text:''},
+ s4:{title:'📂 影像归档 · 系统提示词（优先级 > 通用）',text:''},
+ s5:{title:'🖥️ 妇幼信息系统 · 系统提示词（优先级 > 通用）',text:''}};
+function selKB(k){curKB=k;var d=KB_DATA[k];document.getElementById('kbTitle').textContent=d.title;document.getElementById('kbText').value=d.text;['g','s1','s2','s3','s4','s5'].forEach(function(i){var el=document.getElementById('kb-nav-'+i);if(el)el.classList.toggle('active',i===k)})}
+/* 复制到 Excel：HTML（含 colspan 合并）+ TSV 双格式写剪贴板，粘贴到 Excel/WPS 保留格式 */
+function tableToTSV(t){var rows=[];t.querySelectorAll('tr').forEach(function(tr){var cells=[];tr.querySelectorAll('th,td').forEach(function(td){cells.push(td.innerText.replace(/\t|\n/g,' '))});rows.push(cells.join('\t'))});return rows.join('\n')}
+function copyTableToExcel(tableSel,msg){var t=document.querySelector(tableSel);if(!t){toast('未找到表格');return}
+  var html='<table border="1" cellspacing="0">'+t.innerHTML+'</table>';var text=tableToTSV(t);
+  function done(){toast(msg||'已复制表格（含格式），可粘贴到 Excel')}
+  function fallback(){var ta=document.createElement('textarea');ta.value=text;document.body.appendChild(ta);ta.select();try{document.execCommand('copy')}catch(e){}document.body.removeChild(ta);done()}
+  if(navigator.clipboard&&window.ClipboardItem){var item=new ClipboardItem({'text/html':new Blob([html],{type:'text/html'}),'text/plain':new Blob([text],{type:'text/plain'})});navigator.clipboard.write([item]).then(done,fallback)}else fallback()}
+function copyFeat(){copyTableToExcel('#s3 table','已复制功能点表（九列 + 合并单元格），可直接粘贴到 Excel')}
+function copyCases(){copyTableToExcel('#s4 table','已复制测试用例表（含 meta 头 + 合并单元格），可直接粘贴到 Excel')}
+/* 人工补充：自动打开浏览器 → 录制 → 默认插入下方 */
+function startManualSupplement(){toast('正在自动打开可见浏览器…');setTimeout(function(){openM('m-manual');toast('浏览器已打开，请手动点击未探索页面')},800)}
+document.addEventListener('click',function(e){var el=document.getElementById('tree-ctx');if(el&&el.style.display!=='none'&&!e.target.closest('#tree-ctx'))el.style.display='none'})
+document.addEventListener('click',function(e){var el=document.getElementById('proj-menu');if(el&&el.style.display!=='none'&&!e.target.closest('#proj-menu')&&!e.target.closest('button'))el.style.display='none'})
+document.querySelectorAll('.mask').forEach(function(m){m.addEventListener('click',function(e){if(e.target===m)m.classList.remove('on')})})
+/* 切换系统下拉：点击外部关闭 */
+document.addEventListener('click',function(e){var el=document.getElementById('sys-menu');if(el&&el.style.display==='block'&&!e.target.closest('#sys-menu')&&!e.target.closest('[onclick*=toggleSysMenu]'))el.style.display='none'})
+/* 初始化：刷新一次工作台以当前系统数据 */
+refreshSysCtx();
+</script>
+</body>
+</html>

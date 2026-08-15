@@ -1,0 +1,37 @@
+# ===== dependencies =====
+node_modules/
+.pnpm-store/
+.pnpm/
+
+# ===== build / output =====
+dist/
+build/
+out/
+*.tsbuildinfo
+.turbo/
+coverage/
+
+# ===== logs =====
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# ===== env / secrets =====
+.env
+.env.*
+*.local
+
+# ===== agent memory (sensitive: project decisions, prefs, logs) =====
+.workbuddy/
+
+# ===== OS / editor =====
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ===== temp / scratch =====
+*.tmp
+.cache/
