@@ -1,0 +1,11 @@
+Fix Feature.tsx (packages/app/src/screens/Feature.tsx):
+
+1. Fix cell editing: The span inside td must be clickable. Add onClick to the td or ensure the span has proper display:block. Also check that the edit state triggers properly.
+
+2. Fix delete button: The X button on each row should trigger ConfirmDialog. Check that handleRemoveRow works and state updates after deletion.
+
+3. Add AI suggestion panel: Replace toast-only AI button with a Modal that shows mock AI-generated feature suggestions.
+
+Run: pnpm --filter @test-platform/app typecheck
+
+Report what changed.

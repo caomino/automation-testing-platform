@@ -1,0 +1,22 @@
+Task: TEST Module B - Feature Review screen
+
+This is a FRONTEND TESTING task. Do NOT fix code. Only observe and report.
+
+App runs at: http://localhost:5177/
+
+Test screen: 功能点审核 (Feature Review)
+
+Test items:
+1. Can navigate to the screen?
+2. Does the table render with columns: #, 功能ID, 模块, 子系统, 功能点, 场景, 优先级, 操作?
+3. Can you click + to add a new row?
+4. Can you click × to delete a row?
+5. Can you click on a cell to edit it (inline editing)?
+6. Does the "AI 提效功能点" button show any result?
+7. Does the "保存功能点" button work?
+8. Does the "确认并进入下一步" button work?
+9. Any console errors?
+10. Any visual glitches?
+
+Report each test as PASS or FAIL with details.
+DO NOT modify any source code.

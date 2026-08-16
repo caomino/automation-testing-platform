@@ -1,0 +1,36 @@
+# Brief: 修复 Feature.tsx 单元格编辑和 AI 建议功能
+
+## 任务
+修复 d:\newTest 项目中 packages/app/src/screens/Feature.tsx 的 3 个 bug。
+
+## Bug 1: 单元格编辑不可用
+**现象**: 点击表格中的单元格无反应，无法进入编辑状态
+**根因**: `startEditCell` 函数的触发 `span` 可能因为 CSS `pointer-events` 或事件冒泡问题无法正确响应
+**修复方向**:
+- 检查 CSS 中是否有 `pointer-events: none` 或 `user-select: none` 导致 span 无法点击
+- 如果需要，在 span 外层增加一个可点击的 div 或直接在 td 上处理点击
+- 确保 `onClick` 事件正确绑定到可交互元素
+
+## Bug 2: AI 建议按钮无结果输出
+**现象**: 点击"AI 提效功能点"按钮仅 toast 提示，无实际结果
+**修复方向**:
+- 按钮点击后显示一个 Modal 或侧边面板，展示 AI 生成的功能点建议
+- 如果 AI 后端未连接，至少展示 mock 建议列表
+- 参考 packages/infra-ai/src/index.ts 的接口
+
+## Bug 3: 删除行 × 按钮无响应
+**现象**: 点击 × 按钮无法删除行
+**修复方向**:
+- 检查 `featureRemoveRow` 在 context.tsx 中的实现
+- 检查 `ConfirmDialog` 组件是否正确传递 onConfirm 回调
+- 确保删除操作正确更新 featureRows 状态
+
+## 约束
+- 不要修改 contracts 包中的类型定义
+- 保持现有的 props 接口不变
+- 修复后确保 TypeScript 类型检查通过
+- 文件不超过 300 行
+
+## 验收
+- `pnpm --filter @test-platform/app typecheck` 通过
+- `pnpm --filter @test-platform/app test` 通过

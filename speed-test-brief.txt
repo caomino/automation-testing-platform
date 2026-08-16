@@ -1,0 +1,30 @@
+<task>
+This is a PURE browser speed test. DO NOT modify ANY files in this repository. DO NOT look at the project code.
+
+Use ONLY the browser MCP tool to:
+1. Navigate to https://example.com
+2. Take a screenshot
+3. Save to D:\newTest\test-screenshots\speed-test-1.png
+
+This is just measuring browser tool response speed. Nothing else.
+</task>
+
+<verification_loop>
+Check that screenshot file exists at the specified path.
+</verification_loop>
+
+<action_safety>
+STRICT RULES:
+- DO NOT read or modify ANY project files
+- DO NOT run any project commands
+- DO NOT git add or commit
+- ONLY use browser MCP tools
+- This is a pure speed benchmark, not a coding task
+</action_safety>
+
+<structured_output_contract>
+Report ONLY:
+1. Whether browser navigation succeeded
+2. Screenshot file path
+3. Approximate time taken (start -> end)
+</structured_output_contract>

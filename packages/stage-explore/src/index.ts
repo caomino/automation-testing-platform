@@ -4,7 +4,8 @@
  * @frozen 依赖 contracts 契约（ExploreInput/Output、ModuleNode、ManualSupplement、McpExplorationCheckpoint）
  */
 
-import type { McpEngine } from '@test-platform/engine-mcp';
+import type { McpEngine, SessionCapableEngine } from '@test-platform/engine-mcp';
+import type { AIClient } from '@test-platform/infra-ai';
 import type {
   ClickPath,
   ExploreInput,
@@ -49,17 +50,9 @@ interface LocatedNode {
 }
 
 /**
- * 引擎「可注入会话」能力结构类型。
- * 注意：engine-mcp 已冻结接口含 applySession，但其 dist 声明偶发滞后、未包含该方法；
- * 此处按冻结契约以结构类型断言（不使用 any）调用，运行时真实引擎与测试假引擎均实现它。
+ * 会话能力：使用 engine-mcp 导出的 SessionCapableEngine 接口
+ * （engine-mcp 已冻结接口含 applySession 及会话管理方法）
  */
-type SessionCapableEngine = McpEngine & {
-  applySession(state: {
-    cookies: string[];
-    headers?: Record<string, string>;
-    tokens?: string[];
-  }): Promise<void>;
-};
 
 /** 在树中定位节点，返回其本体、兄弟数组、下标与父节点 */
 function locate(tree: ModuleNode[], id: string): LocatedNode | null {
@@ -84,7 +77,7 @@ function locate(tree: ModuleNode[], id: string): LocatedNode | null {
  * 人工补充去重守卫：原型要求「人工补录已去重」，合并前剔除完全重复的 clickPath
  * 重复判定 = inferredModule + 点击步骤序列（selector+url 指纹）一致。
  */
-function dedupeClickPath(paths: ClickPath[]): ClickPath[] {
+export function dedupeClickPath(paths: ClickPath[]): ClickPath[] {
   const seen = new Set<string>();
   const out: ClickPath[] = [];
   for (const cp of paths) {
@@ -236,36 +229,212 @@ function mergeCheckpoint(
   return tree;
 }
 
+/** run 的可选运行选项 */
+export interface ExploreRunOptions {
+  /**
+   * 引擎已带活跃登录会话（复用登录浏览器场景）：
+   * 跳过 ensureSession/applySession，避免旧会话快照覆盖浏览器内最新会话导致登出。
+   */
+  engineHasActiveSession?: boolean;
+  /**
+   * 可选 AI 客户端：仅当调用方显式注入时启用（受应用层 AI 开关门控）。
+   * 探索阶段仅在结构化抽取为空时走 AI 兜底；不注入则纯结构化。
+   */
+  ai?: AIClient;
+}
+
+/**
+ * 为自建（非活跃）引擎准备会话并导航。
+ *
+ * 设计要点（防「探索退出登录」）：
+ *  - 本函数仅在「未传入 engineHasActiveSession」时调用，即引擎内**没有**有效登录态，
+ *    需要把 login 阶段输出的会话快照注入以恢复登录。
+ *  - 若引擎已带活跃会话，调用方应传入 engineHasActiveSession=true，run 会改走
+ *    prepareActiveSessionEngine（只导航、绝不注入），从而保护浏览器内最新有效会话。
+ *  - 有 systemUrl：优先 ensureSession 探测；命中则按结果处理（不重复注入）；
+ *    旧引擎回退到 applySession + navigate。
+ *  - 无 systemUrl：引擎假定已在目标页面，仅在有会话时注入（不导航，避免覆盖当前页）。
+ *
+ * @returns 诊断信息列表（非致命警告）
+ */
+async function prepareFreshEngineSession(
+  activeEngine: McpEngine,
+  validated: ExploreInput,
+): Promise<string[]> {
+  const notes: string[] = [];
+  const sessionEngine = activeEngine as SessionCapableEngine;
+  const handle = validated.sessionHandle;
+  const hasSession =
+    (handle.cookies?.length ?? 0) > 0 || (handle.tokens?.length ?? 0) > 0;
+
+  const applySessionIfAny = async (): Promise<void> => {
+    if (!hasSession) {
+      console.warn('[stage-explore] 无有效会话，将以匿名身份继续');
+      notes.push('无有效会话，将以匿名身份继续');
+      return;
+    }
+    console.log(`[stage-explore] 正在应用登录会话（${handle.cookies?.length ?? 0} cookies）...`);
+    try {
+      await sessionEngine.applySession({
+        cookies: handle.cookies || [],
+        headers: handle.headers || {},
+        tokens: handle.tokens || [],
+      });
+      console.log('[stage-explore] 会话应用成功');
+    } catch (e) {
+      console.warn('[stage-explore] 会话应用失败（非致命）:', e);
+      notes.push(`会话应用失败: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  if (validated.systemUrl) {
+    const sessionResult = await sessionEngine.ensureSession?.(validated.systemUrl, {
+      cookies: handle.cookies || [],
+      headers: handle.headers || {},
+      tokens: handle.tokens || [],
+    });
+
+    if (sessionResult) {
+      console.log(`[stage-explore] 会话状态: loggedIn=${sessionResult.loggedIn}, method=${sessionResult.method}`);
+      if (!sessionResult.loggedIn) {
+        console.warn('[stage-explore] 会话未登录，需要用户手动登录');
+        notes.push('会话未登录，需要用户在浏览器中手动登录');
+      }
+      return notes;
+    }
+
+    // 旧版引擎不支持 ensureSession：先注入会话，再导航到目标系统
+    await applySessionIfAny();
+    try {
+      await activeEngine.navigate(validated.systemUrl);
+      console.log('[stage-explore] 导航成功');
+    } catch (e) {
+      notes.push(`导航到 ${validated.systemUrl} 失败: ${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(`无法访问系统 URL: ${validated.systemUrl}`);
+    }
+  } else {
+    // 无 systemUrl：假定引擎已在目标页面，仅在有会话时注入（不导航，避免覆盖当前页）
+    console.warn('[stage-explore] 未提供 systemUrl，假定引擎已在目标页面');
+    notes.push('未提供系统 URL，复用当前页面');
+    await applySessionIfAny();
+  }
+  return notes;
+}
+
+/**
+ * 为已带活跃会话的引擎（登录浏览器复用）准备页面：
+ * 仅做一次正常导航，绝不注入会话（防止旧 cookie 快照覆盖浏览器内最新有效会话导致登出）。
+ */
+async function prepareActiveSessionEngine(
+  activeEngine: McpEngine,
+  systemUrl: string,
+): Promise<string[]> {
+  try {
+    let cur = '';
+    try { cur = await activeEngine.getCurrentUrl(); } catch { cur = ''; }
+    let skipNav = false;
+    try { skipNav = !!cur && !!systemUrl && new URL(cur).origin === new URL(systemUrl).origin; } catch { skipNav = false; }
+    if (skipNav) { console.log('[stage-explore] reuse login browser: same origin (' + cur + '), skip navigation'); return []; }
+    await activeEngine.navigate(systemUrl);
+    console.log('[stage-explore] 复用登录浏览器：导航成功（不注入会话，保护现有登录态）');
+    return [];
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('[stage-explore] 复用登录浏览器导航失败:', e);
+    throw new Error(`无法访问系统 URL: ${systemUrl}（${msg}）`);
+  }
+}
+
 /**
  * 探索阶段主入口。
  * @param input 输入契约（见 ExploreInput）
  * @param engine 可选注入的 MCP 引擎；未注入时惰性创建 headless 引擎（生产环境）
+ * @param opts 运行选项（engineHasActiveSession=true 时跳过会话注入，见 ExploreRunOptions）
  *
- * 关键衔接：①登录→②探索 的会话衔接通过 engine.applySession 注入 login 阶段输出的
- * sessionHandle（cookies/headers/tokens）实现；resumeFrom 命中已保存断点时基于其
- * 已探索节点集合续跑。
+ * 关键衔接：①登录→②探索 优先复用登录阶段浏览器（opts.engineHasActiveSession），
+ * 自建引擎时通过 ensureSession/applySession 注入 login 阶段输出的 sessionHandle；
+ * resumeFrom 命中已保存断点时基于其已探索节点集合续跑。
  */
 export async function run(
   input: ExploreInput,
   engine?: McpEngine,
+  opts?: ExploreRunOptions,
 ): Promise<ExploreOutput> {
   const validated = validateExploreInput(input);
+  console.log(`[stage-explore] 开始探索: subsystemId=${validated.subsystemId}, url=${validated.systemUrl}${opts?.engineHasActiveSession ? '（复用登录浏览器）' : ''}`);
 
   let activeEngine: McpEngine | undefined = engine;
+  let engineSucceeded = false;
+  const errorDetails: string[] = [];
+
   if (!activeEngine) {
-    const mod = await import('@test-platform/engine-mcp');
-    activeEngine = mod.createEngine({ headless: true });
+    try {
+      const mod = await import('@test-platform/engine-mcp');
+      activeEngine = mod.createEngine({
+        headless: true,
+        subsystemId: validated.subsystemId,
+        systemId: validated.subsystemId,
+        ai: opts?.ai,
+      });
+      await activeEngine.launch();
+      console.log('[stage-explore] 引擎创建并启动成功');
+    } catch (e) {
+      console.error('[stage-explore] 引擎创建失败:', e);
+      errorDetails.push(`引擎创建失败: ${e instanceof Error ? e.message : String(e)}`);
+      activeEngine = undefined;
+    }
   }
 
-  // ①→② 会话衔接：将登录阶段产出的 sessionHandle 真正注入引擎上下文
-  const sessionEngine = activeEngine as unknown as SessionCapableEngine;
-  await sessionEngine.applySession({
-    cookies: validated.sessionHandle.cookies,
-    headers: validated.sessionHandle.headers,
-    tokens: validated.sessionHandle.tokens,
-  });
+  let moduleTree: ModuleNode[] = [];
 
-  let moduleTree = await activeEngine.exploreModules();
+  if (activeEngine) {
+    try {
+      console.log('[stage-explore] 正在启动引擎...');
+      console.log(`[stage-explore] 会话诊断: cookies=${validated.sessionHandle.cookies?.length ?? 0}, systemUrl=${validated.systemUrl}`);
+
+      if (opts?.engineHasActiveSession) {
+        // 复用登录浏览器：仅导航，不注入会话（防覆盖有效会话导致登出）
+        if (validated.systemUrl) {
+          errorDetails.push(...(await prepareActiveSessionEngine(activeEngine, validated.systemUrl)));
+        }
+      } else {
+        errorDetails.push(...(await prepareFreshEngineSession(activeEngine, validated)));
+      }
+
+      // 执行 DOM 遍历提取模块
+      console.log('[stage-explore] 正在遍历 DOM 提取模块...');
+      moduleTree = await activeEngine.exploreModules();
+      console.log(`[stage-explore] DOM 遍历完成，发现 ${moduleTree.length} 个节点`);
+      
+      if (moduleTree.length === 0) {
+        console.warn('[stage-explore] 遍历完成但未发现任何模块节点');
+        errorDetails.push('DOM 遍历未发现可识别的导航菜单或模块');
+      }
+      
+      engineSucceeded = moduleTree.length > 0;
+    } catch (e) {
+      console.error('[stage-explore] 引擎执行失败:', e);
+      errorDetails.push(`引擎执行失败: ${e instanceof Error ? e.message : String(e)}`);
+      engineSucceeded = false;
+    }
+  } else {
+    errorDetails.push('MCP 引擎不可用');
+  }
+
+  // Fallback：引擎返回空或失败时，直接报错并提供诊断信息
+  if (!engineSucceeded || moduleTree.length === 0) {
+    const diagInfo = errorDetails.length > 0 
+      ? `诊断信息: ${errorDetails.join('; ')}` 
+      : '未获取到任何模块数据，可能页面结构不支持自动识别';
+    
+    throw new Error(
+      `EXPLORE_FAILED: 无法获取真实模块数据。` +
+      `子系统 ${validated.subsystemId} 探索失败。${diagInfo}` +
+      `。请检查：1) 系统 URL 是否正确且可访问 2) 是否已正确登录 3) 目标页面是否包含导航菜单`
+    );
+  }
+
+  console.log(`[stage-explore] 探索成功，共 ${moduleTree.length} 个模块`);
 
   // 断点续跑：若提供 resumeFrom 且命中已保存断点，合并已探索节点继续推进
   if (validated.resumeFrom) {

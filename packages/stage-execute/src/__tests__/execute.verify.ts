@@ -274,7 +274,7 @@ describe('执行 stage 边界/红线补充', () => {
       browserOSMatrix: [ENV_CHROME, ENV_EDGE, { browser: 'firefox', os: 'linux' }],
     };
     await run(input, {
-      engineFactory: (env) => {
+      engineFactory: (_env) => {
         const e = createMockEngine();
         instances.push(e);
         return e;
@@ -284,5 +284,41 @@ describe('执行 stage 边界/红线补充', () => {
     expect(instances).toHaveLength(3);
     expect(instances[0]).not.toBe(instances[1]);
     expect(instances[1]).not.toBe(instances[2]);
+  });
+
+  it('DEFECT_REF_PREFIX 跨包共享：defectRef = <PREFIX>-<caseNo>@<browser>-<os> 稳定格式', async () => {
+    // 用例失败时生成缺陷引用，前缀与 stage-defect 消费侧保持一致
+    const engine = createMockEngine({
+      stepFor: () => [
+        { step: 's1', operation: 'o', expected: 'e', actual: 'a', result: 'failed' },
+      ],
+    });
+    const input = {
+      caseWorkbook: [buildSheet('模块A', [buildRow('C_01', 'r1')])],
+      scope: 'all' as const,
+      browserOSMatrix: [ENV_CHROME, ENV_EDGE],
+    };
+    const out = await run(input, { engine });
+    // 两条各带独立 env 后缀
+    const refs = out.executionReport.map((r) => r.defectRef);
+    expect(refs).toEqual([
+      'DEF-C_01@chrome-win11',
+      'DEF-C_01@edge-win10',
+    ]);
+    expect(new Set(refs).size).toBe(2); // 跨 env 不串
+    // 前缀常量值 = 'DEF'（冻结，stage-defect 消费侧依赖）
+    const { DEFECT_REF_PREFIX } = await import('../constants');
+    expect(DEFECT_REF_PREFIX).toBe('DEF');
+  });
+
+  it('空矩阵（无 env）→ executionReport 空，且不崩溃', async () => {
+    const input = {
+      caseWorkbook: [buildSheet('模块A', [buildRow('C_01', 'r1')])],
+      scope: 'all' as const,
+      browserOSMatrix: [] as BrowserOS[],
+    };
+    const out = await run(input, { engine: createMockEngine() });
+    expect(out.executionReport).toHaveLength(0);
+    expect(out.isolationVerified).toBe(true);
   });
 });

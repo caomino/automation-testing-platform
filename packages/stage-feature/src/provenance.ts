@@ -1,6 +1,8 @@
 /**
  * @file provenance.ts
  * @description 功能点溯源派生（exploration / ai_generated / manual）
+ * @contract FeatureProvenance 溯源类型定义
+ * @frozen v1.0
  */
 import type { ModuleNode, FeatureProvenance } from '@test-platform/contracts';
 import { createHash } from 'node:crypto';

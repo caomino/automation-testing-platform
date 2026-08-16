@@ -12,10 +12,14 @@ AI 模型配置抽象：独立配置页，模型不写死；为功能点/用例�
 ## 3. 当前进度
 - **4 个 .ts**（实测，非原写 1），骨架+部分实现。
 
-## 4. 任务清单（来自 plan.md）
-- [ ] AI 模型配置接口（provider/model/baseURL/key 不写死）
-- [ ] 知识库指令注入机制（系统提示高优先 + 通用低优先）
-- [ ] 被 feature/case/execute 调用验证
+## 4. Implementation Planning（细粒度任务分解 · Phase 3）
+> 每任务 = 精确文件 + 要点 + 验证（TDD：先写 verify 跑红 → 写实现跑绿）。按 ID 顺序执行。
+
+| ID | 任务 | 文件 | 验证（先写跑红） |
+|----|------|------|------------------|
+| T1 | AI 模型配置接口（provider/model/baseURL/key 不写死），签名与 contracts 对齐 | `src/index.ts` | `verify/ai.verify.ts` 断言「配置可注入、无硬编码厂商」 |
+| T2 | 知识库指令注入机制（系统提示高优先 + 通用低优先，见 design.md §8） | `src/index.ts` | 断言「系统提示优先于通用提示」 |
+| T3 | 补 README + 补测试到 coverage≥80% | `README.md`、`verify/ai.verify.ts` | `pnpm --filter @test-platform/infra-ai verify` 全绿 |
 
 ## 5. 边界 & 依赖
 - 依赖：`@test-platform/contracts`

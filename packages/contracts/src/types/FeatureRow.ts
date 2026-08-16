@@ -40,6 +40,12 @@ export const DEFAULT_FEATURE_COLUMNS: FeatureColumnIndexes = {
   testPointId: 8,
 };
 
+/**
+ * 九列列宽（对齐主规格 §5.3）
+ * 顺序: 序号|测试类型|需求章节|系统名称|主模块|子模块|功能点|测试点|测试点标识
+ */
+export const FEATURE_COLUMN_WIDTHS: number[] = [8, 14, 14, 18, 18, 14, 24, 24, 20];
+
 /** 功能点行 = 9 元素字符串数组 */
 export type FeatureRow = string[];
 

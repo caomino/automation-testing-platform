@@ -18,11 +18,15 @@
 - **19 个 .ts**（实测，非原写 11），后端最完整模块。
 - 待确认：是否覆盖数据隔离快照比对 / 异常场景（错误输入、不存在数据、越权）。
 
-## 4. 你的任务清单（来自 plan.md）
-- [ ] 实现 `ExecuteInput/Output` 处理与 `run()`
-- [ ] 数据隔离红线落地（快照比对 + 回滚只删本任务）
-- [ ] 正反向覆盖（正常通过 + 必填缺失/不存在数据/错误输入正确报错）
-- [ ] 自验 `build/lint/typecheck` + Reviewer 两关（spec 合规 + 代码质量）
+## 4. Implementation Planning（细粒度任务分解 · Phase 3）
+> 每任务 = 精确文件 + 要点 + 验证（TDD：先写 verify 跑红 → 写实现跑绿）。按 ID 顺序执行。
+
+| ID | 任务 | 文件 | 验证（先写跑红） |
+|----|------|------|------------------|
+| T1 | [Major] 缺陷引用：上移 `DEFECT_REF_PREFIX` 为共享常量或委托，消除手拼 defectRef 与跨包重复 | `src/constants.ts`、`src/executeCase.ts:75` | `src/__tests__/execute.verify.ts` 断言「defectRef 生成语义正确、无跨包 import」 |
+| T2 | [Minor] 引擎按 env 隔离（不同环境不串） | `src/run.ts:36` | 断言「不同 env 会话隔离」 |
+| T3 | 补测试：多次 run 不串味 + 引擎失败边界 | `src/__tests__/isolation.test.ts`、`executeCase.test.ts` | `pnpm --filter @test-platform/stage-execute verify` 全绿 |
+| T4 | 数据隔离红线复核（快照比对 + 回滚只删本任务） | `src/isolation.ts`、`src/executeCase.ts` | 断言「快照前后无历史变更」「回滚只删 owner=本任务」 |
 
 ## 5. 边界 & 依赖
 - 依赖：`@test-platform/contracts`

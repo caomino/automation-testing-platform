@@ -1,10 +1,10 @@
 /**
  * @file store.verify.ts
- * @description infra-store 冻结接口校验（创建/落库/读取/删除 + 激活校验）
+ * @description infra-store 冻结接口校验 — 核心 CRUD + update + list + 默认值
  * @frozen v1.0
  */
 import { describe, it, expect } from 'vitest';
-import type { FeatureRow, CaseSheet, MetaHeader } from '@test-platform/contracts';
+import type { FeatureRow, CaseSheet, MetaHeader, System } from '@test-platform/contracts';
 import { createStore } from '../src';
 
 const mockMeta: MetaHeader = {
@@ -19,6 +19,20 @@ const mockMeta: MetaHeader = {
   conclusionRule: '',
   precondition: '',
 };
+
+function makeSystem(id: string, name: string): System {
+  return {
+    id,
+    name,
+    url: 'https://example.com',
+    type: 'standalone',
+    credentialMode: 'no-login',
+    loginState: 'logged_out',
+    progress: { explored: false, featured: false, cased: false, executed: false },
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+}
 
 describe('infra-store 冻结接口', () => {
   it('创建/读取/删除项目 + 落库三类数据', async () => {
@@ -47,5 +61,147 @@ describe('infra-store 冻结接口', () => {
     const store = createStore();
     const p = await store.createProject({ name: 'p' });
     await expect(store.setActiveSystem(p.id, 'nope')).rejects.toThrow();
+  });
+});
+
+describe('infra-store — updateProject', () => {
+  it('正确更新字段并刷新 updatedAt', async () => {
+    const store = createStore();
+    const p = await store.createProject({ name: '原名', description: '原描述' });
+    const originalUpdatedAt = p.updatedAt;
+
+    const updated = await store.updateProject(p.id, { name: '新名', description: '新描述' });
+    expect(updated.name).toBe('新名');
+    expect(updated.description).toBe('新描述');
+    expect(updated.id).toBe(p.id);
+    expect(updated.updatedAt).toBeGreaterThan(originalUpdatedAt);
+
+    const fetched = await store.getProject(p.id);
+    expect(fetched?.name).toBe('新名');
+    expect(fetched?.description).toBe('新描述');
+  });
+
+  it('更新不存在的项目抛错', async () => {
+    const store = createStore();
+    await expect(store.updateProject('nonexistent', { name: 'x' })).rejects.toThrow();
+  });
+
+  it('部分更新不影响未指定字段', async () => {
+    const store = createStore();
+    const p = await store.createProject({ name: '保持名', logRetentionDays: 60, aiAssistEnabled: true });
+    const updated = await store.updateProject(p.id, { description: '新增描述' });
+    expect(updated.name).toBe('保持名');
+    expect(updated.logRetentionDays).toBe(60);
+    expect(updated.aiAssistEnabled).toBe(true);
+    expect(updated.description).toBe('新增描述');
+  });
+});
+
+describe('infra-store — listProjects', () => {
+  it('返回正确的 systemCount', async () => {
+    const store = createStore();
+    const p1 = await store.createProject({ name: '无系统项目' });
+    expect((await store.listProjects())[0].systemCount).toBe(0);
+
+    const sys1 = makeSystem('sys_1', '系统1');
+    await store.updateProject(p1.id, { systems: [sys1] });
+    expect((await store.listProjects())[0].systemCount).toBe(1);
+
+    const sys2 = makeSystem('sys_2', '系统2');
+    await store.updateProject(p1.id, { systems: [sys1, sys2] });
+    expect((await store.listProjects())[0].systemCount).toBe(2);
+  });
+
+  it('空项目列表返回空数组', async () => {
+    const store = createStore();
+    expect(await store.listProjects()).toEqual([]);
+  });
+
+  it('列表按创建顺序返回', async () => {
+    const store = createStore();
+    const p1 = await store.createProject({ name: '第一' });
+    const p2 = await store.createProject({ name: '第二' });
+    const p3 = await store.createProject({ name: '第三' });
+    const list = await store.listProjects();
+    expect(list).toHaveLength(3);
+    expect(list[0].id).toBe(p1.id);
+    expect(list[1].id).toBe(p2.id);
+    expect(list[2].id).toBe(p3.id);
+  });
+});
+
+describe('infra-store — storageState 无失真会话复用', () => {
+  it('保存并读取 storageState（cookies+localStorage origins）', async () => {
+    const store = createStore();
+    const state = {
+      cookies: [{ name: 'sid', value: 'abc', domain: 'example.com', path: '/' }],
+      origins: [
+        {
+          origin: 'https://example.com',
+          localStorage: [{ name: 'token', value: 'xyz' }],
+        },
+      ],
+    };
+    await store.saveStorageState('sys1', state);
+    const got = await store.getStorageState('sys1');
+    expect(got).not.toBeNull();
+    expect(got?.cookies).toEqual(state.cookies);
+    expect(got?.origins).toEqual(state.origins);
+  });
+
+  it('未保存时返回 null', async () => {
+    const store = createStore();
+    expect(await store.getStorageState('missing')).toBeNull();
+  });
+
+  it('重复保存幂等覆盖', async () => {
+    const store = createStore();
+    await store.saveStorageState('sys1', { cookies: [{ name: 'a', value: '1', domain: 'x', path: '/' }], origins: [] });
+    await store.saveStorageState('sys1', { cookies: [], origins: [] });
+    expect((await store.getStorageState('sys1'))?.cookies).toEqual([]);
+  });
+});
+
+describe('infra-store — metaConfig', () => {
+  it('保存并读取系统元配置', async () => {
+    const store = createStore();
+    const meta = { precondition: 'System ready', conclusionRule: 'all-pass' };
+    await store.saveMetaConfig('sys1', meta);
+    expect(await store.getMetaConfig('sys1')).toEqual(meta);
+  });
+
+  it('未保存时返回 null', async () => {
+    const store = createStore();
+    expect(await store.getMetaConfig('missing')).toBeNull();
+  });
+});
+
+describe('infra-store — createProject 默认值', () => {
+  it('填充默认值', async () => {
+    const store = createStore();
+    const p = await store.createProject({ name: '默认值项目' });
+    expect(p.type).toBe('standalone');
+    expect(p.logRetentionDays).toBe(30);
+    expect(p.aiAssistEnabled).toBe(false);
+    expect(p.description).toBe('');
+    expect(p.systems).toEqual([]);
+    expect(p.id).toBeTruthy();
+    expect(p.createdAt).toBeTruthy();
+    expect(p.updatedAt).toBeTruthy();
+  });
+
+  it('自定义参数覆盖默认值', async () => {
+    const store = createStore();
+    const p = await store.createProject({
+      name: '自定义项目',
+      description: '自定义描述',
+      type: 'portal',
+      logRetentionDays: 90,
+      aiAssistEnabled: true,
+    });
+    expect(p.type).toBe('portal');
+    expect(p.description).toBe('自定义描述');
+    expect(p.logRetentionDays).toBe(90);
+    expect(p.aiAssistEnabled).toBe(true);
   });
 });

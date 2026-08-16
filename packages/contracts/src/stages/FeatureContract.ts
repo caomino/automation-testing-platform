@@ -25,6 +25,8 @@ export interface FeatureOutput {
   featureIds: string[];
   /** 溯源元数据 */
   provenance: FeatureProvenance[];
+  /** 测试点标识 → 来源页面 URL（生成功能点时由模块树节点 url 带出，供用例阶段按所选模块探索） */
+  featurePaths?: Record<string, string>;
 }
 
 /** run 函数签名（冻结） */

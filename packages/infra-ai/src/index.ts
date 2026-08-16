@@ -1,9 +1,21 @@
 /**
  * @file index.ts
  * @description AI 配置层冻结接口（多厂商、模型在配置页统一配，不写死）
- * @frozen v1.0
+ * @frozen v1.1
  */
-export type AIVendor = 'openai' | 'azure' | 'anthropic' | 'local' | 'custom';
+import type { AIVendor as _AIVendor, VendorPreset } from './vendors.js';
+export type { VendorPreset };
+export type AIVendor = _AIVendor;
+export { VENDOR_PRESETS, getVendorPreset, listVendors, getModelsForVendor, getBaseUrlForVendor } from './vendors.js';
+
+export type AIVendorLegacy = 'openai' | 'azure' | 'anthropic' | 'google' | 'deepseek' | 'qwen' | 'zhipu' | 'local' | 'custom';
+
+export interface TestConnectionResult {
+  success: boolean;
+  status: number;
+  message: string;
+  latencyMs: number;
+}
 
 export interface AIProviderConfig {
   id: string;
@@ -112,6 +124,137 @@ export function createAIClient(config: AIProviderConfig): AIClient {
   };
 }
 
+const providerStore = new Map<string, AIProviderConfig>();
+let defaultProviderId: string | null = null;
+
+export function addProvider(config: AIProviderConfig): void {
+  providerStore.set(config.id, config);
+  if (defaultProviderId === null && config.enabled) {
+    defaultProviderId = config.id;
+  }
+}
+
+export function getProvider(id: string): AIProviderConfig | undefined {
+  return providerStore.get(id);
+}
+
+export function setDefault(id: string): void {
+  if (!providerStore.has(id)) {
+    throw new Error(`Provider "${id}" not found`);
+  }
+  defaultProviderId = id;
+}
+
+export function getDefault(): AIProviderConfig | undefined {
+  if (defaultProviderId === null) return undefined;
+  return providerStore.get(defaultProviderId);
+}
+
 export function listProviders(): AIProviderConfig[] {
-  return [];
+  return Array.from(providerStore.values());
+}
+
+export function resetProviderStore(): void {
+  providerStore.clear();
+  defaultProviderId = null;
+}
+
+export async function testConnection(config: AIProviderConfig): Promise<TestConnectionResult> {
+  const url = `${config.baseUrl.replace(/\/$/, '')}/chat/completions`;
+  const start = performance.now();
+
+  try {
+    const body: ChatCompletionRequest = {
+      model: config.model,
+      temperature: 0.7,
+      max_tokens: 10,
+      messages: [{ role: 'user', content: 'ping' }],
+    };
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.apiKeyRef}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    const latencyMs = Math.round(performance.now() - start);
+
+    if (response.ok) {
+      return {
+        success: true,
+        status: response.status,
+        message: '连接成功',
+        latencyMs,
+      };
+    }
+
+    let errorText = '';
+    try {
+      const parsed = (await response.json()) as { error?: { message?: string } };
+      errorText = parsed.error?.message ?? response.statusText;
+    } catch {
+      errorText = response.statusText;
+    }
+
+    return {
+      success: false,
+      status: response.status,
+      message: `连接失败: ${errorText}`,
+      latencyMs,
+    };
+  } catch (err: unknown) {
+    const latencyMs = Math.round(performance.now() - start);
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      success: false,
+      status: 0,
+      message: `网络错误: ${message}`,
+      latencyMs,
+    };
+  }
+}
+
+export async function fetchRemoteModels(
+  baseUrl: string,
+  apiKey: string,
+): Promise<{ success: boolean; models: string[]; message: string }> {
+  const url = `${baseUrl.replace(/\/$/, '')}/models`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
+    });
+
+    if (!response.ok) {
+      return {
+        success: false,
+        models: [],
+        message: `获取模型列表失败 (${response.status})`,
+      };
+    }
+
+    const parsed = (await response.json()) as { data?: Array<{ id?: string }> };
+    const models = (parsed.data ?? [])
+      .map((m) => m.id ?? '')
+      .filter((id) => id.length > 0);
+
+    return {
+      success: true,
+      models,
+      message: `获取到 ${models.length} 个模型`,
+    };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      success: false,
+      models: [],
+      message: `获取模型列表失败: ${message}`,
+    };
+  }
 }

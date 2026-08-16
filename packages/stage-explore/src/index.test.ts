@@ -34,7 +34,15 @@ function makeFakeEngine(tree: ModuleNode[]): SpyEngine {
     runStep: notImpl,
     runCase: notImpl,
     screenshot: notImpl,
+    getSessionCookies: notImpl,
+    getSessionHeaders: notImpl,
+    getSessionTokens: notImpl,
+    getStorageState: async () => ({ cookies: [], origins: [] }),
+    getCurrentUrl: notImpl,
     applySession: vi.fn(async () => undefined),
+    extractPageElements: async () => [],
+    waitForTimeout: notImpl,
+    evaluate: async <T = any>(_fn: string | ((...args: any[]) => T), ..._args: any[]): Promise<T> => undefined as T,
     close: notImpl,
   };
 }

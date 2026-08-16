@@ -12,10 +12,14 @@
 ## 3. 当前进度
 - **4 个 .ts**（实测，非原写 1），骨架+部分实现。
 
-## 4. 任务清单（来自 plan.md）
-- [ ] 日志接口（info/warn/error + 上下文）
-- [ ] 外部化落盘（test-platform-data/logs）
-- [ ] 被各 stage/app 调用验证
+## 4. Implementation Planning（细粒度任务分解 · Phase 3）
+> 每任务 = 精确文件 + 要点 + 验证（TDD：先写 verify 跑红 → 写实现跑绿）。按 ID 顺序执行。
+
+| ID | 任务 | 文件 | 验证（先写跑红） |
+|----|------|------|------------------|
+| T1 | 结构化日志接口（info/warn/error + context），签名与 contracts 对齐，不擅自变更 | `src/index.ts` | `verify/logger.verify.ts` 断言「三级别 + context 透传」 |
+| T2 | 外部化落盘：`D:\test-platform-data\logs\` 按 任务/项目 分目录，不落工作空间 | `src/index.ts` | 断言「路径落在 test-platform-data 而非项目根」 |
+| T3 | 补 README（职责/接口/示例/依赖）+ 补测试到 coverage≥80% | `README.md`、`verify/logger.verify.ts` | `pnpm --filter @test-platform/infra-logger verify` 全绿 |
 
 ## 5. 边界 & 依赖
 - 依赖：`@test-platform/contracts`

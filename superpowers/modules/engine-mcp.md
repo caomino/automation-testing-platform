@@ -13,11 +13,15 @@ Playwright 单例可见浏览器 + MCP 适配器 + **DOM 语义抽象层**（按
 ## 3. 当前进度
 - **9 个 .ts**（实测，非原写 3），`McpEngine` 接口已含会话复用 4 方法，playwright 实现已接。
 
-## 4. 任务清单（来自 plan.md）
-- [ ] DOM 语义抽象完善（iframe 同源可读/跨域标 FRAME_ACCESS_DENIED、open Shadow DOM 可读、closed 标 Out-of-Scope）
-- [ ] 路由变化检测 + 动态加载等待 + 分页/虚拟滚动适配
-- [ ] 70 项兼容矩阵逐项映射（对齐 95% 覆盖，S5≥85 分）
-- [ ] 正反向覆盖 + Reviewer 两关
+## 4. Implementation Planning（细粒度任务分解 · Phase 3）
+> 每任务 = 精确文件 + 要点 + 验证（TDD：先写 verify 跑红 → 写实现跑绿）。按 ID 顺序执行。
+
+| ID | 任务 | 文件 | 验证（先写跑红） |
+|----|------|------|------------------|
+| T1 | DOM 语义抽象：iframe 同源可读/跨域标 FRAME_ACCESS_DENIED、open Shadow DOM 可读、closed 标 Out-of-Scope | `src/playwright-engine.ts` | `verify/engine.verify.ts` 断言「跨域 iframe 标 FRAME_ACCESS_DENIED」「closed Shadow 标 Out-of-Scope」 |
+| T2 | 路由变化检测 + 动态加载等待 + 分页/虚拟滚动适配 | `src/playwright-engine.ts` | 断言「路由变化后重取 DOM」「动态加载等待完成」 |
+| T3 | 会话复用四方法（getSessionCookies/getSessionHeaders/getSessionTokens/applySession）正确实现并有断言 | `src/playwright-engine.ts`、`src/types.ts` | 断言「applySession 注入 cookies/headers/tokens 生效」 |
+| T4 | 70 项兼容矩阵逐项映射（对齐 95% 覆盖，S5≥85 分）；补 README + coverage≥80% | `README.md`、`verify/engine.verify.ts` | `pnpm --filter @test-platform/engine-mcp verify` 全绿 |
 
 ## 5. 边界 & 依赖
 - 依赖：`@test-platform/contracts`

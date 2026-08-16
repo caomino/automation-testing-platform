@@ -33,7 +33,7 @@ const CJK_INITIALS: Record<string, string> = {
   部: 'B', 选: 'X', 择: 'Z', 过: 'G', 滤: 'L', 详: 'X',
   情: 'Q', 操: 'C', 作: 'Z', 步: 'B', 归: 'G', 论: 'L',
   测: 'C', 试: 'S', 点: 'D', 主: 'Z', 子: 'Z', 平: 'P',
-  台: 'T', 应: 'Y', 预: 'Y',
+  台: 'T', 应: 'Y',
 };
 
 const CJK_RANGE = /[一-鿿]/;

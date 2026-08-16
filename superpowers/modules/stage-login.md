@@ -13,11 +13,16 @@
 ## 3. 当前进度
 - **4 个 .ts**（实测，非简报原写 1），骨架+部分实现；⚠️ **开工前先修 review.md 2 个 Critical**（子系统不读 parentPortalUrl / reuseSession 是 stub，见 GLOBALS §9），否则接口被 explore/execute 依赖会传导错误。
 
-## 4. 任务清单（来自 plan.md）
-- [ ] 实现三模式登录（免登录 / 账号密码 / 人工接管）
-- [ ] `SessionHandle` 产出 + 会话复用 4 方法（与 engine-mcp 协同）
-- [ ] 正反向覆盖（错误密码 / 空查询 / 越权正确报错）
-- [ ] 自验 `build/lint/typecheck` + Reviewer 两关
+## 4. Implementation Planning（细粒度任务分解 · Phase 3）
+> 每任务 = 精确文件 + 要点 + 验证（TDD：先写 verify 跑红 → 写实现跑绿）。按 ID 顺序执行。
+
+| ID | 任务 | 文件 | 验证（先写跑红） |
+|----|------|------|------------------|
+| T1 | [Critical] 子系统登录走父门户：`run()` 补 `type==='subsystem'` 分支，读 `parentPortalUrl` 经父门户会话导航，而非直接 `navigate(systemUrl)` | `src/index.ts:192/217` | `verify/login.verify.ts` 断言「subsystem 读 parentPortalUrl 导航」 |
+| T2 | [Critical] `reuseSession` 真实复用：调 `engine.applySession(cookies/headers/tokens)` 注入子系统浏览器上下文 | `src/index.ts:277` | 断言「applySession 被调用」 |
+| T3 | [Major] 删死防御 `?.() ?? []`，捕获失败显式抛错 | `src/index.ts:35/196-197/232-233` | 断言「引擎缺失/捕获失败抛错而非空数组」 |
+| T4 | [Minor] 补取 `getSessionHeaders()`；manual-takeover 的 detect `'failed'` 不再误映射 barrier | `src/index.ts:196/226` | 断言「headers 入 SessionHandle」「failed 正确报 failed」 |
+| T5 | 全量跑绿 + 自验 build/lint/typecheck | — | `pnpm --filter @test-platform/stage-login verify` 全绿 |
 
 ## 5. 边界 & 依赖
 - 依赖：`@test-platform/contracts`、`@test-platform/engine-mcp`（会话/浏览器）

@@ -1,6 +1,8 @@
 /**
  * @file index.ts
  * @description contracts 统一导出（冻结 v1.0）
+ * @contract 所有 stage I/O 契约、类型与校验
+ * @frozen v1.0 — 契约层接口冻结，不可修改
  */
 export * from './types/SystemConfig';
 export * from './types/ModuleNode';

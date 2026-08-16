@@ -15,12 +15,12 @@ import { buildFeatureTable } from './featureTable';
  */
 export async function run(input: FeatureInput): Promise<FeatureOutput> {
   const validated = validateFeatureInput(input);
-  const { featureTable, featureIds, provenance } = buildFeatureTable(
+  const { featureTable, featureIds, provenance, featurePaths } = buildFeatureTable(
     validated.moduleTree,
     validated.systemName,
     validated.confirmedOnly,
   );
-  return { featureTable, featureIds, provenance };
+  return { featureTable, featureIds, provenance, featurePaths };
 }
 
 export { buildFeatureTable } from './featureTable';

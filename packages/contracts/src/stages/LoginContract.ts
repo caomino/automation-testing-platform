@@ -20,6 +20,12 @@ export interface LoginInput {
   systemUrl: string;
   /** 父门户 URL（仅 type=subsystem，用于经父门户会话进入子系统） */
   parentPortalUrl?: string;
+  /** 人工接管动作：launch=启动浏览器(默认)，confirm=确认登录状态 */
+  takeoverAction?: 'launch' | 'confirm';
+  /** 用户名（用于自动存储凭证） */
+  username?: string;
+  /** 密码（用于自动存储凭证） */
+  password?: string;
 }
 
 /** 输出（冻结） */

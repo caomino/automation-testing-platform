@@ -21,6 +21,7 @@
   "dependencies": {
     "@test-platform/contracts": "workspace:*",
     "@test-platform/engine-mcp": "workspace:*",
+    "@test-platform/infra-ai": "workspace:*",
     "zod": "^3.23.8"
   },
   "devDependencies": {

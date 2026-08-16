@@ -64,15 +64,41 @@ describe('stage-defect 创建与导入导出', () => {
     expect(deriveQualityAttribute('存在越权访问风险')).toBe('安全性');
     expect(deriveQualityAttribute('权限校验失败')).toBe('安全性');
     expect(deriveQualityAttribute('安全漏洞')).toBe('安全性');
+    expect(deriveQualityAttribute('用户密码以明文存储')).toBe('安全性'); // 数据类 → 安全
     expect(deriveQualityAttribute('脚本报错崩溃')).toBe('健壮性');
     expect(deriveQualityAttribute('列表样式乱码')).toBe('易用性');
     expect(deriveQualityAttribute('新增数据未保存')).toBe('功能正确性');
+    // 未知类别 → 默认功能正确性
+    expect(deriveQualityAttribute('无明显特征的一般缺陷')).toBe('功能正确性');
+  });
+
+  it('deriveLevel：安全/数据类关键词 → 高；其余按低/中分支分配', () => {
+    const level = (desc: string) => {
+      // deriveLevel 为纯函数，不对外导出（在 logic.ts 内部）；
+      // 这里通过 createDefect 间接验证 level 分支正确性
+      return createDefect({
+        sequence: 1,
+        description: desc,
+        environment: { os: 'win11', browser: 'chrome', caseNo: 'X_01' },
+      }).level;
+    };
+    expect(level('越权访问敏感数据')).toBe('高'); // 安全
+    expect(level('用户数据被意外删除')).toBe('高'); // 数据丢失
+    expect(level('提交时页面崩溃')).toBe('高'); // 崩溃
+    expect(level('刷新后样式错乱')).toBe('低'); // 易用性
+    expect(level('新增一条记录失败')).toBe('中'); // 默认分支
   });
 
   it('DEFECT_TSV_HEADER：六列完整列名与顺序（对齐冻结 docs 主规格）', () => {
     expect([...DEFECT_TSV_HEADER]).toEqual([
       '序号', '问题描述', '问题截图', '问题级别', '质量特性', '问题产生环境',
     ]);
+    // 完整列名 + 顺序不变（冻结契约）
+    expect(DEFECT_TSV_HEADER).toHaveLength(6);
+    expect(DEFECT_TSV_HEADER[0]).toBe('序号');
+    expect(DEFECT_TSV_HEADER[3]).toBe('问题级别');
+    expect(DEFECT_TSV_HEADER[4]).toBe('质量特性');
+    expect(DEFECT_TSV_HEADER[5]).toBe('问题产生环境');
   });
 
   it('createDefect：未给级别/质量特性时按描述推导（外观 → 低/易用性）', () => {

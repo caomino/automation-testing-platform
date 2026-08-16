@@ -13,11 +13,15 @@
 ## 3. 当前进度
 - **5 个 .ts**（实测，非原写 2），部分实现。
 
-## 4. 任务清单（来自 plan.md）
-- [ ] MCP 遍历（菜单/链接/tab/面包屑/分页可点；数据类按钮标 needs_review）
-- [ ] 模块树 CRUD + 人工补录
-- [ ] 只读探索开关 `readonlyExplore`（S5 强制）
-- [ ] 正反向覆盖 + Reviewer 两关
+## 4. Implementation Planning（细粒度任务分解 · Phase 3）
+> 每任务 = 精确文件 + 要点 + 验证（TDD：先写 verify 跑红 → 写实现跑绿）。按 ID 顺序执行。
+
+| ID | 任务 | 文件 | 验证（先写跑红） |
+|----|------|------|------------------|
+| T1 | [Major] `run()` 把 `sessionHandle` 注入引擎（登录→探索会话衔接） | `src/index.ts:187` | `verify/explore.verify.ts` 断言「引擎收到 sessionHandle」 |
+| T2 | [Major] 实现 `resumeFrom` 断点续跑（当前 no-op） | `src/index.ts:191` | 断言「resumeFrom 从 checkpoint 恢复」 |
+| T3 | [Minor] 同 target 批量 above/below 插入顺序修正；补去重与父节点校验；清理 `countNodes` 孤儿导出 | `src/index.ts:119/94/34` | 断言「插入顺序」「重复节点拒绝」「父节点非法拒绝」 |
+| T4 | 补会话衔接/兄弟插入/边界测试 | `verify/explore.verify.ts`、`src/index.test.ts` | `pnpm --filter @test-platform/stage-explore verify` 全绿 |
 
 ## 5. 边界 & 依赖
 - 依赖：`@test-platform/contracts`、`@test-platform/engine-mcp`（DOM 抽象）

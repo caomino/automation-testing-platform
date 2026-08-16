@@ -26,6 +26,12 @@ export interface LoggerConfig {
   maxFileSize?: number;
 }
 
+export interface LogFileInfo {
+  filename: string;
+  size: number;
+  lastWrite: number;
+}
+
 export interface Logger {
   info(scope: string, message: string, meta?: unknown): void;
   warn(scope: string, message: string, meta?: unknown): void;
@@ -33,10 +39,15 @@ export interface Logger {
   query(filter?: { scope?: string; level?: LogLevel; since?: number }): LogEntry[];
   flush(): Promise<void>;
   cleanup(): Promise<number>;
+  listLogFiles(): Promise<LogFileInfo[]>;
+  deleteLogFile(filename: string): Promise<void>;
+  clearAllLogs(): Promise<void>;
+  getLogDir(): string;
 }
 
 const MAIN_FILE = 'app.log';
 const DAY_MS = 86_400_000;
+const MAX_MESSAGE_LEN = 10_000;
 
 function isLogName(name: string): boolean {
   return name === MAIN_FILE || name.startsWith(`${MAIN_FILE}.`);
@@ -134,8 +145,53 @@ class FileLogger implements Logger {
     return deleted;
   }
 
+  async listLogFiles(): Promise<LogFileInfo[]> {
+    if (!existsSync(this.dir)) {
+      return [];
+    }
+    const files = readdirSync(this.dir).filter(isLogName);
+    const result: LogFileInfo[] = [];
+    for (const name of files) {
+      const filePath = path.join(this.dir, name);
+      const info = statSync(filePath);
+      result.push({ filename: name, size: info.size, lastWrite: info.mtimeMs });
+    }
+    return result.sort((a, b) => b.lastWrite - a.lastWrite);
+  }
+
+  async deleteLogFile(filename: string): Promise<void> {
+    const filePath = path.join(this.dir, filename);
+    const resolved = path.resolve(filePath);
+    if (!resolved.startsWith(path.resolve(this.dir))) {
+      throw new Error('Invalid filename: path traversal detected');
+    }
+    if (!existsSync(filePath)) {
+      return;
+    }
+    await unlink(filePath);
+  }
+
+  async clearAllLogs(): Promise<void> {
+    if (!existsSync(this.dir)) {
+      return;
+    }
+    const files = await readdir(this.dir);
+    for (const name of files) {
+      if (isLogName(name)) {
+        await unlink(path.join(this.dir, name));
+      }
+    }
+  }
+
+  getLogDir(): string {
+    return this.dir;
+  }
+
   private log(level: LogLevel, scope: string, message: string, meta?: unknown): void {
-    const entry: LogEntry = { ts: Date.now(), level, scope, message, meta };
+    const msg = message.length > MAX_MESSAGE_LEN
+      ? message.slice(0, MAX_MESSAGE_LEN) + '...[truncated]'
+      : message;
+    const entry: LogEntry = { ts: Date.now(), level, scope, message: msg, meta };
     const line = `${JSON.stringify(entry)}\n`;
     this.writeChain = this.writeChain
       .then(() => this.writeLine(line))

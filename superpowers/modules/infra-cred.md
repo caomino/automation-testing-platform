@@ -12,9 +12,14 @@
 ## 3. 当前进度
 - **4 个 .ts**（实测，非原写 1），已是完整 AES-256-GCM 实现（save/get/delete/list），无需修复。
 
-## 4. 任务清单（来自 plan.md）
-- [ ] 确认接口与 contracts 对齐（若有缺口补全）
-- [ ] 被 login 调用验证（S5 加密存储）
+## 4. Implementation Planning（细粒度任务分解 · Phase 3）
+> 每任务 = 精确文件 + 要点 + 验证（TDD：先写 verify 跑红 → 写实现跑绿）。按 ID 顺序执行。
+
+| ID | 任务 | 文件 | 验证（先写跑红） |
+|----|------|------|------------------|
+| T1 | 确认 save/get/delete/list 签名与 contracts 对齐（无缺口） | `src/index.ts` | `verify/cred.verify.ts` 断言「接口签名与 contracts 一致」 |
+| T2 | safeStorage 切换点可插拔（Web 本地加密 → Electron safeStorage，接口不变只换实现） | `src/index.ts` | 断言「切换实现不影响调用方」 |
+| T3 | 补 README + 补测试到 coverage≥80% | `README.md`、`verify/cred.verify.ts` | `pnpm --filter @test-platform/infra-cred verify` 全绿 |
 
 ## 5. 边界 & 依赖
 - 依赖：`@test-platform/contracts`

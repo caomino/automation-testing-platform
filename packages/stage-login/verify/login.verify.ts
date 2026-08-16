@@ -32,6 +32,10 @@ function node(p: Partial<SemanticNode> & { tag: string; selector: string }): Sem
 function makeFakeEngine(opts: {
   initialDom: SemanticNode[];
   afterSubmitDom?: SemanticNode[];
+  /** 初始 URL（登录页），用于模拟「路径变化判断登录成功」 */
+  initialUrl?: string;
+  /** 点击提交后浏览器跳转到的 URL（模拟用户登录成功后离开登录页） */
+  afterSubmitUrl?: string;
   cookies?: string[];
   tokens?: string[];
   headers?: Record<string, string>;
@@ -39,6 +43,8 @@ function makeFakeEngine(opts: {
   domByUrl?: Record<string, SemanticNode[]>;
   /** 导航回调：记录调用顺序，断言「先父门户后子系统」路径 */
   onNavigate?: (url: string) => void;
+  /** 当前 URL 变更回调（含自动跳转），用于断言路径变化 */
+  onUrlChange?: (url: string) => void;
   /** applySession 回调：记录注入内容，断言 reuseSession 真正注入 */
   onApply?: (state: { cookies: string[]; headers?: Record<string, string>; tokens?: string[] }) => void;
   /** 让 launch 抛错，模拟接管中断（engine 抛错 → catch → failed） */
@@ -47,6 +53,7 @@ function makeFakeEngine(opts: {
   let dom = opts.initialDom;
   let submitted = false;
   const navigated: string[] = [];
+  let currentUrl = opts.initialUrl ?? '';
   const current = (): SemanticNode[] => {
     const url = navigated[navigated.length - 1];
     if (url && opts.domByUrl && url in opts.domByUrl) return opts.domByUrl[url];
@@ -58,7 +65,12 @@ function makeFakeEngine(opts: {
     },
     async navigate(url: string) {
       navigated.push(url);
+      currentUrl = url;
       opts.onNavigate?.(url);
+      opts.onUrlChange?.(url);
+    },
+    async getCurrentUrl() {
+      return currentUrl;
     },
     async extractSemanticDom() {
       return current();
@@ -67,7 +79,14 @@ function makeFakeEngine(opts: {
       return [];
     },
     async runStep(cmd) {
-      if (cmd.kind === 'click') submitted = true;
+      if (cmd.kind === 'click') {
+        submitted = true;
+        // 模拟真实浏览器：用户点击登录后离开登录页（URL 路径变化）
+        if (opts.afterSubmitUrl) {
+          currentUrl = opts.afterSubmitUrl;
+          opts.onUrlChange?.(currentUrl);
+        }
+      }
       return { step: cmd.kind, operation: JSON.stringify(cmd), expected: '', actual: 'ok', result: 'passed' };
     },
     async runCase() {
@@ -151,13 +170,12 @@ describe('stage-login 三模式 + 契约', () => {
     expect(out.sessionHandle.loginStatus).toBe('ok');
   });
 
-  it('credential：空凭证（无 credentialRef）→ failed', async () => {
+  it('credential：空凭证（无 credentialRef）→ 校验报错', async () => {
     const stage = createLoginStage({
       engineFactory: () => makeFakeEngine({ initialDom: loginFormDom() }),
       credentialStoreFactory: () => makeStore({}),
     });
-    const out = await stage.run(baseInput('credential'));
-    expect(out.loginStatus).toBe('failed');
+    await expect(stage.run(baseInput('credential'))).rejects.toThrow(/credentialRef/);
   });
 
   it('credential：凭证不存在 → failed', async () => {
@@ -188,15 +206,19 @@ describe('stage-login 三模式 + 契约', () => {
   });
 
   it('manual-takeover：人补完登录 → ok', async () => {
+    const headers = { Authorization: 'Bearer tk-manual', 'x-tenant': 't1' };
     const stage = createLoginStage({
-      engineFactory: () => makeFakeEngine({ initialDom: loggedInDom(), cookies: ['manual=1'] }),
+      engineFactory: () => makeFakeEngine({ initialDom: loggedInDom(), cookies: ['manual=1'], headers }),
       credentialStoreFactory: () => makeStore({}),
       manualTimeoutMs: 1000,
       pollIntervalMs: 50,
     });
-    const out = await stage.run({ ...baseInput('manual-takeover'), systemId: 'sys2' });
+    const out = await stage.run({ ...baseInput('manual-takeover'), systemId: 'sys2', credentialRef: 'manual-cred' });
     expect(out.loginStatus).toBe('ok');
     expect(out.cookies).toContain('manual=1');
+    // [Minor] 认证头须注入 SessionHandle（供下游跨子系统复用）
+    expect(out.sessionHandle.headers).toEqual(headers);
+    expect(out.sessionHandle.headers?.['Authorization']).toBe('Bearer tk-manual');
   });
 
   it('manual-takeover：超时仍未登录（验证码持续）→ barrier', async () => {
@@ -206,7 +228,7 @@ describe('stage-login 三模式 + 契约', () => {
       manualTimeoutMs: 150,
       pollIntervalMs: 30,
     });
-    const out = await stage.run({ ...baseInput('manual-takeover'), systemId: 'sys2' });
+    const out = await stage.run({ ...baseInput('manual-takeover'), systemId: 'sys2', credentialRef: 'manual-cred' });
     expect(out.loginStatus).toBe('barrier');
   });
 
@@ -240,22 +262,28 @@ describe('stage-login 三模式 + 契约', () => {
     expect(reused.expiresAt).toBeGreaterThan(handle.expiresAt);
   });
 
-  it('subsystem（credential）：先经父门户会话登录再进入子系统，而非直接导航 systemUrl', async () => {
+  it('subsystem（credential）：父门户登录成功（URL 路径变化）后才进入子系统，而非直接导航 systemUrl', async () => {
     const portalUrl = 'https://portal.example.com/login';
+    const dashboardUrl = 'https://portal.example.com/dashboard';
     const subUrl = 'https://sub.example.com/console';
     const navigated: string[] = [];
     const stage = createLoginStage({
       engineFactory: () =>
         makeFakeEngine({
           initialDom: loginFormDom(),
+          initialUrl: portalUrl,
+          afterSubmitUrl: dashboardUrl, // 提交后登录成功 → 离开登录页（路径变化）
+          afterSubmitDom: loggedInDom(),
           domByUrl: {
             [portalUrl]: loginFormDom(),
+            [dashboardUrl]: loggedInDom(),
             [subUrl]: loggedInDom(),
           },
           onNavigate: (u) => navigated.push(u),
           cookies: ['portal=session'],
         }),
       credentialStoreFactory: () => makeStore({ 'cred-1': { username: 'admin', password: 'pw' } }),
+      portalLoginWaitMs: 500,
     });
     const out = await stage.run({
       ...baseInput('credential'),
@@ -272,6 +300,37 @@ describe('stage-login 三模式 + 契约', () => {
     expect(out.sessionHandle.systemId).toBe('sys1');
   });
 
+  it('subsystem（credential）：父门户登录未完成（URL 未变化，如遇验证码）→ 不跳子系统，返回 barrier', async () => {
+    const portalUrl = 'https://portal.example.com/login';
+    const subUrl = 'https://sub.example.com/console';
+    const navigated: string[] = [];
+    const stage = createLoginStage({
+      engineFactory: () =>
+        makeFakeEngine({
+          initialDom: loginFormDom(),
+          initialUrl: portalUrl,
+          // 不设 afterSubmitUrl：提交后 URL 仍在登录页（登录未完成 / 需验证码）
+          afterSubmitDom: captchaDom(),
+          domByUrl: {
+            [portalUrl]: loginFormDom(),
+            [subUrl]: loggedInDom(),
+          },
+          onNavigate: (u) => navigated.push(u),
+        }),
+      credentialStoreFactory: () => makeStore({ 'cred-1': { username: 'admin', password: 'pw' } }),
+      portalLoginWaitMs: 200,
+    });
+    const out = await stage.run({
+      ...baseInput('credential'),
+      credentialRef: 'cred-1',
+      systemUrl: subUrl,
+      parentPortalUrl: portalUrl,
+    });
+    // 父门户登录未完成：绝不跳子系统
+    expect(navigated).not.toContain(subUrl);
+    expect(out.loginStatus).toBe('barrier');
+  });
+
   it('subsystem（manual-takeover）：父门户登录后进入子系统，状态 ok', async () => {
     const portalUrl = 'https://portal.example.com/login';
     const subUrl = 'https://sub.example.com/console';
@@ -280,6 +339,7 @@ describe('stage-login 三模式 + 契约', () => {
       engineFactory: () =>
         makeFakeEngine({
           initialDom: loggedInDom(),
+          initialUrl: portalUrl,
           domByUrl: {
             [portalUrl]: loggedInDom(),
             [subUrl]: loggedInDom(),
@@ -290,12 +350,14 @@ describe('stage-login 三模式 + 契约', () => {
       credentialStoreFactory: () => makeStore({}),
       manualTimeoutMs: 1000,
       pollIntervalMs: 50,
+      portalLoginWaitMs: 500,
     });
     const out = await stage.run({
       ...baseInput('manual-takeover'),
       systemId: 'sys2',
       systemUrl: subUrl,
       parentPortalUrl: portalUrl,
+      credentialRef: 'manual-cred',
     });
     expect(navigated[0]).toBe(portalUrl);
     expect(navigated).toContain(subUrl);
@@ -310,7 +372,7 @@ describe('stage-login 三模式 + 契约', () => {
       manualTimeoutMs: 150,
       pollIntervalMs: 30,
     });
-    const out = await stage.run({ ...baseInput('manual-takeover'), systemId: 'sys2' });
+    const out = await stage.run({ ...baseInput('manual-takeover'), systemId: 'sys2', credentialRef: 'manual-cred' });
     expect(out.loginStatus).toBe('failed');
     expect(out.expiresAt).toBe(0);
   });

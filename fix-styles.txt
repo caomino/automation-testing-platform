@@ -1,0 +1,16 @@
+Task: Fix CSS interaction bugs in styles.css
+
+File: packages/app/src/styles.css
+
+Issue: Table cells (td > span) are not receiving click events properly.
+Fix these CSS issues:
+
+1. Add display:block to td > span so clicks work reliably
+2. Add hover feedback for clickable spans
+3. Check if .tbl-wrap overflow creates stacking context issues that block modal/dialog
+4. Check if the .mask z-index (50) is high enough above the table
+5. Make sure button .btn.dng has proper cursor:pointer
+
+Run: pnpm --filter @test-platform/app typecheck
+
+Report what CSS changes you made.

@@ -55,6 +55,7 @@ export const McpExplorationCheckpointSchema = z.object({
 export const ExploreInputSchema = z.object({
   sessionHandle: SessionHandleSchema,
   subsystemId: z.string(),
+  systemUrl: z.string().optional(),
   resumeFrom: z.string().optional(),
   manualSupplement: ManualSupplementSchema.optional(),
 });

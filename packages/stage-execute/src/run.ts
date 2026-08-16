@@ -22,7 +22,7 @@ import { DEFAULT_CASE_TIMEOUT_MS, DEFAULT_OWNER_TASK_PREFIX } from './constants'
 
 /** 默认引擎配置（真实多浏览器由 app 经 engineFactory 注入） */
 const DEFAULT_ENGINE_CONFIG: EngineConfig = {
-  headless: true,
+  headless: false,
   timeoutMs: DEFAULT_CASE_TIMEOUT_MS,
 };
 

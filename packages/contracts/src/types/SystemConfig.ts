@@ -27,6 +27,20 @@ export interface SessionHandle {
   tokens?: string[];
   /** 过期时间戳（ms） */
   expiresAt: number;
+  /** 登录时间戳（ms） */
+  loginAt?: number;
+  /** 登录模式 */
+  loginMode?: 'no-login' | 'credential' | 'manual-takeover';
+  /** 登录状态检测原因 */
+  detectionReason?: string;
+  /** Cookie 数量统计 */
+  cookieCount?: number;
+  /** Header 数量统计 */
+  headerCount?: number;
+  /** Token 数量统计 */
+  tokenCount?: number;
+  /** 会话持续时间（ms，从登录到过期） */
+  ttlMs?: number;
 }
 
 /** 会话状态（子系统注册时捕获，不止 URL） */
@@ -92,6 +106,8 @@ export interface Project {
   logRetentionDays: number;
   /** AI 辅助是否启用 */
   aiAssistEnabled: boolean;
+  /** 当前选中的系统 ID */
+  activeSystemId?: string;
   /** 创建时间 */
   createdAt: number;
   /** 更新时间 */

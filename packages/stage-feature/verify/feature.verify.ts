@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import type { FeatureInput, ModuleNode } from '@test-platform/contracts';
 import { mock, validateFeatureOutput } from '@test-platform/contracts';
 import { run } from '../src';
-import { toAbbrToken, shortHash } from '../src/abbreviation';
+import { toAbbrToken, shortHash, systemAbbrFromSubsystemId } from '../src/abbreviation';
 
 /** 构造最小 ModuleNode（契约必填字段齐全） */
 function node(partial: Partial<ModuleNode> & Pick<ModuleNode, 'id' | 'label' | 'subsystemId' | 'type' | 'parentId' | 'status' | 'depth'>): ModuleNode {
@@ -95,9 +95,9 @@ describe('stage-feature 契约', () => {
     const manual = out.provenance.filter((p) => p.source === 'manual');
     expect(manual).toHaveLength(1);
     expect(manual[0].featureRowIndex).toBeTypeOf('number');
-    // 人工补充节点（删除）确实出现在表中
+    // 人工补充节点（删除）确实出现在表中 — 测试点列为 '删除'
     const flat = out.featureTable.flat();
-    expect(flat.some((r) => r[6] === '删除')).toBe(true);
+    expect(flat.some((r) => r[7] === '删除')).toBe(true);
   });
 
   it('confirmedOnly 过滤：丢弃未确认的 ai_generated，保留 exploration/manual', async () => {
@@ -111,8 +111,8 @@ describe('stage-feature 契约', () => {
     expect(filtered.featureTable[0].map((r) => r[8])).toEqual(['QYYX_JCS_JCX_01', 'QYYX_JCS_JCX_02']);
     // 所有保留行均为已确认
     expect(filtered.provenance.every((p) => p.confirmed)).toBe(true);
-    // 人工补充（删除）在 confirmedOnly 下仍保留
-    expect(filtered.featureTable.flat().some((r) => r[6] === '删除')).toBe(true);
+    // 人工补充（删除）在 confirmedOnly 下仍保留 — 测试点列为 '删除'
+    expect(filtered.featureTable.flat().some((r) => r[7] === '删除')).toBe(true);
   });
 
   it('边界：空树返回空结果（不抛错）', async () => {
@@ -172,13 +172,33 @@ describe('stage-feature 缩写兜底', () => {
       ['sys_qyyx', 'mod_jcs', 'sub_jcx'],
       ['550e8400-e29b-41d4-a716-446655440000', 'mod_/a/b/c', 'sub_x-y-z'],
       ['', 'SYS_ROOT', 'SUB_PZ'],
+      ['企业管理系统', '影像检查室', '配置模块'], // 全中文
+      ['a-b-c-d-e-f', 'x/y/z', 's1_s2_s3_s4'], // 多段
     ];
     for (const [sys, main, sub] of cases) {
       const base = `${systemAbbrFromSubsystemId(sys, '区域影像系统')}_${toAbbrToken(main)}_${toAbbrToken(sub)}`;
       const segs = base.split('_');
       expect(segs).toHaveLength(3);
       for (const s of segs) expect(s).not.toContain('_');
+      // base 非空（极端情况如空系统 id + 空主模块也产生有效 token）
+      expect(base.length).toBeGreaterThan(0);
     }
+  });
+
+  it('UUID / 路径哈希 / 多词元 id → 单段 token（不含 _），为 base_NN 4 段规则保障', () => {
+    // UUID
+    const uuid = toAbbrToken('550e8400-e29b-41d4-a716-446655440000');
+    expect(uuid).not.toContain('_');
+    expect(uuid).toMatch(/^[0-9A-F]{6}$/);
+    // 多段路径（包含 /）
+    const path = toAbbrToken('/a/b/c/d/e');
+    expect(path).not.toContain('_');
+    // 多段语义 id（含 -）
+    const multi = toAbbrToken('SYS_MOD_PAGE_A_B_C_D');
+    expect(multi).not.toContain('_');
+    // 确定性
+    expect(toAbbrToken('/a/b/c/d/e')).toBe(path);
+    expect(toAbbrToken('SYS_MOD_PAGE_A_B_C_D')).toBe(multi);
   });
 
   it('中文 id / 标签 → 拼音首字母大写（R-A-01），不含原生中文', () => {
@@ -186,7 +206,7 @@ describe('stage-feature 缩写兜底', () => {
     expect(toAbbrToken('sub_配置')).toBe('PZ'); // 去前缀 SUB + 配置→PZ
     expect(toAbbrToken('检查室管理')).toBe('JCSGL');
     const t = toAbbrToken('区域影像系统');
-    expect(t).toBe('QYYXTB'); // 区Q域Y影Y像X系X统T
+    expect(t).toBe('QYYXXT'); // 区Q域Y影Y像X系X统T
     expect(/[一-鿿]/.test(t)).toBe(false); // 无原生中文
     // 纯中文系统名回退路径（仅前缀/无词元 + CJK）
     expect(toAbbrToken('企业')).toBe('QY');

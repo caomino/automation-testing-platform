@@ -10,12 +10,13 @@ import { DefectRowSchema } from '@test-platform/contracts';
 export type DefectLevel = DefectRow['level'];
 
 /**
- * 从用例编号推导模块分组键：去掉末尾 _NN 序号。
+ * 从用例编号推导模块分组键：去掉末尾 _NN 序号和 _N1/N2/N3 场景后缀。
+ * 例如 8AEA27_491E0A_491E0A_01_N1 → 8AEA27_491E0A_491E0A（按功能点分组）。
  * 已知限制：ExecutionResult 未携带显式模块字段，故以用例编号基（测试点标识组）作为分组键，
  * moduleFilter 须与推导出的模块键精确匹配（见 index.ts 注释）。
  */
 export function deriveModule(caseNo: string): string {
-  return caseNo.replace(/_\d+$/, '');
+  return caseNo.replace(/_\d+(_N[123])?$/, '');
 }
 
 /** 构建缺陷描述：取首个失败步骤「预期≠实际」，否则回退到用例级失败说明 */
@@ -75,7 +76,7 @@ export function deriveLevel(description: string): DefectLevel {
 
 /** 质量特性：基于缺陷描述关键词归类（功能正确性 / 健壮性 / 易用性 / 安全性） */
 export function deriveQualityAttribute(description: string): string {
-  if (['安全', '权限', '越权'].some((k) => description.includes(k))) return '安全性';
+  if (['安全', '权限', '越权', '明文', '密码'].some((k) => description.includes(k))) return '安全性';
   if (['异常', '崩溃', '超时', '报错', '脚本', '卡死', '挂起'].some((k) => description.includes(k))) return '健壮性';
   if (['乱码', '显示', '布局', '刷新', '样式', '提示', '操作'].some((k) => description.includes(k))) return '易用性';
   return '功能正确性';

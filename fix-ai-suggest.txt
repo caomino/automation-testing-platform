@@ -1,0 +1,18 @@
+Task: Fix AI suggestion button in Feature.tsx
+
+File: packages/app/src/screens/Feature.tsx
+
+The "AI 提效功能点" button only shows a toast("AI 生成功能点建议") but shows NO actual AI-generated suggestions.
+
+Fix: 
+1. When button is clicked, show a Modal with a list of AI-generated feature point suggestions
+2. Generate 3-5 mock suggestions based on existing feature rows (e.g., suggest adding CRUD operations, search/filter, import/export)
+3. Each suggestion should have an "采纳" button that adds it to the featureRows table
+4. If infra-ai module is available, try to use it; otherwise show mock data
+
+Constraints:
+- Only edit Feature.tsx
+- Run: pnpm --filter @test-platform/app typecheck
+- Run: pnpm --filter @test-platform/app test
+
+Report what you changed.

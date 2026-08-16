@@ -22,6 +22,7 @@
     "@test-platform/contracts": "workspace:*",
     "@test-platform/engine-mcp": "workspace:*",
     "@test-platform/infra-cred": "workspace:*",
+    "@test-platform/infra-store": "workspace:*",
     "zod": "^3.23.8"
   },
   "devDependencies": {

@@ -7,7 +7,7 @@
 import type { CaseRow } from '../types/CaseRow';
 import type { CaseSheet, MetaHeader } from '../types/CaseSheet';
 import type { FeatureRow } from '../types/FeatureRow';
-import type { AIConfigRef, QualityGateIssue } from '../types/shared';
+import type { AIConfigRef, QualityGateIssue, ExploredElement } from '../types/shared';
 
 /** 输入（冻结） */
 export interface CaseInput {
@@ -21,6 +21,10 @@ export interface CaseInput {
   metaConfig: MetaHeader;
   /** AI 配置引用（可选） */
   aiConfig?: AIConfigRef;
+  /** Playwright MCP 二次探索提取的页面元素（供生成真实操作步骤） */
+  exploredElements?: ExploredElement[];
+  /** 功能点测试点标识 → 来源页面 URL（由功能点阶段带出，用于按所选模块精准探索，根因解法） */
+  featurePaths?: Record<string, string>;
 }
 
 /** 输出（冻结） */

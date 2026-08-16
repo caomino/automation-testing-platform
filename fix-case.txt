@@ -1,0 +1,17 @@
+Task: Fix 4 bugs in packages/app/src/screens/Case.tsx
+
+Bug 1 - Table has 10 columns instead of 8: Spec requires 8 columns (序号,用例编号,内容,步骤,操作,预期结果,首次结果,结论). Current code has 10 columns including 回归结果 and 额外操作列. Remove the extra columns to match the 8-column gold standard.
+
+Bug 2 - Missing 6-dimension coverage: Add coverage statistics display showing Normal/Exception/Boundary/Process/Permission/Data dimensions with counts.
+
+Bug 3 - +/× row buttons not working: Check caseAddRow and caseRemoveRow in context.tsx. Verify the ConfirmDialog triggers properly on delete. Ensure rows update after operations.
+
+Bug 4 - Missing "Copy to Excel" button: Add a "📋 复制到 Excel" button with HTML table copy functionality similar to Feature.tsx handleCopyToExcel.
+
+Constraints:
+- Do not modify contracts package
+- Keep existing TypeScript types
+- Run: pnpm --filter @test-platform/app typecheck to verify
+- Run: pnpm --filter @test-platform/app test to verify
+
+Report: What files changed, what was fixed, and gate results.

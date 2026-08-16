@@ -113,3 +113,27 @@ export interface McpExplorationCheckpoint {
   /** 时间戳 */
   savedAt: number;
 }
+
+/** Playwright MCP 二次探索提取的页面元素（用于生成真实测试用例步骤） */
+export interface ExploredElement {
+  /** ref 标识（如 e15） */
+  ref: string;
+  /** 元素类型: button/input/select/link/form/table/textarea 等 */
+  tag: string;
+  /** 元素可见文本 */
+  text?: string;
+  /** CSS selector */
+  selector: string;
+  /** 是否可交互 */
+  interactive: boolean;
+  /** input placeholder 或 aria-label */
+  label?: string;
+  /** input 类型: text/email/password/number 等 */
+  inputType?: string;
+  /** href（链接） */
+  href?: string;
+  /** 是否为表单控件 */
+  isFormControl: boolean;
+  /** 建议的操作类型: click/fill/select/navigate */
+  suggestedAction: 'click' | 'fill' | 'select' | 'navigate';
+}

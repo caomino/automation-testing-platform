@@ -19,7 +19,10 @@
     "verify": "vitest run --config vitest.verify.config.ts --passWithNoTests"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@playwright/mcp": "^0.0.42",
     "@test-platform/contracts": "workspace:*",
+    "@test-platform/infra-ai": "workspace:*",
     "playwright": "^1.49.0",
     "zod": "^3.23.8"
   },

@@ -10,7 +10,7 @@ import type {
   ModuleNode,
   ScreenshotRef,
 } from '@test-platform/contracts';
-import type { BrowserCommand, McpEngine, SemanticNode } from '@test-platform/engine-mcp';
+import type { BrowserCommand, McpEngine, SemanticNode, ExploredElement } from '@test-platform/engine-mcp';
 import type { SnapshotProvider } from './types';
 import { createEmptySnapshot } from './isolation';
 
@@ -45,6 +45,15 @@ export function createMockEngine(opts?: {
       fileName: 'mock.png',
       path: '/tmp/mock.png',
     }),
+    getSessionCookies: async () => [],
+    getSessionHeaders: async () => ({}),
+    getSessionTokens: async () => [],
+    getStorageState: async () => ({ cookies: [], origins: [] }),
+    getCurrentUrl: async () => '',
+    applySession: async (_state: { cookies: string[]; headers?: Record<string, string>; tokens?: string[] }) => {},
+    extractPageElements: async (_url?: string): Promise<ExploredElement[]> => [],
+    waitForTimeout: async (_ms: number) => {},
+    evaluate: async <T = any>(_fn: string | ((...args: any[]) => T), ..._args: any[]): Promise<T> => undefined as T,
     close: async () => {},
   };
 }

@@ -1,6 +1,7 @@
 /**
  * @file constants.ts
  * @description stage-execute 模块常量
+ * @contract 执行阶段常量定义（超时、前缀等）
  * @frozen v1.0
  */
 

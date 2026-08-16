@@ -1,0 +1,20 @@
+Task: Fix delete button and cell editing in Feature.tsx
+
+File: packages/app/src/screens/Feature.tsx
+
+Bug 1 - Delete row (×) button not responding:
+The × button onClick calls setConfirmDialog({ open: true, index: i }) which opens a ConfirmDialog. The ConfirmDialog onConfirm calls handleRemoveRow(index). This chain should work but the dialog does NOT appear when clicking ×. 
+Check if the variant="dng" button style prevents click events. Check if the ConfirmDialog receives correct open prop. Also check that the × button inside .op div is not being overlapped by other elements.
+
+Bug 2 - Cell editing not working:
+Clicking on td > span should trigger startEditCell() which sets editingCell state and renders an input. Currently clicking has NO effect. 
+The span has style cursor:"text". Check if user-select or pointer-events CSS blocks the click. 
+Try: wrap span in a div with onClick, or make the span display:inline-block, or use a button element instead.
+The input className is "cell-edit" - make sure CSS supports it.
+
+Constraints:
+- Run: pnpm --filter @test-platform/app typecheck
+- Run: pnpm --filter @test-platform/app test
+- Only edit Feature.tsx and styles.css if needed
+
+Report what you changed and test results.

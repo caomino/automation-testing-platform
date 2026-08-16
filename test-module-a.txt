@@ -1,0 +1,27 @@
+Task: TEST Module A - Workbench + Explore screens
+
+This is a FRONTEND TESTING task. Do NOT fix code. Only observe and report.
+
+App runs at: http://localhost:5177/
+
+Test these screens:
+1. 工作台 (Workbench) - test login modal, system status display, quick action buttons
+2. 系统探索 (Explore) - test navigation, tree expansion, system info display
+
+For each screen, test:
+- Can you navigate to it?
+- Do all buttons work?
+- Are forms interactive?
+- Do tables render correctly?
+- Any console errors?
+- Any visual glitches?
+
+Open the browser manually, navigate to http://localhost:5177/, click through each screen.
+
+Report format:
+- Screen name
+- Tests performed
+- Results (PASS/FAIL)
+- Any bugs found with exact description and reproduction steps
+
+DO NOT modify any source code. This is testing only.

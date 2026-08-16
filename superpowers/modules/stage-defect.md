@@ -13,10 +13,16 @@
 ## 3. 当前进度
 - **7 个 .ts**（实测，非原写 2），`logic.ts` 的 `deriveEnvironment` 已做环境大小写规范化（③-3 已修）。
 
-## 4. 任务清单（来自 plan.md）
-- [ ] 六列缺陷生成 + 截图关联
-- [ ] 环境规范化覆盖（win/windows/win11/chrome/chromium 等别名）
-- [ ] 正反向覆盖 + Reviewer 两关
+## 4. Implementation Planning（细粒度任务分解 · Phase 3）
+> 每任务 = 精确文件 + 要点 + 验证（TDD：先写 verify 跑红 → 写实现跑绿）。按 ID 顺序执行。
+
+| ID | 任务 | 文件 | 验证（先写跑红） |
+|----|------|------|------------------|
+| T1 | [Minor] 表头列名对齐 docs（问题级别/问题产生环境） | `src/logic.ts:145` | `verify/defect.verify.ts` 断言「列名与 SPEC 一致」 |
+| T2 | [Minor] 带 version 环境串用 `·` 三段式（Win11·Chrome·…）而非空格 | `src/logic.ts:133` | 断言「环境串为 · 分隔三段」 |
+| T3 | [Minor] screenshots 去重 | `src/index.ts:80` | 断言「重复截图去重」 |
+| T4 | [Minor] `moduleFilter` 空串边界 | `src/index.ts:100` | 断言「空串不过滤/正确兜底」 |
+| T5 | 补完整列名 + 安全性分支测试 | `verify/defect.verify.ts`、`verify/defect-create.verify.ts` | `pnpm --filter @test-platform/stage-defect verify` 全绿 |
 
 ## 5. 边界 & 依赖
 - 依赖：`@test-platform/contracts`（可能 `@test-platform/infra-store` 存截图路径）

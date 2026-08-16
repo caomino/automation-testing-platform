@@ -1,0 +1,23 @@
+Task: Fix Case.tsx test case table
+
+File: packages/app/src/screens/Case.tsx
+
+Fix 3 bugs:
+
+1. Table has 10 columns but spec says 8. Remove "首次结果" and "回归结果" columns.
+   Keep: #, 用例编号, 内容, 步骤, 操作, 预期结果, 结论, 操作
+
+2. The + add row button and × delete row button may not work. Fix onClick handlers.
+
+3. "复制到Excel" button should export current table data to clipboard as tab-separated text that can be pasted into Excel.
+
+4. Add cell editing support for all text columns (click to edit).
+
+5. The "用例生成" button should generate 5+ test cases based on the currently confirmed feature points from context.
+
+Constraints:
+- Only edit Case.tsx
+- Run: pnpm --filter @test-platform/app typecheck  
+- Run: pnpm --filter @test-platform/app test
+
+Report all changes made.

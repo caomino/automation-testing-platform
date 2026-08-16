@@ -1,0 +1,42 @@
+# Brief: 修复 Case.tsx 表格列数和缺失功能
+
+## 任务
+修复 d:\newTest 项目中 packages/app/src/screens/Case.tsx 的 4 个 bug。
+
+## Bug 1: 表格列数为10而非8（与规格不符）
+**现象**: 测试用例屏显示 10 列（#、用例编号、内容、步骤、操作、预期结果、首次结果、回归结果、结论、操作）
+**规格要求**: 8 列格式（序号、用例编号、内容、步骤、操作、预期结果、首次结果、结论）
+**修复方向**:
+- 移除"回归结果"和"结论"列（合并或隐藏）
+- 保留 8 列与金标准模板一致
+- 更新 CaseRowView 类型定义
+
+## Bug 2: 6 维度覆盖指标缺失
+**现象**: 页面没有显示 6 维度覆盖（Normal/Exception/Boundary/Process/Permission/Data）
+**修复方向**:
+- 在表格上方或下方添加覆盖度统计 Tag
+- 显示每个维度的用例数量
+- 参考 `stage-case` 中的覆盖度计算
+
+## Bug 3: +/× 按钮无效
+**现象**: 行增删按钮点击无响应
+**修复方向**:
+- 检查 `caseRemoveRow` 和 `caseAddRow` 在 context.tsx 中的实现
+- 检查 `ConfirmDialog` 是否正确触发
+- 确保操作后 caseRows 正确更新
+
+## Bug 4: 复制到 Excel 按钮缺失
+**现象**: 页面没有复制到 Excel 按钮
+**修复方向**:
+- 添加"📋 复制到 Excel"按钮
+- 实现与 Feature.tsx 中 `handleCopyToExcel` 类似的功能
+- 使用 navigator.clipboard 写入 HTML 表格
+
+## 约束
+- 不要修改 contracts 包中的类型定义
+- 保持现有的 props 接口不变
+- 修复后确保 TypeScript 类型检查通过
+
+## 验收
+- `pnpm --filter @test-platform/app typecheck` 通过
+- `pnpm --filter @test-platform/app test` 通过

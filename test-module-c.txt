@@ -1,0 +1,22 @@
+Task: TEST Module C - Test Case screen
+
+This is a FRONTEND TESTING task. Do NOT fix code. Only observe and report.
+
+App runs at: http://localhost:5177/
+
+Test screen: 测试用例 (Test Cases)
+
+Test items:
+1. Can navigate to the screen? (may need to go through Feature screen first)
+2. Does the table render? How many columns? List them.
+3. Can you click + to add a new row?
+4. Can you click × to delete a row?
+5. Can you click on cells to edit them?
+6. Does the "用例生成" button work?
+7. Does the "复制到Excel" button work?
+8. Does the "筛选" or "过滤" work?
+9. Any console errors?
+10. Any visual glitches?
+
+Report each test as PASS or FAIL with details.
+DO NOT modify any source code.

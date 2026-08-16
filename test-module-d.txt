@@ -1,0 +1,23 @@
+Task: TEST Module D - Execute + Defect + other screens
+
+This is a FRONTEND TESTING task. Do NOT fix code. Only observe and report.
+
+App runs at: http://localhost:5177/
+
+Test screens:
+1. 执行 (Execute) - test execution buttons, result display
+2. 缺陷 (Defect) - test defect list, create defect button
+3. AI 配置 (AI Config) - test AI settings
+4. 日志管理 (Log) - test log viewing
+5. 项目管理 (Project) - test project list
+6. 知识库 (Knowledge) - test knowledge base
+
+For each screen:
+- Can navigate to it?
+- Do buttons work?
+- Do forms render?
+- Any console errors?
+- Any visual glitches?
+
+Report each test as PASS or FAIL with details.
+DO NOT modify any source code.

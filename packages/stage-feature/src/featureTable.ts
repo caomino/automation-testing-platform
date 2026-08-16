@@ -64,16 +64,23 @@ export interface BuildResult {
 }
 
 /**
- * 核心：由模块树生成九列功能点表。
+ * 由模块树生成九列功能点表。
  * 1) 解析每个叶子节点的主模块/子系统上下文与溯源
  * 2) confirmedOnly 过滤（合并后）
  * 3) 按子系统分组（保持 DFS 顺序）
  * 4) 生成九列 + 测试点标识 base_NN + 溯源（NN 每组从 01 递增）
+ *
+ * @param moduleTree 模块树
+ * @param systemName 系统名称
+ * @param confirmedOnly 仅返回已确认功能点
+ * @param requirementSections 可选的真实需求章节映射（key=子模块id，value=章节号如 "1.2.3"）
+ *        未提供时使用分组序号占位（X.0.0），由调用方（如 Excel 解析器）在运行时注入真实数据
  */
 export function buildFeatureTable(
   moduleTree: ModuleNode[],
   systemName: string,
   confirmedOnly: boolean,
+  requirementSections?: Map<string, string>,
 ): BuildResult {
   const { leaves, parentOf } = buildIndex(moduleTree);
 
@@ -109,6 +116,7 @@ export function buildFeatureTable(
   const featureTable: FeatureRow[][] = [];
   const featureIds: string[] = [];
   const provenance: FeatureProvenance[] = [];
+  const featurePaths: Record<string, string> = {};
   const usedTestPointIds = new Set<string>();
   let collisionSeq = 0;
   let globalIndex = 0;
@@ -120,8 +128,9 @@ export function buildFeatureTable(
     const mainAbbr = rep.mainModuleNode ? toAbbrToken(rep.mainModuleNode.id) : toAbbrToken(systemName);
     const subAbbr = rep.subModuleNode ? toAbbrToken(rep.subModuleNode.id) : toAbbrToken(rep.node.id);
     const base = `${systemAbbr}_${mainAbbr}_${subAbbr}`;
-    // 需求章节：当前输入无真实章节字段，采用 X.Y.Z 分组占位（X=分组序号），标注为占位而非真实章节
-    const requirementSection = `${groupIdx + 1}.0.0`;
+    // 需求章节：优先使用真实数据（requirementSections 映射），否则采用 X.0.0 分组占位
+    const realSection = requirementSections?.get(key);
+    const requirementSection = realSection ?? `${groupIdx + 1}.0.0`;
 
     const rows: FeatureRow[] = [];
     group.forEach((r, localIdx) => {
@@ -135,6 +144,13 @@ export function buildFeatureTable(
       }
       usedTestPointIds.add(testPointId);
 
+      // 功能点 = 父模块标签 + 当前节点标签（描述功能）
+      const featureName = r.mainModuleNode
+        ? `${r.mainModuleNode.label}-${r.node.label}`
+        : r.node.label;
+      // 测试点 = 当前节点标签（具体测试动作）
+      const testPoint = r.node.label;
+
       const row: FeatureRow = [
         String(localIdx + 1),          // 序号
         TEST_TYPE_DEFAULT,             // 测试类型
@@ -142,12 +158,14 @@ export function buildFeatureTable(
         systemName,                    // 系统名称
         r.mainModuleNode?.label ?? '', // 主模块（=父目录）
         r.subModuleNode?.label ?? r.node.label, // 子模块（=子系统）
-        r.node.label,                  // 功能点
-        r.node.label,                  // 测试点
+        featureName,                   // 功能点（父模块-节点）
+        testPoint,                     // 测试点（节点标签）
         testPointId,                   // 测试点标识（base_NN，行内全局唯一）
       ];
       rows.push(row);
       featureIds.push(testPointId);
+      // 根因解法：把模块树叶子节点的真实页面 URL 带出，供用例阶段按所选模块精准探索
+      if (r.node.url) featurePaths[testPointId] = r.node.url;
 
       const rowContent = row.join('|');
       provenance.push({
@@ -164,5 +182,5 @@ export function buildFeatureTable(
 
   // featureIds 去重（testPointId 已全局唯一，此处仅作显式保底）
   const dedupedFeatureIds = Array.from(new Set(featureIds));
-  return { featureTable, featureIds: dedupedFeatureIds, provenance };
+  return { featureTable, featureIds: dedupedFeatureIds, provenance, featurePaths };
 }

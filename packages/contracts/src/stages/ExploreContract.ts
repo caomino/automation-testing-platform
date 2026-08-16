@@ -15,6 +15,8 @@ export interface ExploreInput {
   sessionHandle: SessionHandle;
   /** 子系统 ID */
   subsystemId: string;
+  /** 目标系统 URL（探索时先导航到此地址） */
+  systemUrl?: string;
   /** 断点续跑 checkpoint ID */
   resumeFrom?: string;
   /** 人工补充数据 */

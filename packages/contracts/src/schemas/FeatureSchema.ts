@@ -28,6 +28,7 @@ export const FeatureOutputSchema = z.object({
   featureTable: FeatureTableSchema,
   featureIds: z.array(z.string()),
   provenance: z.array(FeatureProvenanceSchema),
+  featurePaths: z.record(z.string(), z.string()).optional(),
 });
 
 export function validateFeatureInput(v: unknown): FeatureInput {

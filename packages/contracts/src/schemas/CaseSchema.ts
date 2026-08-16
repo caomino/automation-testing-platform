@@ -74,6 +74,7 @@ export const CaseInputSchema = z.object({
   selectedModuleIds: z.array(z.string()).optional(),
   metaConfig: MetaHeaderSchema,
   aiConfig: AIConfigRefSchema.optional(),
+  featurePaths: z.record(z.string(), z.string()).optional(),
 });
 
 export const CaseOutputSchema = z.object({

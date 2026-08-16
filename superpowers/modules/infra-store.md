@@ -13,10 +13,14 @@ SQLite 持久化（零配置、单文件、Node 生态成熟）。存储：Proje
 ## 3. 当前进度
 - **4 个 .ts**（实测，非原写 1），骨架+部分实现。
 
-## 4. 任务清单（来自 plan.md）
-- [ ] 包骨架（package.json/tsconfig）+ 冻结接口实现
-- [ ] SQLite 建表 + CRUD（Project/System/各表）
-- [ ] 编译通过 + 被各 stage 调用验证
+## 4. Implementation Planning（细粒度任务分解 · Phase 3）
+> 每任务 = 精确文件 + 要点 + 验证（TDD：先写 verify 跑红 → 写实现跑绿）。按 ID 顺序执行。
+
+| ID | 任务 | 文件 | 验证（先写跑红） |
+|----|------|------|------------------|
+| T1 | 冻结接口实现对齐 contracts：createProject/listProjects/getProject/updateProject/deleteProject/setActiveSystem/saveFeatureTable/saveCaseTable/saveExecution/... | `src/index.ts` | `verify/store.verify.ts` 断言「每个冻结接口签名与 contracts 一致」 |
+| T2 | SQLite 建表 + CRUD（Project/System/FeatureTable/CaseTable/ExecutionReport/DefectTable/KnowledgeBase），数据外部化不落工作空间 | `src/index.ts` | 断言「CRUD 往返一致」「数据落 test-platform-data」 |
+| T3 | 补 README + 补测试到 coverage≥80% | `README.md`、`verify/store.verify.ts` | `pnpm --filter @test-platform/infra-store verify` 全绿 |
 
 ## 5. 边界 & 依赖
 - 依赖：`@test-platform/contracts`
