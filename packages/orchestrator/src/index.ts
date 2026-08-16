@@ -327,7 +327,7 @@ export class PipelineOrchestrator {
           featureOutput.featureTable,
           selectedModuleIds,
           scope,
-          input.case?.systemUrl ?? input.login.systemUrl,
+          input.login.systemUrl,
         );
       } catch (e) {
         this.logger.warn('orchestrator', `case secondary exploration failed: ${e instanceof Error ? e.message : e}`);

@@ -61,6 +61,8 @@ export interface BuildResult {
   featureTable: FeatureRow[][];
   featureIds: string[];
   provenance: FeatureProvenance[];
+  /** 测试点标识 → 真实页面 URL（探索阶段采集，供用例阶段二次探索定位页面） */
+  featurePaths: Record<string, string>;
 }
 
 /**
