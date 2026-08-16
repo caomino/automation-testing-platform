@@ -170,13 +170,46 @@ export class PipelineOrchestrator {
       return u;
     };
 
+    const hostOf = (u: string): string | null => {
+      try {
+        return new URL(u).host;
+      } catch {
+        return null;
+      }
+    };
+
+    const candidateUrls = [...inScopeIds]
+      .map((id) => featurePaths[id])
+      .filter((u): u is string => !!u)
+      .map(norm)
+      .filter((u) => /^https?:\/\//i.test(u));
+
+    // 系统域名判定：优先 baseUrl 的 host；否则取候选 URL 中出现最多的 host。
+    // 目的：剔除「若依官网」这类外链（如 http://ruoyi.vip），避免 case 二次探索导航到 bogus 地址挂死（M6）。
+    let systemHost = baseUrl ? hostOf(baseUrl) : null;
+    if (!systemHost) {
+      const hostCounts = new Map<string, number>();
+      for (const u of candidateUrls) {
+        const h = hostOf(u);
+        if (h) hostCounts.set(h, (hostCounts.get(h) ?? 0) + 1);
+      }
+      let best: string | null = null;
+      let bestN = 0;
+      for (const [h, n] of hostCounts) {
+        if (n > bestN) {
+          bestN = n;
+          best = h;
+        }
+      }
+      systemHost = best;
+    }
+
     const urls = [
       ...new Set(
-        [...inScopeIds]
-          .map((id) => featurePaths[id])
-          .filter((u): u is string => !!u)
-          .map(norm)
-          .filter((u) => /^https?:\/\//i.test(u)),
+        candidateUrls.filter((u) => {
+          if (!systemHost) return true; // 无法判定域名时不过滤，保持旧行为
+          return hostOf(u) === systemHost;
+        }),
       ),
     ].slice(0, 10);
 
@@ -184,7 +217,13 @@ export class PipelineOrchestrator {
     const all: ExploredElement[] = [];
     for (const url of urls) {
       try {
-        const els = await engine.extractPageElements(url); // 内部会 navigate(url)
+        // 单 URL 超时兜底：导航到慢/挂死页面（如外链）最多 15s，避免整条 case 链卡死
+        const els = await Promise.race([
+          engine.extractPageElements(url), // 内部会 navigate(url)
+          new Promise<ExploredElement[]>((_, reject) =>
+            setTimeout(() => reject(new Error(`navigation timeout after 15s`)), 15000),
+          ),
+        ]);
         all.push(...els);
       } catch (e) {
         this.logger.warn('orchestrator', `case secondary exploration failed for ${url}: ${e instanceof Error ? e.message : e}`);
@@ -572,17 +611,27 @@ export class PipelineOrchestrator {
         }
 
         // 二次探索（Playwright MCP）：无 exploredElements 时按 featurePaths 探索选中模块
+        const systemId: string | undefined = rawInput.systemId ?? rawInput.sessionHandle?.systemId;
         let exploredElements: ExploredElement[] = rawInput.exploredElements ?? [];
         if (exploredElements.length === 0 && featurePaths) {
           try {
-            const engine = this.engineFactory(this.engineConfig); // 打开真实浏览器，按功能点路径探索（修复空白页根因①）
-            await engine.launch();
+            // 优先复用登录浏览器（会话随浏览器存活），否则新建引擎并恢复持久化 storageState。
+            // 旧实现无条件新建未登录浏览器，导航到真实系统会撞登录页、抽不到真实元素。
+            const takeoverEngine = systemId ? getTakeoverEngine(systemId) : undefined;
+            const storedState = systemId && !takeoverEngine ? await this.store.getStorageState(systemId) : null;
+            const engineConfig: EngineConfig = {
+              ...this.engineConfig,
+              ...(storedState ? { storageState: storedState as PlaywrightStorageState } : {}),
+            };
+            const engine = takeoverEngine ?? this.engineFactory(engineConfig);
+            if (!takeoverEngine) await engine.launch();
             try {
               exploredElements = await this.exploreByFeaturePaths(
                 engine, featurePaths, featureTable, selectedModuleIds, scope, systemUrl,
               );
             } finally {
-              await engine.close().catch(() => {});
+              // 复用登录浏览器不关闭（保持会话），新建引擎才关闭
+              if (!takeoverEngine) await engine.close().catch(() => {});
             }
           } catch (e) {
             this.logger.warn('orchestrator', `case engine launch failed: ${e instanceof Error ? e.message : e}`);
