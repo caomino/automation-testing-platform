@@ -42,6 +42,8 @@ export interface SystemInfo {
   // 登录凭证
   username?: string;
   passwordRef?: string;
+  /** 持久化凭证引用（AES-256-GCM 加密，落库于凭证库）。passwordRef 仅作 UI 临时输入。 */
+  credentials?: { username: string; credentialRef: string };
   // 会话状态
   sessionState?: {
     cookies?: string[];
@@ -212,6 +214,19 @@ export interface ActivityItem {
 
 // ===== State =====
 
+// 前端会话态凭证（仅内存，绝不落库/绝不写 Vault；刷新即清空）
+const credentialSecretStore = new Map<string, { username: string; password: string }>();
+export function setCredentialSecret(systemId: string, username: string, password: string): void {
+  if (!systemId) return;
+  credentialSecretStore.set(systemId, { username, password });
+}
+export function getCredentialSecret(systemId: string): { username: string; password: string } | undefined {
+  return credentialSecretStore.get(systemId);
+}
+export function clearCredentialSecret(systemId: string): void {
+  credentialSecretStore.delete(systemId);
+}
+
 export interface AppState {
   project: ProjectInfo;
   system: SystemInfo;
@@ -226,6 +241,8 @@ export interface AppState {
   metaHeader: MetaHeader;
   caseSelectedModules: string[];
   caseAiOn: boolean;
+  /** 探索阶段是否启用 AI 辅助（独立开关，默认关闭，与用例页 AI 解耦） */
+  exploreAiOn: boolean;
   execModules: ExecModuleState[];
   execBrowsers: string[];
   execMatrix: ExecMatrixRow[];
@@ -282,6 +299,7 @@ export type Action =
   | { type: "CASE_UPDATE_META"; patch: Partial<MetaHeader> }
   | { type: "CASE_SET_SELECTION"; modules: string[] }
   | { type: "CASE_TOGGLE_AI"; on: boolean }
+  | { type: "EXPLORE_TOGGLE_AI"; on: boolean }
   | { type: "CASE_REGENERATE" }
   | { type: "CASE_GROUP_ADD"; group?: Partial<CaseGroupView> }
   | { type: "CASE_GROUP_REMOVE"; groupId: string }
@@ -375,6 +393,7 @@ export const initialState: AppState = {
   metaHeader: { system: "", testPointId: "", testPoint: "", testers: "", clientStaff: "", developerStaff: "", firstTestDate: "", regressionDate: "", conclusionRule: "", precondition: "" },
   caseSelectedModules: [],
   caseAiOn: false,
+  exploreAiOn: false,
 
   execModules: [],
   execBrowsers: ["Win11·Chrome", "Win11·Edge", "macOS·Safari", "Win10·Chrome"],
@@ -535,6 +554,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, caseSelectedModules: action.modules };
     case "CASE_TOGGLE_AI":
       return { ...state, caseAiOn: action.on };
+    case "EXPLORE_TOGGLE_AI":
+      return { ...state, exploreAiOn: action.on };
     case "CASE_REGENERATE":
       return { ...state, caseRows: state.caseRows.map((r) => ({ ...r, firstResult: "\\", regressionResult: "\\", conclusion: "\\" })) };
     case "CASE_GROUP_ADD": {
@@ -737,7 +758,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, pendingTree: updateInArray(state.pendingTree, (p) => p.seq === action.seq, action.patch) };
     case "EXPLORE_PROMOTE_TO_TREE": {
       const item = state.pendingTree.find((p) => p.seq === action.seq);
-      if (!item || !state.selectedModuleId) return state;
+      if (!item || !state.selectedModuleId || item.status === "已去重") return state;
       const newModule: ModuleNodeView = { id: "pm-" + item.seq, name: item.path.split("/").pop() ?? item.path };
       const addToTree = (nodes: ModuleNodeView[]): ModuleNodeView[] =>
         nodes.map((n) => (n.id === state.selectedModuleId ? { ...n, children: [...(n.children ?? []), newModule] } : { ...n, children: n.children ? addToTree(n.children) : undefined }));
@@ -982,8 +1003,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
               parentPortalId: s.parentPortalId,
               parentPortalPath,
               sessionState: s.sessionState,
-              username: s.username ?? s.credentials?.username,
-              passwordRef: s.passwordRef ?? s.credentials?.credentialRef,
+              username: s.credentials?.username ?? s.username,
+              passwordRef: undefined,
+              credentials: s.credentials,
               credentialMode: s.credentialMode,
             });
           }
@@ -1150,6 +1172,7 @@ export function useApp() {
     metaHeader: state.metaHeader,
     caseSelectedModules: state.caseSelectedModules,
     caseAiOn: state.caseAiOn,
+    exploreAiOn: state.exploreAiOn,
     execModules: state.execModules,
     execBrowsers: state.execBrowsers,
     execMatrix: state.execMatrix,
@@ -1217,7 +1240,12 @@ export function useApp() {
       dispatch({ type: "PIPELINE_SET_ERROR", error: null });
       try {
         const svc = getPipelineService();
-        const out = await svc.runStageExplore(input ?? {});
+        // 注入探索阶段独立 AI 开关：默认关闭（state.exploreAiOn=false），开启后由后端 buildExploreAi 启用 AI 探索
+        const exploreInput = {
+          ...(input ?? {}),
+          aiConfig: { configId: state.aiCurrentDefault || 'default', enabled: !!state.exploreAiOn },
+        };
+        const out = await svc.runStageExplore(exploreInput);
         if (out.moduleTree) {
           const nodes = toModuleView(out.moduleTree);
           dispatch({ type: "PIPELINE_UPDATE_MODULE_TREE", nodes });
@@ -1302,6 +1330,8 @@ export function useApp() {
           scope,
           selectedModuleIds,
           featurePaths,
+          systemId: state.system.id,
+          systemUrl: state.system.url,
           aiConfig: { configId: state.aiCurrentDefault || 'default', enabled: !!aiEnabled },
           metaConfig,
           ...(exploredElements ? { exploredElements } : {}),
@@ -1466,6 +1496,7 @@ export function useApp() {
           type: s.type,
           credentialMode: s.loginMode,
           loginState: s.loginStatus === 'logged_in' ? 'logged_in' : 'logged_out',
+          credentials: s.credentials,
         });
         const info: SystemInfo = {
           ...s,
@@ -1474,9 +1505,11 @@ export function useApp() {
           loginMode: created.credentialMode as LoginMode,
           loginStatus: created.loginState === 'logged_in' ? 'logged_in' : 'logged_out',
           captured: !!created.url,
+          credentials: created.credentials,
         };
         dispatch({ type: "ADD_SYSTEM", system: info });
         showToast(`系统 "${s.name}" 已添加`);
+        return info;
       } catch (e: any) {
         showToast(`添加系统失败: ${e.message}`);
       }
@@ -1493,6 +1526,7 @@ export function useApp() {
         if (patch.loginMode !== undefined) backendPatch.credentialMode = patch.loginMode;
         if (patch.loginStatus !== undefined) backendPatch.loginState = patch.loginStatus === 'logged_in' ? 'logged_in' : 'logged_out';
         if (patch.parentPortalId !== undefined) backendPatch.parentPortalId = patch.parentPortalId;
+        if (patch.credentials !== undefined) backendPatch.credentials = patch.credentials;
         if (Object.keys(backendPatch).length > 0) {
           await dataApi.updateSystem(projectId, id, backendPatch);
         }
@@ -1628,6 +1662,7 @@ export function useApp() {
     },
     caseSetSelection: (modules: string[]) => dispatch({ type: "CASE_SET_SELECTION", modules }),
     caseToggleAi: (on: boolean) => dispatch({ type: "CASE_TOGGLE_AI", on }),
+    exploreToggleAi: (on: boolean) => dispatch({ type: "EXPLORE_TOGGLE_AI", on }),
     caseRegenerate: () => dispatch({ type: "CASE_REGENERATE" }),
     caseGroupAdd: (group?: Partial<CaseGroupView>) => dispatch({ type: "CASE_GROUP_ADD", group }),
     caseGroupRemove: (groupId: string) => dispatch({ type: "CASE_GROUP_REMOVE", groupId }),

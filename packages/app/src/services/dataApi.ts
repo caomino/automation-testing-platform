@@ -106,11 +106,31 @@ export async function addSystem(projectId: string, input: {
   credentialMode?: string;
   loginState?: string;
   parentPortalId?: string;
+  credentials?: { username: string; credentialRef: string };
 }): Promise<System> {
   return apiCall(`/projects/${projectId}/systems`, {
     method: 'POST',
     body: JSON.stringify(input),
   });
+}
+
+/**
+ * 保存账号密码凭证到后端 AES-256-GCM 凭证库，返回加密引用 credentialRef。
+ * 前端绝不明文持有持久化密码；登录阶段按 credentialRef 在服务端解密。
+ */
+export async function saveCredential(username: string, password: string): Promise<string> {
+  const res = await fetch('/api/credentials', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+  const json = await res.json();
+  if (!json.ok) throw new Error(json.error || '保存凭证失败');
+  return json.data.credentialRef as string;
 }
 
 export async function updateSystem(projectId: string, systemId: string, patch: Partial<System>): Promise<System> {

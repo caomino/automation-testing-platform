@@ -1,8 +1,8 @@
 import { useState, Fragment, useRef } from "react";
 import { Button, Card, Modal, Tag, ConfirmDialog } from "../components";
-import { loginModeLabel, loginStatusLabel, useApp } from "../context";
-import type { ProjectInfo, SystemInfo } from "../context";
-import { startCapture, getCaptureStatus, completeCapture, cancelCapture, type CaptureResultApi } from "../services/dataApi";
+import { loginModeLabel, loginStatusLabel, useApp, setCredentialSecret } from "../context";
+import type { ProjectInfo, SystemInfo, SystemType } from "../context";
+import { startCapture, getCaptureStatus, completeCapture, cancelCapture, saveCredential, type CaptureResultApi } from "../services/dataApi";
 
 interface SystemContext {
   projectId: string;
@@ -208,15 +208,59 @@ export function ProjectMgmt() {
     setNewProject({});
   };
 
-  const handleSaveSystem = () => {
+  const validateSystemUrl = (url: string, type: SystemType): string | null => {
+    // 子系统允许 url 为空（真实地址由「📡 浏览器捕获」capturedUrl 提供）
+    if (type === "subsystem" && (!url || !url.trim())) return null;
+    if (!url || !url.trim()) return "请填写系统 URL";
+    const u = url.trim();
+    if (!/^https?:\/\//i.test(u)) return "URL 必须以 http:// 或 https:// 开头";
+    try {
+      const parsed = new URL(u);
+      if (/example\.(com|org|net)$/i.test(parsed.hostname)) {
+        return "请勿使用示例地址 example.com，请填写真实系统地址";
+      }
+    } catch {
+      return "URL 格式无效";
+    }
+    return null;
+  };
+
+  const handleSaveSystem = async () => {
+    const urlToValidate = (editSystem?.url ?? newSystem.url ?? "").trim();
+    const typeToValidate = (editSystem?.type ?? newSystem.type ?? "standalone") as SystemType;
+    const urlError = validateSystemUrl(urlToValidate, typeToValidate);
+    if (urlError) {
+      toast(urlError);
+      return;
+    }
+
+    const username = editSystem?.username ?? newSystem.username ?? "";
+    const rawPw = editSystem?.passwordRef ?? newSystem.passwordRef ?? "";
+    const loginMode = editSystem?.loginMode ?? newSystem.loginMode ?? "no-login";
+
+    // 仅在账号密码模式下处理凭证持久化
+    let credentials: { username: string; credentialRef: string } | undefined;
+    if (loginMode === "credential" && username && rawPw) {
+      try {
+        const ref = await saveCredential(username, rawPw);
+        credentials = { username, credentialRef: ref };
+      } catch (e: any) {
+        toast(`保存凭证失败: ${e.message}`);
+        return;
+      }
+    } else if (loginMode === "credential" && editSystem?.credentials) {
+      // 编辑且未改密码：保留已有加密凭证
+      credentials = editSystem.credentials;
+    }
+
     if (editSystem) {
-      updateSystem(editSystem.id, editSystem);
+      await updateSystem(editSystem.id, { ...editSystem, credentials });
+      setCredentialSecret(editSystem.id, username, rawPw);
       toast("已保存系统");
     } else {
-      const id = `s-${Date.now()}`;
       const autoProjectId = systemContext?.projectId ?? newSystem.projectId;
-      addSystem({
-        id,
+      const created = await addSystem({
+        id: `s-${Date.now()}`,
         name: newSystem.name ?? "新系统",
         type: (newSystem.type as any) ?? "standalone",
         url: newSystem.url ?? "",
@@ -229,8 +273,9 @@ export function ProjectMgmt() {
         parentPortalPath: newSystem.parentPortalPath,
         capturedUrl: newSystem.capturedUrl,
         username: newSystem.username,
-        passwordRef: newSystem.passwordRef,
+        credentials,
       });
+      setCredentialSecret(created?.id ?? `s-${Date.now()}`, username, rawPw);
       toast("系统已创建");
     }
     setSystemModalOpen(false);
@@ -420,12 +465,13 @@ export function ProjectMgmt() {
                     onChange={(e) => {
                       const pid = e.target.value;
                       const portal = systems.find((s) => s.id === pid);
+                      // 根因修复：不再把子系统 url 覆盖成门户地址（门户地址只存 parentPortalPath）。
+                      // 子系统真实地址由「📡 浏览器捕获」capturedUrl 或独立输入获得。
                       if (editSystem) {
                         setEditSystem({
                           ...editSystem,
                           parentPortalId: pid || undefined,
                           parentPortalPath: portal ? { name: portal.name, url: portal.url } : undefined,
-                          url: portal?.url ?? editSystem.url ?? "",
                           projectId: portal?.projectId ?? editSystem.projectId,
                         });
                       } else {
@@ -433,7 +479,6 @@ export function ProjectMgmt() {
                           ...newSystem,
                           parentPortalId: pid || undefined,
                           parentPortalPath: portal ? { name: portal.name, url: portal.url } : undefined,
-                          url: portal?.url ?? newSystem.url ?? "",
                           projectId: portal?.projectId ?? newSystem.projectId,
                         });
                       }
@@ -525,7 +570,7 @@ export function ProjectMgmt() {
                   className="text-input"
                   value={(editSystem?.url ?? newSystem.url ?? "")}
                   onChange={(e) => editSystem ? setEditSystem({ ...editSystem, url: e.target.value }) : setNewSystem({ ...newSystem, url: e.target.value })}
-                  placeholder="https://example.com"
+                  placeholder="https://your-system.company.com/login"
                 />
               </div>
             )}

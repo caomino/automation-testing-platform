@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Button, Card, Modal, StatCard, Tag } from "../components";
-import { loginModeLabel, systemTypeLabel, useApp } from "../context";
+import { loginModeLabel, systemTypeLabel, useApp, getCredentialSecret } from "../context";
 import { fromModuleView, fromFeatureView, fromCaseView, fromExecView } from "../services/pipeline";
 
 function LoginModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { project, system, setActiveScreen, toast, setLoginStatus, runPipelineLogin } = useApp();
+  const { project, system, systems, setActiveScreen, toast, setLoginStatus, runPipelineLogin } = useApp();
   const flowHint =
     system.credentialMode === "manual-takeover"
       ? "人工接管：启动可见浏览器 → 您在浏览器中手动完成登录 → 点击「确认登录」→ 平台捕获会话（cookies/headers/tokens）→ 自动继续后续流程"
@@ -51,13 +51,15 @@ function LoginModal({ open, onClose }: { open: boolean; onClose: () => void }) {
       return;
     }
 
-    const parentPortalUrl = system.type === 'subsystem' ? system.parentPortalPath?.url : undefined;
+    const parentPortalUrl = system.type === 'subsystem'
+      ? (system.parentPortalPath?.url ?? systems?.find((s) => s.id === system.parentPortalId)?.url)
+      : undefined;
     console.log('[debug] handleLogin:', {
       projectId: project.id,
       systemId: system.id,
       systemName: system.name,
       type: system.type,
-      systemUrl: system.url,
+      systemUrl: system.capturedUrl || system.url,
       parentPortalPath: system.parentPortalPath,
       parentPortalUrl: parentPortalUrl,
       loginMode: system.credentialMode || system.loginMode,
@@ -68,10 +70,11 @@ function LoginModal({ open, onClose }: { open: boolean; onClose: () => void }) {
         projectId: project.id,
         systemId: system.id,
         mode: system.credentialMode || system.loginMode,
-        systemUrl: system.url,
+        systemUrl: system.capturedUrl || system.url,
         parentPortalUrl: parentPortalUrl,
-        credentialRef: system.passwordRef || undefined,
-        username: system.username || undefined,
+        credentialRef: system.credentials?.credentialRef || system.passwordRef || undefined,
+        username: getCredentialSecret(system.id)?.username ?? system.username ?? undefined,
+        password: getCredentialSecret(system.id)?.password ?? undefined,
         takeoverAction: 'launch',
       } as any);
 
@@ -118,10 +121,13 @@ function LoginModal({ open, onClose }: { open: boolean; onClose: () => void }) {
         projectId: project.id,
         systemId: system.id,
         mode: system.credentialMode || system.loginMode,
-        systemUrl: system.url,
-        parentPortalUrl: system.type === 'subsystem' ? system.parentPortalPath?.url : undefined,
-        credentialRef: system.passwordRef || undefined,
-        username: system.username || undefined,
+        systemUrl: system.capturedUrl || system.url,
+        parentPortalUrl: system.type === 'subsystem'
+          ? (system.parentPortalPath?.url ?? systems?.find((s) => s.id === system.parentPortalId)?.url)
+          : undefined,
+        credentialRef: system.credentials?.credentialRef || system.passwordRef || undefined,
+        username: (getCredentialSecret(system.id)?.username) ?? system.username ?? undefined,
+        password: getCredentialSecret(system.id)?.password ?? undefined,
         takeoverAction: 'confirm',
       } as any);
 
@@ -425,7 +431,7 @@ export function Workbench() {
             const result = await runPipelineExplore({
               sessionHandle,
               subsystemId: system.id,
-              systemUrl: system.url,
+              systemUrl: system.capturedUrl || system.url,
             });
             if (result) {
               setActiveScreen("s2");
@@ -480,7 +486,7 @@ export function Workbench() {
               caseWorkbook: sheets,
               scope: 'all',
               browserOSMatrix: browsers,
-              systemUrl: system.url,
+              systemUrl: system.capturedUrl || system.url,
               cookies: system.sessionState?.cookies,
               headers: system.sessionState?.headers,
               tokens: system.sessionState?.tokens,
