@@ -18,7 +18,7 @@
 
 import { createLogger, type Logger, type LoggerConfig, type LogFileInfo } from '@test-platform/infra-logger';
 import { createStore, type ProjectStore } from '@test-platform/infra-store';
-import type { McpEngine, EngineConfig, PlaywrightStorageState } from '@test-platform/engine-mcp';
+import type { McpEngine, EngineConfig, PlaywrightStorageState, SemanticNode } from '@test-platform/engine-mcp';
 import { createEngine } from '@test-platform/engine-mcp';
 
 import type {
@@ -39,6 +39,7 @@ import type {
   BrowserOS,
   ExploredElement,
   FeatureRow,
+  System,
 } from '@test-platform/contracts';
 import { DEFAULT_FEATURE_COLUMNS } from '@test-platform/contracts';
 
@@ -50,6 +51,17 @@ import * as stageCase from '@test-platform/stage-case';
 import * as stageExecute from '@test-platform/stage-execute';
 import * as stageDefect from '@test-platform/stage-defect';
 import { createAIClient, getDefault, type AIClient, type AIVendor } from '@test-platform/infra-ai';
+
+/** 登录页 URL 判定（token 级匹配，避免误伤 /authority/ 等含 auth 的业务路径） */
+function isLoginPageUrl(u: string): boolean {
+  try {
+    const url = new URL(u);
+    const segs = ((url.pathname || '') + '#' + (url.hash || '')).split(/[/#?&._-]+/);
+    return segs.some((s) => ['login', 'signin', 'sso', 'logon'].includes(s.toLowerCase()));
+  } catch {
+    return false;
+  }
+}
 
 /** 编排器配置 */
 export interface OrchestratorConfig {
@@ -178,14 +190,19 @@ export class PipelineOrchestrator {
       }
     };
 
-    const candidateUrls = [...inScopeIds]
-      .map((id) => featurePaths[id])
-      .filter((u): u is string => !!u)
+    // 分离真实 URL 与「点击定位符」（SPA 未换 URL 的兜底；探索阶段编码为 click:<selector>）
+    const raw = [
+      ...new Set([...inScopeIds].map((id) => featurePaths[id]).filter((u): u is string => !!u)),
+    ];
+    const clickLocators = raw.filter((u) => u.startsWith('click:')).map((u) => u.slice('click:'.length));
+    const candidateUrls = raw
+      .filter((u) => !u.startsWith('click:'))
       .map(norm)
       .filter((u) => /^https?:\/\//i.test(u));
 
     // 系统域名判定：优先 baseUrl 的 host；否则取候选 URL 中出现最多的 host。
     // 目的：剔除「若依官网」这类外链（如 http://ruoyi.vip），避免 case 二次探索导航到 bogus 地址挂死（M6）。
+    // 注意：点击定位符（click:）同源 SPA 菜单常驻，不走域名过滤，直接计入。
     let systemHost = baseUrl ? hostOf(baseUrl) : null;
     if (!systemHost) {
       const hostCounts = new Map<string, number>();
@@ -213,8 +230,21 @@ export class PipelineOrchestrator {
       ),
     ].slice(0, 10);
 
-    if (urls.length === 0) return [];
+    const locators = clickLocators.slice(0, 10);
+
+    // 点击定位符需先回到系统首页（提供 baseUrl 时），确保菜单常驻可点
+    if (locators.length > 0 && baseUrl) {
+      try {
+        await engine.navigate(baseUrl);
+      } catch {
+        /* 导航失败忽略，交由下方点击兜底 */
+      }
+    }
+
+    if (urls.length === 0 && locators.length === 0) return [];
     const all: ExploredElement[] = [];
+
+    // 真实 URL：导航到对应页面后抓元素
     for (const url of urls) {
       try {
         // 单 URL 超时兜底：导航到慢/挂死页面（如外链）最多 15s，避免整条 case 链卡死
@@ -229,7 +259,26 @@ export class PipelineOrchestrator {
         this.logger.warn('orchestrator', `case secondary exploration failed for ${url}: ${e instanceof Error ? e.message : e}`);
       }
     }
-    this.logger.info('orchestrator', `case secondary exploration: ${all.length} elements from ${urls.length} urls`);
+
+    // 点击定位符：按功能点精确重开对应页面（SPA 未换 URL 的兜底），再抓当前页元素
+    for (const sel of locators) {
+      try {
+        const els = await Promise.race([
+          (async () => {
+            await engine.runStep({ kind: 'click', selector: sel });
+            await engine.waitForTimeout(600);
+            return engine.extractPageElements(); // 抓已打开的当前页
+          })(),
+          new Promise<ExploredElement[]>((_, reject) =>
+            setTimeout(() => reject(new Error(`click-locator timeout after 15s`)), 15000),
+          ),
+        ]);
+        all.push(...els);
+      } catch (e) {
+        this.logger.warn('orchestrator', `case secondary exploration (click locator) failed for ${sel}: ${e instanceof Error ? e.message : e}`);
+      }
+    }
+    this.logger.info('orchestrator', `case secondary exploration: ${all.length} elements from ${urls.length} urls + ${locators.length} click-locators`);
     return all;
   }
 
@@ -238,6 +287,81 @@ export class PipelineOrchestrator {
     const project = await this.store.createProject(input);
     this.logger.info('orchestrator', `project created: ${project.id}`);
     return project;
+  }
+
+  /**
+   * 按功能点/测试点名称在系统页面找对应功能入口（菜单/按钮/链接）并点击抓取元素。
+   * 兜底场景：探索阶段菜单识别失败、featurePaths 为空/无效时使用——用户明确要求
+   * "如果没有找到 url 按照功能点名称取找对应功能"。绝不静默模板直出。
+   * - 名称取功能点表「功能点」「测试点」两列（去重、去危险词、按长度降序优先精确）；
+   * - 在当前页 DOM 中找文本匹配的可交互元素（a/button/role），点击进入后抓当前页元素；
+   * - 任一失败仅告警跳过，不中断整体；危险操作文本（退出/注销/删除等）硬性跳过。
+   */
+  private async exploreByFeatureNames(
+    engine: McpEngine,
+    featureTable: FeatureRow[][],
+    baseUrl?: string,
+  ): Promise<ExploredElement[]> {
+    const FC = DEFAULT_FEATURE_COLUMNS;
+    const DANGEROUS = /退出|注销|登出|logout|sign\s?out|清空|重置|修改密码|解绑|删除/i;
+    const names: string[] = [];
+    const seen = new Set<string>();
+    for (const r of featureTable.flat()) {
+      for (const col of [FC.featureName, FC.testPoint]) {
+        const t = (r[col] ?? '').trim();
+        if (!t || t.length < 2 || t.length > 40 || DANGEROUS.test(t) || seen.has(t)) continue;
+        seen.add(t);
+        names.push(t);
+      }
+    }
+    if (names.length === 0) return [];
+
+    // 名称越长越精确，优先点击；避免同名重复点击（matched 已点 selector 去重）
+    const sorted = names.slice().sort((a, b) => b.length - a.length);
+    const matchedSelectors = new Set<string>();
+    const all: ExploredElement[] = [];
+
+    for (const name of sorted) {
+      try {
+        // 回到系统首页确保菜单常驻可点
+        if (baseUrl) {
+          try {
+            await engine.navigate(baseUrl);
+          } catch {
+            /* 忽略导航失败 */
+          }
+          await engine.waitForTimeout(500);
+        }
+        const dom = await engine.extractSemanticDom().catch(() => [] as SemanticNode[]);
+        // 找与名称匹配的可交互节点（文本相等 > 包含；跳过已点击 selector）
+        let target: SemanticNode | undefined;
+        const walk = (nodes: SemanticNode[]): void => {
+          for (const n of nodes) {
+            if (target) return;
+            const text = (n.text || n.name || '').trim();
+            if (n.interactive && text && !DANGEROUS.test(text) && !matchedSelectors.has(n.selector)) {
+              if (text === name || text.includes(name) || name.includes(text)) {
+                target = n;
+                return;
+              }
+            }
+            if (n.children.length > 0) walk(n.children);
+          }
+        };
+        walk(dom);
+        if (!target) continue;
+        matchedSelectors.add(target.selector);
+        await engine.runStep({ kind: 'click', selector: target.selector });
+        await engine.waitForTimeout(700);
+        const els = await engine.extractPageElements();
+        all.push(...els);
+        this.logger.info('orchestrator', `case: click-by-name "${name}" -> ${els.length} elements`);
+      } catch (e) {
+        this.logger.warn('orchestrator', `case: click-by-name failed for "${name}": ${e instanceof Error ? e.message : e}`);
+      }
+    }
+    this.logger.info('orchestrator', `case fallback by feature names: ${all.length} elements from ${names.length} names`);
+    return all;
   }
 
   /** 运行整条流水线 */
@@ -265,6 +389,24 @@ export class PipelineOrchestrator {
           await this.store.saveSession(input.login.systemId, loginOutput.sessionHandle);
         } catch (err) {
           this.logger.warn('orchestrator', `failed to persist session: ${err instanceof Error ? err.message : err}`);
+        }
+        // 记录登录后的浏览器 URL 为 capturedUrl（探索目标应为登录后的应用页，而非门户闸门根路径）
+        try {
+          const loginEngine = getTakeoverEngine(input.login.systemId);
+          if (loginEngine) {
+            const curUrl = await loginEngine.getCurrentUrl();
+            if (curUrl && !isLoginPageUrl(curUrl)) {
+              const ownerProjectId = await this.findProjectIdBySystemId(input.login.systemId);
+              if (ownerProjectId) {
+                await this.store.updateSystem(ownerProjectId, input.login.systemId, { capturedUrl: curUrl } as Partial<System> & { capturedUrl?: string });
+                this.logger.info('orchestrator', `[1/6] login capturedUrl saved for ${input.login.systemId}: ${curUrl}`);
+              } else {
+                this.logger.warn('orchestrator', `[1/6] login capturedUrl not saved, owner project not found for ${input.login.systemId}`);
+              }
+            }
+          }
+        } catch (err) {
+          this.logger.warn('orchestrator', `failed to save capturedUrl: ${err instanceof Error ? err.message : err}`);
         }
       }
 
@@ -492,17 +634,42 @@ export class PipelineOrchestrator {
         const loginStage = createLoginStage({ engineFactory: this.engineFactory, store: this.store });
         const output = await loginStage.run(input as LoginInput);
         this.logger.info('orchestrator', `runStage: login finished: ${output.loginStatus}`);
+        let outputWithUrl: LoginOutput & { capturedUrl?: string } = output;
         // 保存登录会话
         if (output.loginStatus === 'ok') {
+          const loginSystemId = (input as LoginInput).systemId;
           try {
-            await this.store.saveSession((input as LoginInput).systemId, output.sessionHandle);
+            await this.store.saveSession(loginSystemId, output.sessionHandle);
           } catch {
             // 会话持久化失败不阻断登录流程
           }
           // 持久化 storageState（cookies+localStorage），供后续独立 explore/execute 无失真复用登录
-          await this.persistStorageStateFromEngine((input as LoginInput).systemId);
+          await this.persistStorageStateFromEngine(loginSystemId);
+          // 记录登录后的浏览器 URL 为 capturedUrl：探索目标应为登录后的应用页，
+          // 而非门户闸门根路径（裸根路径重载后会被重定向到登录页，导致「探索后退登出」）。
+          // 注意：capturedUrl 非契约 System 字段，但 store 以 JSON 整存 systems，运行时可达
+          // （前端 dataApi 类型已含该字段）；此处仅做类型断言，不修改冻结的 contracts。
+          // 归属项目按 systemId 全局查找（前端跨项目合并展示，传入的 projectId 可能不匹配）。
+          try {
+            const loginEngine = getTakeoverEngine(loginSystemId);
+            if (loginEngine) {
+              const curUrl = await loginEngine.getCurrentUrl();
+              if (curUrl && !isLoginPageUrl(curUrl)) {
+                const ownerProjectId = await this.findProjectIdBySystemId(loginSystemId);
+                if (ownerProjectId) {
+                  await this.store.updateSystem(ownerProjectId, loginSystemId, { capturedUrl: curUrl } as Partial<System> & { capturedUrl?: string });
+                  this.logger.info('orchestrator', `runStage: login capturedUrl saved for ${loginSystemId}: ${curUrl}`);
+                  outputWithUrl = { ...output, capturedUrl: curUrl };
+                } else {
+                  this.logger.warn('orchestrator', `runStage: login capturedUrl not saved, owner project not found for ${loginSystemId}`);
+                }
+              }
+            }
+          } catch (e) {
+            this.logger.warn('orchestrator', `runStage: save capturedUrl failed: ${e instanceof Error ? e.message : e}`);
+          }
         }
-        return output;
+        return outputWithUrl;
       }
 
       case 'explore': {
@@ -610,10 +777,15 @@ export class PipelineOrchestrator {
           }
         }
 
-        // 二次探索（Playwright MCP）：无 exploredElements 时按 featurePaths 探索选中模块
+        // 二次探索（Playwright MCP）：无 exploredElements 时，按 featurePaths 探索选中模块；
+        // featurePaths 缺失/无效时，重跑探索重建 featurePaths，仍失败则按功能点名称在页面找对应功能。
+        // 绝不静默模板直出 —— 模板生成必须有明确告警（bug-fixing: 根因=探索未产 url，不能靠用例阶段掩盖）。
         const systemId: string | undefined = rawInput.systemId ?? rawInput.sessionHandle?.systemId;
         let exploredElements: ExploredElement[] = rawInput.exploredElements ?? [];
-        if (exploredElements.length === 0 && featurePaths) {
+        const hasUsablePaths = !!featurePaths && Object.values(featurePaths).some((u) =>
+          /^https?:\/\//i.test(u) || u.startsWith('/') || u.startsWith('click:'),
+        );
+        if (exploredElements.length === 0 && (hasUsablePaths || featureTable.flat().length > 0)) {
           try {
             // 优先复用登录浏览器（会话随浏览器存活），否则新建引擎并恢复持久化 storageState。
             // 旧实现无条件新建未登录浏览器，导航到真实系统会撞登录页、抽不到真实元素。
@@ -626,9 +798,38 @@ export class PipelineOrchestrator {
             const engine = takeoverEngine ?? this.engineFactory(engineConfig);
             if (!takeoverEngine) await engine.launch();
             try {
-              exploredElements = await this.exploreByFeaturePaths(
-                engine, featurePaths, featureTable, selectedModuleIds, scope, systemUrl,
-              );
+              if (hasUsablePaths) {
+                exploredElements = await this.exploreByFeaturePaths(
+                  engine, featurePaths, featureTable, selectedModuleIds, scope, systemUrl,
+                );
+              }
+
+              // ② featurePaths 空/无效 → 重跑探索重建（降级路径现已带 url 兜底）
+              if (exploredElements.length === 0) {
+                this.logger.warn('orchestrator', `case: featurePaths 缺失或无效，重跑探索重建（systemId=${systemId ?? '?'}）`);
+                const freshTree = await engine.exploreModules().catch((e) => {
+                  this.logger.warn('orchestrator', `case: re-explore failed: ${e instanceof Error ? e.message : e}`);
+                  return [];
+                });
+                if (freshTree.length > 0) {
+                  const systemName = (rawInput.metaConfig as { systemName?: string } | undefined)?.systemName ?? systemId ?? 'system';
+                  const fresh = await stageFeature.run({ moduleTree: freshTree, systemName, confirmedOnly: false });
+                  const freshPaths = fresh.featurePaths ?? {};
+                  const freshUsable = Object.values(freshPaths).some((u) =>
+                    /^https?:\/\//i.test(u) || u.startsWith('/') || u.startsWith('click:'),
+                  );
+                  if (freshUsable) {
+                    exploredElements = await this.exploreByFeaturePaths(
+                      engine, freshPaths, fresh.featureTable.length ? fresh.featureTable : featureTable, selectedModuleIds, scope, systemUrl,
+                    );
+                  }
+                }
+              }
+
+              // ③ 仍无有效定位 → 按功能点/测试点名称在页面找对应功能（用户明确要求）
+              if (exploredElements.length === 0) {
+                exploredElements = await this.exploreByFeatureNames(engine, featureTable, systemUrl);
+              }
             } finally {
               // 复用登录浏览器不关闭（保持会话），新建引擎才关闭
               if (!takeoverEngine) await engine.close().catch(() => {});
@@ -636,6 +837,9 @@ export class PipelineOrchestrator {
           } catch (e) {
             this.logger.warn('orchestrator', `case engine launch failed: ${e instanceof Error ? e.message : e}`);
           }
+        }
+        if (exploredElements.length === 0) {
+          this.logger.warn('orchestrator', 'case: 无任何探索证据（url 缺失且按名称兜底失败），退化为模板生成，请检查探索阶段菜单识别');
         }
 
         const caseInput: CaseInput = {
@@ -739,6 +943,23 @@ export class PipelineOrchestrator {
    * 从当前活跃的接管浏览器（登录阶段保留）抓取 storageState 并持久化到 Store。
    * storageState 含 cookies + localStorage，可在后续独立 explore/execute 阶段无失真恢复登录态。
    */
+  /**
+   * 按 systemId 全局查找归属项目（前端跨项目合并展示系统，登录/探索时传的 projectId
+   * 可能不是系统真实归属项目，导致 updateSystem 报 system not found、capturedUrl 存不上）。
+   */
+  private async findProjectIdBySystemId(systemId: string): Promise<string | undefined> {
+    try {
+      const summaries = await this.store.listProjects();
+      for (const p of summaries) {
+        const proj = await this.store.getProject(p.id);
+        if (proj?.systems?.some((s) => s.id === systemId)) return p.id;
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async persistStorageStateFromEngine(systemId: string): Promise<void> {
     try {
       const takeover = getTakeoverEngine(systemId);

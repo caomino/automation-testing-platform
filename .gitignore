@@ -35,3 +35,10 @@ Thumbs.db
 # ===== temp / scratch =====
 *.tmp
 .cache/
+
+# ===== runtime artifacts (never commit) =====
+.service-pids.json
+packages/engine-mcp*.zip
+
+# ===== credentials store (keep encrypted creds local only) =====
+packages/orchestrator/.credentials/

@@ -6,6 +6,8 @@
 
 import type { McpEngine, SessionCapableEngine } from '@test-platform/engine-mcp';
 import type { AIClient } from '@test-platform/infra-ai';
+import { exploreNonAi } from './nonAiExplore.js';
+import { exploreWithAi } from './aiExplore.js';
 import type {
   ClickPath,
   ExploreInput,
@@ -190,6 +192,42 @@ export function computeNeedsReview(tree: ModuleNode[]): string[] {
     .map((n) => n.id);
 }
 
+/**
+ * in-pipeline 粒度闸门（S2 / P-A#4）。
+ *
+ * 核心断言：探索产出必须包含**操作级功能点**（`type==='action'`，即列表/添加/修改/删除/查询/导出）。
+ * 仅当 action 叶子为 0（彻底没抓到任何操作级功能点）时，把目录级叶子整体标 `needs_review` + 原因并告警；
+ * 这正是「只抓父集目录」的真凶场景。若已存在 action，则视为部分成功，不全局罢工（混合树靠人工审核补遗漏页）。
+ *
+ * 设计约束：
+ *  - 不新增任何契约字段，完全复用 ModuleNode.status / reviewReason / ExploreOutput.needsReview。
+ */
+export function assertActionGranularity(
+  tree: ModuleNode[],
+  _minActionRatio = 0.8,
+): { totalLeaves: number; actionCount: number; flagged: number } {
+  const all = flatten(tree);
+  const leaves = all.filter((n) => n.children.length === 0);
+  const actionLeaves = leaves.filter((n) => n.type === 'action');
+  const dirLeaves = leaves.filter((n) => n.type !== 'action');
+  const actionCount = actionLeaves.length;
+  const totalLeaves = leaves.length;
+  const flagged = actionCount === 0 ? dirLeaves.length : 0;
+
+  if (actionCount === 0) {
+    const reason =
+      '未采集到任何操作级功能点（列表/添加/修改/删除/查询/导出），疑似仅探索到目录层';
+    for (const n of dirLeaves) {
+      n.status = 'needs_review';
+      n.reviewReason = reason;
+    }
+    console.error(
+      `[explore][GRANULARITY] 颗粒度不足：${reason}（action=0, 目录级叶子=${flagged}/${totalLeaves}）→ 已标记 needs_review`,
+    );
+  }
+  return { totalLeaves, actionCount, flagged };
+}
+
 /** 构造断点：聚集已覆盖节点 id 与 frontier */
 export function buildCheckpoint(
   tree: ModuleNode[],
@@ -322,6 +360,20 @@ async function prepareFreshEngineSession(
 }
 
 /**
+ * 登录页 URL 判定（token 级匹配，避免误伤 /authority/ 等含 auth 的业务路径）。
+ * 匹配 /login、#/login、login.jsp、signin、sso、logon 等常见登录路由。
+ */
+function isLoginPageUrl(u: string): boolean {
+  try {
+    const url = new URL(u);
+    const segs = ((url.pathname || '') + '#' + (url.hash || '')).split(/[/#?&._-]+/);
+    return segs.some((s) => ['login', 'signin', 'sso', 'logon'].includes(s.toLowerCase()));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 为已带活跃会话的引擎（登录浏览器复用）准备页面：
  * 仅做一次正常导航，绝不注入会话（防止旧 cookie 快照覆盖浏览器内最新有效会话导致登出）。
  */
@@ -333,10 +385,78 @@ async function prepareActiveSessionEngine(
     let cur = '';
     try { cur = await activeEngine.getCurrentUrl(); } catch { cur = ''; }
     let skipNav = false;
-    try { skipNav = !!cur && !!systemUrl && new URL(cur).origin === new URL(systemUrl).origin; } catch { skipNav = false; }
-    if (skipNav) { console.log('[stage-explore] reuse login browser: same origin (' + cur + '), skip navigation'); return []; }
+    try {
+      if (cur && systemUrl) {
+        const a = new URL(cur);
+        const b = new URL(systemUrl);
+        const sameDoc = a.origin === b.origin && a.pathname === b.pathname && a.search === b.search;
+        if (sameDoc) {
+          // 同文档（origin/path/search 相同）：hash 相同跳过；hash 不同则导航，纯 SPA 路由切换不重载、会话安全
+          skipNav = a.hash === b.hash;
+        } else if (a.origin === b.origin) {
+          // 跨文档（会全量重载）：
+          //  - 目标路径是当前路径的严格前缀（门户根/闸门，如 /typtnew/ → /typtnew/sxrdtypt/）：
+          //    重载后必被服务端重定向到登录页（#/login），当前页非登录页时跳过导航，留在已登录页探索
+          //  - 目标本身就是登录页：跳过（去哪都是登录页）
+          //  - 其余同源不同应用路径（门户→子系统）：导航（cookie 会话随重载保留，不丢登录）
+          const ap = (a.pathname || '').replace(/\/+$/, '');
+          const bp = (b.pathname || '').replace(/\/+$/, '');
+          const targetIsPrefixGate = bp.length > 0 && ap.startsWith(bp + '/');
+          skipNav = (!isLoginPageUrl(cur) && targetIsPrefixGate) || isLoginPageUrl(systemUrl);
+        } else {
+          // 跨源：必须导航（导航前存储预注入保底）
+          skipNav = false;
+        }
+      }
+    } catch { skipNav = false; }
+    if (skipNav) {
+      console.log('[stage-explore] reuse login browser: keep current logged-in page (' + cur + '), skip navigation');
+      return [];
+    }
+    // 路径不同（门户→子系统）需跳转到目标页。完整 reload（page.goto）会冲掉 SPA 内存态；
+    // 若登录 token 落在 sessionStorage，重载后必然清空，且 context.storageState 不抓取
+    // sessionStorage、applySession 也只回写 localStorage —— 三者叠加正是「探索后退登出」的根因
+    // （事后回灌 localStorage 对 sessionStorage token 无效，且存在 SPA 启动先于回灌的竞态）。
+    // 正确做法：导航【前】抓取全部 local+session 存储，注册 init script 在重载后、SPA 脚本启动【前】
+    // 把 token 原样写回两种存储，从而无失真恢复登录态。注入先于 SPA 启动，彻底消除竞态。
+    let entries: Array<{ storage: 'local' | 'session'; name: string; value: string }> = [];
+    try { entries = await activeEngine.getAllStorageTokens(); } catch { entries = []; }
+    if (entries.length) {
+      try {
+        // 该回调在浏览器上下文（页面脚本启动前）执行；用本地接口描述存储，避免依赖 DOM lib
+        interface WebStorageLike { getItem(k: string): string | null; setItem(k: string, v: string): void; }
+        await activeEngine.addInitScript(
+          (data: unknown) => {
+            const list = data as Array<{ storage: 'local' | 'session'; name: string; value: string }>;
+            const s = globalThis as unknown as { sessionStorage: WebStorageLike; localStorage: WebStorageLike };
+            for (const e of list) {
+              try {
+                if (e.storage === 'session') {
+                  if (!s.sessionStorage.getItem(e.name)) s.sessionStorage.setItem(e.name, e.value);
+                } else {
+                  if (!s.localStorage.getItem(e.name)) s.localStorage.setItem(e.name, e.value);
+                }
+              } catch {
+                // 忽略无存储权限的页面（如 about:blank）
+              }
+            }
+          },
+          entries,
+        );
+      } catch (e) {
+        console.warn('[stage-explore] 注册会话保持 init script 失败（将降级为导航后回灌）:', e instanceof Error ? e.message : e);
+      }
+    }
     await activeEngine.navigate(systemUrl);
-    console.log('[stage-explore] 复用登录浏览器：导航成功（不注入会话，保护现有登录态）');
+    // 兜底：若目标被服务端重定向到登录页（如门户根路径闸门，302 → #/login），
+    // 而导航前页面是已登录的应用页，则回退到导航前页面，避免把接管浏览器丢在登录页上。
+    let after = '';
+    try { after = await activeEngine.getCurrentUrl(); } catch { after = ''; }
+    if (cur && after && isLoginPageUrl(after) && !isLoginPageUrl(systemUrl) && !isLoginPageUrl(cur)) {
+      console.warn(`[stage-explore] 目标 ${systemUrl} 被重定向到登录页（${after}），回退到登录前应用页 ${cur}`);
+      try { await activeEngine.navigate(cur); } catch { /* 回退失败则保持当前页 */ }
+    }
+    console.log('[stage-explore] 复用登录浏览器：已跳转到目标路径并保持登录态');
     return [];
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -401,16 +521,22 @@ export async function run(
         errorDetails.push(...(await prepareFreshEngineSession(activeEngine, validated)));
       }
 
-      // 执行 DOM 遍历提取模块
-      console.log('[stage-explore] 正在遍历 DOM 提取模块...');
-      moduleTree = await activeEngine.exploreModules();
-      console.log(`[stage-explore] DOM 遍历完成，发现 ${moduleTree.length} 个节点`);
-      
+      // 执行探索：按 AI 开关二选一（双模式隔离，运行时只走一条路径，绝不互相污染）
+      console.log(`[stage-explore] 正在${opts?.ai ? 'AI 辅助' : '结构化'}探索模块树...`);
+      moduleTree = opts?.ai
+        ? await exploreWithAi(activeEngine, opts.ai, {
+            subsystemId: validated.subsystemId,
+            systemId: validated.subsystemId,
+            startUrl: validated.systemUrl,
+          })
+        : await exploreNonAi(activeEngine);
+      console.log(`[stage-explore] 探索完成，发现 ${moduleTree.length} 个节点`);
+
       if (moduleTree.length === 0) {
-        console.warn('[stage-explore] 遍历完成但未发现任何模块节点');
-        errorDetails.push('DOM 遍历未发现可识别的导航菜单或模块');
+        console.warn('[stage-explore] 探索完成但未发现任何模块节点');
+        errorDetails.push('探索未发现可识别的导航菜单或模块');
       }
-      
+
       engineSucceeded = moduleTree.length > 0;
     } catch (e) {
       console.error('[stage-explore] 引擎执行失败:', e);
@@ -451,6 +577,9 @@ export async function run(
       validated.subsystemId,
     );
   }
+
+  // in-pipeline 粒度闸门：确保产出含操作级功能点（列表/添加/修改/删除等），否则标 needs_review
+  assertActionGranularity(moduleTree);
 
   const coverage = computeCoverage(moduleTree);
   const needsReview = computeNeedsReview(moduleTree);

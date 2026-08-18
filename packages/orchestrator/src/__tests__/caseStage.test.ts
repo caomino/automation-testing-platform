@@ -140,8 +140,8 @@ describe('orchestrator runStage("case") — 生成测试用例模块', () => {
     expect(out.caseWorkbook).toHaveLength(1);
     expect(out.caseWorkbook[0].sheetName).toBe('排班');
     expect(out.caseWorkbook[0].rows[0].caseNo).toBe('QYYX_PZ_PB_01_N1');
-    // 无 featurePaths + 无 exploredElements → 不打开浏览器（无路径可探索）
-    expect(mockEngine.launch).not.toHaveBeenCalled();
+    // 无 featurePaths + 无 exploredElements → 打开浏览器重跑探索兜底（不再静默模板直出）
+    expect(mockEngine.launch).toHaveBeenCalledTimes(1);
   });
 
   // === 需求 #2：需要打开浏览器完全按照功能点进行探索 ===
@@ -207,14 +207,49 @@ describe('orchestrator runStage("case") — 生成测试用例模块', () => {
     expect(out.caseWorkbook[0].rows).toHaveLength(5);
   });
 
-  it('无 featurePaths 且不传 exploredElements 时：不打开浏览器（无路径可探索，模板兜底）', async () => {
+  it('无 featurePaths 且不传 exploredElements 时：打开浏览器重跑探索兜底（仍无证据才模板）', async () => {
     const input = {
       featureTable: [[fp('1', '功能性测试', '区域影像系统', '配置', '检查室', '检查室管理', '查询', 'QYYX_PZ_JCX_01')]],
       scope: 'all' as const,
       metaConfig: meta,
     };
     await orchestrator.runStage('case', input);
-    expect(mockEngine.launch).not.toHaveBeenCalled();
+    // 需求：生成用例必须驱动浏览器（重跑探索 + 按功能点名称兜底），绝不静默模板直出
+    expect(mockEngine.launch).toHaveBeenCalledTimes(1);
+    expect(mockEngine.exploreModules).toHaveBeenCalled();
+  });
+
+  it('featurePaths 缺失但页面有同名功能入口时：按功能点名称点击抓取元素（不再静默模板）', async () => {
+    const input = {
+      featureTable: [[fp('1', '功能性测试', '区域影像系统', '配置', '检查室', '检查室管理', '查询', 'QYYX_PZ_JCX_01')]],
+      scope: 'all' as const,
+      metaConfig: meta,
+      systemUrl: 'https://x.com/home',
+    };
+    // 重跑探索仍返回空（菜单识别失败场景），但页面 DOM 里有文本匹配「检查室管理」的可交互入口
+    vi.mocked(mockEngine.exploreModules).mockResolvedValue([]);
+    vi.mocked(mockEngine.extractSemanticDom).mockResolvedValue([
+      {
+        tag: 'A',
+        text: '检查室管理',
+        name: '检查室管理',
+        selector: '#menu-jcx',
+        interactive: true,
+        children: [],
+        href: '/jcx',
+        role: 'menuitem',
+        isDataControl: false,
+        rect: { x: 0, y: 0, w: 0, h: 0 },
+      } as never,
+    ]);
+    vi.mocked(mockEngine.extractPageElements).mockResolvedValue([
+      { ref: 'btn-add', text: '新增', label: '新增', interactive: true, isFormControl: false, suggestedAction: 'click' } as never,
+    ]);
+    await orchestrator.runStage('case', input);
+    // 打开浏览器 → 按名称定位并点击功能入口 → 抓取当前页元素
+    expect(mockEngine.launch).toHaveBeenCalledTimes(1);
+    expect(mockEngine.runStep).toHaveBeenCalledWith({ kind: 'click', selector: '#menu-jcx' });
+    expect(mockEngine.extractPageElements).toHaveBeenCalled();
   });
 
   // === 需求 #1：启用 AI 与不启用 双模 ===
@@ -233,8 +268,8 @@ describe('orchestrator runStage("case") — 生成测试用例模块', () => {
       expect(r.evidenceLevel).toBe('needs_review'); // AI 生成需人工复核
       expect(r.needsReview).toBe(true);
     }
-    // 无 featurePaths → 不打开浏览器
-    expect(mockEngine.launch).not.toHaveBeenCalled();
+    // 无 featurePaths → 打开浏览器重跑探索兜底（不再静默模板）
+    expect(mockEngine.launch).toHaveBeenCalledTimes(1);
   });
 
   it('aiConfig 未启用时：模板生成，不注入 AI（evidenceLevel=derived）', async () => {

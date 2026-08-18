@@ -47,17 +47,10 @@ function readBody(req) {
 }
 
 /**
- * 凭证预处理：若 login input 包含 username/password（无 credentialRef），
- * 自动存入凭证存储并注入 credentialRef，实现"输入参数即执行"的通用模式。
- * 返回的 input 会移除 username/password，仅保留 credentialRef。
+ * 凭证预处理（方案 X）：账号密码经前端会话态传入，直接透传给 stage-login 自动填充，
+ * 不再写入凭证库（Vault）。保持 username/password 原样返回，不注入 credentialRef。
  */
 async function preprocessLoginInput(input) {
-  if (input.mode === 'credential' && !input.credentialRef && input.username && input.password) {
-    const credRef = await credStore.save(input.username, input.password);
-    console.log(`[server] auto-stored credential: ${credRef} for system ${input.systemId}`);
-    const { username, password, ...rest } = input;
-    return { ...rest, credentialRef: credRef };
-  }
   return input;
 }
 

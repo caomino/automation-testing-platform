@@ -528,4 +528,26 @@ export class McpPlaywrightAdapter implements McpEngine {
       return { cookies: [], origins: [] };
     }
   }
+
+  async getAllStorageTokens(): Promise<Array<{ storage: 'local' | 'session'; name: string; value: string }>> {
+    try {
+      const result = await this.callTool('browser_localstorage_get_all', {});
+      const all = JSON.parse(result);
+      const out: Array<{ storage: 'local' | 'session'; name: string; value: string }> = [];
+      if (all && typeof all === 'object') {
+        for (const [name, value] of Object.entries(all)) {
+          if (typeof value === 'string') out.push({ storage: 'local', name, value });
+        }
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  // MCP 适配器无 addInitScript 等价能力：降级为 no-op。
+  // 会话保持由 direct 引擎（PlaywrightEngine）路径完整处理；mcp 路径非默认引擎。
+  async addInitScript(_fn: (arg?: unknown) => void, _arg?: unknown): Promise<void> {
+    return;
+  }
 }

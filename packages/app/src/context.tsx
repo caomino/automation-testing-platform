@@ -135,6 +135,8 @@ export interface DefectRowView {
 export interface ModuleNodeView {
   id: string;
   name: string;
+  /** 节点类型：system(系统) / module(目录) / page(页面) / action(功能·按钮级)。结构化人工补录会区分设置，避免数据糊成一坨 */
+  type?: "system" | "module" | "page" | "action";
   children?: ModuleNodeView[];
   status?: "已覆盖" | "needs_review" | "未探索";
 }
@@ -466,7 +468,11 @@ export function reducer(state: AppState, action: Action): AppState {
       const projects = state.projects.map((p) =>
         p.id === s.projectId ? { ...p, activeSystemId: s.id } : p
       );
-      const project = state.project.id === s.projectId ? { ...state.project, activeSystemId: s.id } : state.project;
+      // 关键修复：切换系统时 project 必须跟随系统归属项目（systems 是跨项目合并展示的，
+      // 若仍保留当前 project，后续 login/explore 传 project.id 会与系统真实归属不符，
+      // 导致后端 updateSystem 报 system not found、capturedUrl 存不上 → 探索门户）。
+      const project = state.projects.find((p) => p.id === s.projectId)
+        ?? (state.project.id === s.projectId ? { ...state.project, activeSystemId: s.id } : state.project);
       return { ...state, system: s, projects, project };
     }
     case "ADD_SYSTEM":
@@ -1005,7 +1011,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               sessionState: s.sessionState,
               username: s.credentials?.username ?? s.username,
               passwordRef: undefined,
-              credentials: s.credentials,
+              credentials: s.credentials ?? (s.passwordRef ? { credentialRef: s.passwordRef, username: s.username ?? '' } : undefined),
               credentialMode: s.credentialMode,
             });
           }
@@ -1213,10 +1219,18 @@ export function useApp() {
           const sessionState = { cookies: out.cookies, headers: out.sessionHandle?.headers, tokens: out.sessionHandle?.tokens };
           dispatch({ type: "SET_SESSION_STATE", id: state.system.id, sessionState });
           try {
+            // 登录后浏览器所在的应用页 URL 一并持久化为 capturedUrl：
+            // 探索应导航到登录后的应用页，而非门户闸门根路径（裸根路径重载后跳登录页 = 探索后退登出）
+            const capturedUrl = (out as any).capturedUrl;
             await dataApi.updateSystem(state.project.id, state.system.id, {
               loginState: 'logged_in',
               sessionState,
+              ...(capturedUrl ? { capturedUrl } : {}),
             } as any);
+            // 同步更新内存中的 system，使随后的探索立即使用 capturedUrl（无需刷新页面）
+            if (capturedUrl) {
+              dispatch({ type: "UPDATE_SYSTEM", id: state.system.id, patch: { capturedUrl } });
+            }
           } catch (persistErr) {
             console.warn('Failed to persist session state:', persistErr);
           }
@@ -1700,6 +1714,8 @@ export function useApp() {
     explorePromoteToTree: (seq: number) => dispatch({ type: "EXPLORE_PROMOTE_TO_TREE", seq }),
     explorePromoteAll: () => dispatch({ type: "EXPLORE_PROMOTE_ALL" }),
     updateModuleTree: (nodes: ModuleNodeView[]) => dispatch({ type: "PIPELINE_UPDATE_MODULE_TREE", nodes }),
+    /** 用结构化模块树转换得到的九列功能表整体替换当前功能点（人工补录闭环：树 → 功能表） */
+    updateFeatureTable: (rows: FeatureRowView[]) => dispatch({ type: "PIPELINE_UPDATE_FEATURE", rows }),
 
     // AI Config
     aiListVendors: async () => {

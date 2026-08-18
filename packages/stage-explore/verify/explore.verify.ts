@@ -35,6 +35,9 @@ function makeFakeEngine(tree: ModuleNode[]): SpyEngine {
     screenshot: notImpl,
     // applySession 必须为可观测 no-op：run() 会话衔接依赖它，测试据此断言被调用
     applySession: vi.fn(async () => undefined),
+    // 跨重载会话保持相关：active-session 分支会调用；返回空/无操作以匹配「已带登录态、无需注入」语义
+    getAllStorageTokens: async () => [],
+    addInitScript: async () => {},
     waitForTimeout: notImpl,
     evaluate: async <T = any>(_fn: string | ((...args: any[]) => T), ..._args: any[]): Promise<T> => undefined as T,
     close: notImpl,
@@ -77,8 +80,19 @@ const sampleTree: ModuleNode[] = [
         subsystemId: 'sys_1',
         type: 'page',
         status: 'covered',
-        children: [],
         depth: 1,
+        children: [
+          {
+            id: 'act_a1_list',
+            label: '列表',
+            parentId: 'page_a1',
+            subsystemId: 'sys_1',
+            type: 'action',
+            status: 'covered',
+            children: [],
+            depth: 2,
+          },
+        ],
       },
       {
         id: 'page_a2',
@@ -114,8 +128,8 @@ describe('stage-explore / run', () => {
     );
 
     expect(out.moduleTree).toHaveLength(2);
-    expect(out.coverage.total).toBe(4);
-    expect(out.coverage.visited).toBe(2);
+    expect(out.coverage.total).toBe(5); // mod_a + page_a1 + act_a1_list + page_a2 + mod_b
+    expect(out.coverage.visited).toBe(3); // mod_a + page_a1 + act_a1_list
     expect(out.coverage.visited).toBeLessThanOrEqual(out.coverage.total);
     expect(Array.isArray(out.coverage.frontier)).toBe(true);
     expect(out.coverage.frontier.sort()).toEqual(['mod_b', 'page_a2']);
@@ -160,8 +174,8 @@ describe('stage-explore / run', () => {
     expect(added?.status).toBe('covered');
     expect(added?.type).toBe('action');
 
-    expect(out.coverage.total).toBe(5);
-    expect(out.coverage.visited).toBe(3); // 2 原覆盖 + 1 人工覆盖
+    expect(out.coverage.total).toBe(6); // 5 + 1 人工
+    expect(out.coverage.visited).toBe(4); // 3 原覆盖 + 1 人工覆盖
     expect(out.coverage.frontier).toEqual(['page_a2', 'mod_b']);
   });
 
@@ -187,7 +201,7 @@ describe('stage-explore / run', () => {
       makeFakeEngine(sampleTree),
     );
     expect(out.moduleTree).toHaveLength(2);
-    expect(out.coverage.total).toBe(4);
+    expect(out.coverage.total).toBe(5);
   });
 
   it('(f) [Major] ①登录→②探索 会话衔接：engine.applySession 被调用并注入 sessionHandle', async () => {
@@ -368,7 +382,7 @@ describe('stage-explore / run', () => {
       makeFakeEngine(structuredClone(sampleTree)),
     );
     expect(out.moduleTree).toHaveLength(2);
-    expect(out.coverage.visited).toBe(2); // 与基线一致
-    expect(out.coverage.total).toBe(4);
+    expect(out.coverage.visited).toBe(3); // 与基线一致（含 act_a1_list）
+    expect(out.coverage.total).toBe(5);
   });
 });

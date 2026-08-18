@@ -4,6 +4,7 @@ import type { TreeItem } from "../components";
 import { useApp } from "../context";
 import type { ModuleNodeView } from "../context";
 import * as dataApi from "../services/dataApi";
+import { moduleTreeToFeatureTable, fromFeatureViewToTable } from "../services/pipeline";
 
 function statusTone(s?: string) {
   if (s === "已覆盖") return "ok" as const;
@@ -12,10 +13,50 @@ function statusTone(s?: string) {
   return "gray" as const;
 }
 
+/** 判定 URL 是否为占位/示例地址（example.com 等），这类地址会导致打开打不开的页面 */
+function isInvalidSystemUrl(url?: string): boolean {
+  if (!url) return true;
+  try {
+    const u = new URL(url);
+    if (!/^https?:$/.test(u.protocol)) return true;
+    return /example\.(com|org|net)$/i.test(u.hostname);
+  } catch {
+    return true;
+  }
+}
+
+/** 从模块树中移除指定 id 的节点及其子孙，返回新树（用于删除后立即持久化正确数据，规避 React 闭包过期） */
+function removeNodesByIds(nodes: ModuleNodeView[], ids: Set<string>): ModuleNodeView[] {
+  return nodes
+    .filter((n) => !ids.has(n.id))
+    .map((n) => ({ ...n, children: n.children ? removeNodesByIds(n.children, ids) : undefined }));
+}
+
+/** 判断录制/补录路径是否已存在于模块树（按路径末段功能名或完整路径比对，用于「已去重」标记） */
+function pathExistsInTree(path: string, nodes: ModuleNodeView[]): boolean {
+  const trimmed = (path || "").trim();
+  if (!trimmed) return false;
+  const leaf = trimmed.split("→").pop()?.trim() || trimmed;
+  const walk = (ns: ModuleNodeView[]): boolean =>
+    ns.some((n) => {
+      if (n.name === leaf || n.name === trimmed) return true;
+      return n.children ? walk(n.children) : false;
+    });
+  return walk(nodes);
+}
+
+/** 模块树节点类型图标：目录📁 / 页面📄 / 功能🔘 / 系统🖥️ */
+function typeIcon(t?: ModuleNodeView["type"]): string {
+  if (t === "action") return "🔘";
+  if (t === "page") return "📄";
+  if (t === "system") return "🖥️";
+  return "📁";
+}
+
 function toTreeItems(nodes: ModuleNodeView[], selected: string | null, onSelect: (id: string) => void, onToggle: ((id: string, checked: boolean) => void) | undefined, checkedIds: string[]): TreeItem[] {
   return nodes.map((n) => ({
     id: n.id,
-    label: n.status ? `📂 ${n.name}` : `🔹 ${n.name}`,
+    label: `${typeIcon(n.type)} ${n.name}`,
     selected: n.id === selected,
     onNodeClick: () => onSelect(n.id),
     onToggle: onToggle ? (id, c) => onToggle(id, c) : undefined,
@@ -49,11 +90,14 @@ export function Explore() {
     toast,
     addActivity,
     runPipelineExplore,
+    exploreAiOn,
+    exploreToggleAi,
     pipelineLoading,
     pipelineStage,
     pipelineError: _pipelineError,
     project,
     updateModuleTree,
+    updateFeatureTable,
   } = useApp();
 
   const [modeEditOpen, setModeEditOpen] = useState(false);
@@ -64,6 +108,7 @@ export function Explore() {
   const [manualForm, setManualForm] = useState({ path: "", module: "", confidence: "0.90" });
   const [addModuleOpen, setAddModuleOpen] = useState(false);
   const [newModuleName, setNewModuleName] = useState("");
+  const [newNodeType, setNewNodeType] = useState<"module" | "page" | "action">("module");
   const [manualStep, setManualStep] = useState("");
   const [recordingId, setRecordingId] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -72,6 +117,7 @@ export function Explore() {
     nodes.map((n) => ({
       id: n.id,
       name: n.label ?? n.id,
+      type: n.type,
       status: n.status === 'covered' ? '已覆盖' : n.status === 'needs_review' ? 'needs_review' : '未探索',
       children: n.children ? treeToViews(n.children) : undefined,
     }));
@@ -106,6 +152,10 @@ export function Explore() {
       toast("请先在项目管理中配置系统 URL");
       return;
     }
+    if (isInvalidSystemUrl(system.url)) {
+      toast("系统 URL 是示例地址（example.com），请先在项目管理中配置真实系统地址");
+      return;
+    }
     if (system.loginStatus !== "logged_in") {
       toast("请先登录系统");
       return;
@@ -130,7 +180,8 @@ export function Explore() {
     const input: any = {
       sessionHandle,
       subsystemId: system.id,
-      systemUrl: system.url,
+      // 子系统真实地址优先 capturedUrl（浏览器捕获），兜底 url
+      systemUrl: system.capturedUrl || system.url,
     };
     try {
       toast("正在启动浏览器探索，请稍候...");
@@ -199,21 +250,47 @@ export function Explore() {
     setEditTarget(null);
   };
 
-  const handleAddModule = () => {
-    setNewModuleName("");
-    setAddModuleOpen(true);
-  };
-
   const handleSubmitNewModule = async () => {
     if (!newModuleName.trim()) {
-      toast("请输入模块名称");
+      toast("请输入名称");
       return;
     }
-    const newMod: ModuleNodeView = { id: `new-${Date.now()}`, name: newModuleName };
+    const newMod: ModuleNodeView = { id: `new-${Date.now()}`, name: newModuleName, type: newNodeType };
     exploreAddModule(selectedModuleId, newMod);
-    toast(`已添加模块：${newModuleName}`);
+    const typeLabel = newNodeType === "module" ? "目录" : newNodeType === "page" ? "页面" : "功能";
+    toast(`已添加${typeLabel}：${newModuleName}`);
     setAddModuleOpen(false);
     setNewModuleName("");
+    await saveModuleTreeToBackend();
+  };
+
+  /** 一键把结构化模块树转换为九列功能表（主模块=目录/子模块=页面/功能点=页面/测试点=功能按钮） */
+  const handleGenerateFeature = async () => {
+    const rows = moduleTreeToFeatureTable(moduleTree, system.name);
+    if (rows.length === 0) {
+      toast("模块树中暂无「功能(按钮级)」节点，请先选中父节点后添加类型=功能的节点");
+      return;
+    }
+    updateFeatureTable(rows);
+    try {
+      if (project.id && system.id) {
+        await dataApi.saveFeatureTable(project.id, system.id, fromFeatureViewToTable(rows));
+      }
+    } catch (e) {
+      toast(`功能表已生成但未保存：${(e as Error).message}`);
+    }
+    toast(`已生成 ${rows.length} 行功能表，请到「功能点」页查看`);
+  };
+
+  /** 快捷添加功能（按钮级预设）：作为当前选中节点的子节点 */
+  const handleAddActionPreset = async (label: string) => {
+    if (!selectedModuleId) {
+      toast("请先在左侧模块树选中一个节点（功能将挂在其下）");
+      return;
+    }
+    const node: ModuleNodeView = { id: `act-${Date.now()}-${label}`, name: label, type: "action" };
+    exploreAddModule(selectedModuleId, node);
+    toast(`已添加功能：${label}`);
     await saveModuleTreeToBackend();
   };
 
@@ -224,6 +301,8 @@ export function Explore() {
       setConfirmOpen(false);
       return;
     }
+    // 根因修复：基于 idsToDelete 直接计算删除后的新树，规避 dispatch 后同闭包内 moduleTree 仍是旧值
+    const nextTree = removeNodesByIds(moduleTree, new Set(idsToDelete));
     if (idsToDelete.length === 1) {
       exploreRemoveModule(idsToDelete[0]);
     } else {
@@ -231,7 +310,7 @@ export function Explore() {
     }
     toast(`已删除 ${idsToDelete.length} 个模块`);
     setConfirmOpen(false);
-    await saveModuleTreeToBackend();
+    await saveModuleTreeToBackend(nextTree);
   };
 
   const handleDropNode = async (sourceId: string, targetId: string, position: 'before' | 'after' | 'child') => {
@@ -246,9 +325,13 @@ export function Explore() {
       toast("请先设置系统 URL");
       return;
     }
+    if (isInvalidSystemUrl(system.url)) {
+      toast("系统 URL 是示例地址（example.com），请先在项目管理中配置真实系统地址");
+      return;
+    }
     try {
       setManualStep("正在启动录制...");
-      const res = await dataApi.startRecording(system.id, system.url);
+      const res = await dataApi.startRecording(system.id, system.capturedUrl || system.url);
       setRecordingId(res.recordingId);
       setIsRecording(true);
       setManualStep("录制中 - 请在浏览器中进行操作");
@@ -265,25 +348,39 @@ export function Explore() {
     try {
       setManualStep("正在停止录制...");
       const data = await dataApi.stopRecording(recordingId);
-      const seq = Math.max(0, ...pendingTree.map((p) => p.seq)) + 1;
-      const steps = data.clickPath.steps;
-      const pathLabel = steps.length > 0
-        ? steps.map((s) => s.text || s.selector).join(" / ")
-        : `录制于 ${new Date().toLocaleTimeString()}`;
-      exploreAddPending({
-        seq,
-        path: pathLabel,
-        module: data.capturedTitle || system.name,
-        confidence: "0.95",
-        status: "待入树",
-      });
-      addActivity({ id: `act-${Date.now()}`, time: new Date().toLocaleTimeString().slice(0, 5), text: `人工补充：${pathLabel}` });
+      const steps: Array<{ url?: string; selector?: string; text?: string; timestamp?: number }> = data.clickPath?.steps || [];
+      // 按页面 URL 分组：同一页面的连续点击用「 → 」连接成一条路径，跨页面拆成多条待入树
+      const groups: Array<{ url: string; texts: string[] }> = [];
+      for (const s of steps) {
+        const u = s.url || "";
+        const label = s.text || s.selector || "";
+        const last = groups[groups.length - 1];
+        if (last && last.url === u) {
+          if (label && last.texts[last.texts.length - 1] !== label) last.texts.push(label);
+        } else {
+          groups.push({ url: u, texts: label ? [label] : [] });
+        }
+      }
+      const baseSeq = Math.max(0, ...pendingTree.map((p) => p.seq));
+      const moduleName = data.capturedTitle || system.name;
+      if (groups.length === 0) {
+        const emptyLabel = `录制于 ${new Date().toLocaleTimeString()}`;
+        exploreAddPending({ seq: baseSeq + 1, path: emptyLabel, module: moduleName, confidence: "0.95", status: "待入树" });
+        addActivity({ id: `act-${Date.now()}`, time: new Date().toLocaleTimeString().slice(0, 5), text: `人工补充：${emptyLabel}` });
+      } else {
+        groups.forEach((g, i) => {
+          const pathLabel = g.texts.length > 0 ? g.texts.join(" → ") : (g.url || "未命名路径");
+          const isDup = pathExistsInTree(pathLabel, moduleTree);
+          exploreAddPending({ seq: baseSeq + 1 + i, path: pathLabel, module: moduleName, confidence: "0.95", status: isDup ? "已去重" : "待入树" });
+          addActivity({ id: `act-${Date.now()}-${i}`, time: new Date().toLocaleTimeString().slice(0, 5), text: `人工补充：${pathLabel}` });
+        });
+      }
       setRecordingId(null);
       setIsRecording(false);
       setManualOpen(false);
       setManualForm({ path: "", module: "", confidence: "0.90" });
       setManualStep("");
-      toast("录制完成，请在待入树列表中确认");
+      toast(`录制完成：已采集 ${groups.length} 条，请在待入树列表中确认`);
     } catch (e: any) {
       toast(`停止录制失败：${e.message}`);
       setManualStep("");
@@ -296,12 +393,13 @@ export function Explore() {
       return;
     }
     const seq = Math.max(0, ...pendingTree.map((p) => p.seq)) + 1;
+    const isDup = pathExistsInTree(manualForm.path, moduleTree);
     exploreAddPending({
       seq,
       path: manualForm.path,
       module: manualForm.module,
       confidence: manualForm.confidence,
-      status: "待入树",
+      status: isDup ? "已去重" : "待入树",
     });
     addActivity({ id: `act-${Date.now()}`, time: new Date().toLocaleTimeString().slice(0, 5), text: `人工补充：${manualForm.path}` });
     setManualOpen(false);
@@ -333,13 +431,13 @@ export function Explore() {
     await saveModuleTreeToBackend();
   };
 
-  const saveModuleTreeToBackend = async () => {
+  const saveModuleTreeToBackend = async (nextTree?: ModuleNodeView[]) => {
     if (!project.id || !system.id) {
       console.warn('[Explore] saveModuleTreeToBackend: missing project.id or system.id', { projectId: project.id, systemId: system.id });
       return;
     }
     try {
-      const contractTree = moduleTreeToContract(moduleTree);
+      const contractTree = moduleTreeToContract(nextTree ?? moduleTree);
       await dataApi.saveModuleTree(project.id, system.id, contractTree);
       console.log(`[Explore] Module tree saved: ${contractTree.length} root nodes, systemId=${system.id}`);
     } catch (e) {
@@ -348,16 +446,17 @@ export function Explore() {
     }
   };
 
-  const moduleTreeToContract = (nodes: ModuleNodeView[]): any[] =>
+  // 递归计算 parentId/depth（修复：原来全部置 null/0 导致树扁平化）
+  const moduleTreeToContract = (nodes: ModuleNodeView[], parentId: string | null = null, depth = 0): any[] =>
     nodes.map((n) => ({
       id: n.id,
       label: n.name,
-      parentId: null,
+      parentId,
       subsystemId: system.id,
-      type: 'module',
+      type: (n.type ?? 'module') as 'system' | 'module' | 'page' | 'action',
       status: n.status === '已覆盖' ? 'covered' : n.status === 'needs_review' ? 'needs_review' : 'unexplored',
-      children: n.children ? moduleTreeToContract(n.children) : [],
-      depth: 0,
+      children: n.children ? moduleTreeToContract(n.children, n.id, depth + 1) : [],
+      depth,
       manuallyAdded: true,
     }));
 
@@ -366,12 +465,20 @@ export function Explore() {
       <div className="ph">
         <div>
           <h2>② 系统探索</h2>
-          <div className="sub">模块树可 CRUD · 人工补录两段式：弹窗录制 → 写入待入树列表 → 选中模块树行 → 行内入树插入下方</div>
+          <div className="sub">模块树可 CRUD · 结构化人工补录：选中父节点 → 点「+ 目录/页面/功能」登记（功能=按钮级） → 点「🌳 生成功能表」刷新九列功能表；另有录制两段式（弹窗录制 → 待入树 → 选中行入树）</div>
         </div>
         <div className="row">
           <Button variant="pri" onClick={handleStartExplore} disabled={isExploring}>
             {isExploring ? "探索中..." : "开始/继续探索"}
           </Button>
+          <label className="ai-toggle" title="实验功能：开启后由 AI 驱动探索，覆盖非标/无语义菜单的页面。默认关闭走确定性结构化探索。">
+            <input
+              type="checkbox"
+              checked={exploreAiOn}
+              onChange={(e) => exploreToggleAi(e.target.checked)}
+            />
+            AI 辅助探索（实验）
+          </label>
           <div>
             <Button variant="pri" onClick={handleStartRecording} disabled={isRecording}>
               {isRecording ? "录制中..." : "👆 人工补充（自动开浏览器）"}
@@ -401,10 +508,29 @@ export function Explore() {
             onDropNode={handleDropNode}
           />
           <hr />
-          <div className="row">
-            <Button size="sm" onClick={handleAddModule}>
-              + 新增模块
+          <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
+            <Button size="sm" onClick={() => { setNewNodeType("module"); setNewModuleName(""); setAddModuleOpen(true); }}>
+              + 目录
             </Button>
+            <Button size="sm" onClick={() => { setNewNodeType("page"); setNewModuleName(""); setAddModuleOpen(true); }}>
+              + 页面
+            </Button>
+            <Button size="sm" variant="pri" onClick={() => { setNewNodeType("action"); setNewModuleName(""); setAddModuleOpen(true); }}>
+              + 功能
+            </Button>
+            <Button size="sm" variant="pri" onClick={handleGenerateFeature}>
+              🌳 生成功能表
+            </Button>
+          </div>
+          <div className="row" style={{ marginTop: 8, flexWrap: "wrap", gap: 6 }}>
+            <span style={{ fontSize: 12, color: "var(--mut)" }}>快捷功能(按钮级)：</span>
+            {["新增", "修改", "列表", "删除", "查询", "导出"].map((label) => (
+              <Button key={label} size="sm" onClick={() => handleAddActionPreset(label)}>
+                {label}
+              </Button>
+            ))}
+          </div>
+          <div className="row">
             <Button
               size="sm"
               onClick={() => {
@@ -558,7 +684,7 @@ export function Explore() {
       <Modal
         open={addModuleOpen}
         onClose={() => { setAddModuleOpen(false); setNewModuleName(""); }}
-        title="新增模块"
+        title="新增节点"
         footer={
           <>
             <Button onClick={() => { setAddModuleOpen(false); setNewModuleName(""); }}>取消</Button>
@@ -567,10 +693,30 @@ export function Explore() {
         }
       >
         <div className="field">
-          <label>模块名称 *</label>
+          <label>节点类型 *</label>
+          <div className="row" style={{ gap: 8 }}>
+            {(["module", "page", "action"] as const).map((t) => (
+              <label key={t} className="row" style={{ gap: 4, fontSize: 13 }}>
+                <input
+                  type="radio"
+                  name="newNodeType"
+                  checked={newNodeType === t}
+                  onChange={() => setNewNodeType(t)}
+                />
+                {t === "module" ? "目录" : t === "page" ? "页面" : "功能(按钮级)"}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="field">
+          <label>名称 *</label>
           <input className="text-input" value={newModuleName} onChange={(e) => setNewModuleName(e.target.value)} autoFocus />
         </div>
-        <div className="hint">将添加到：{selectedModuleId || "根节点"} 下方</div>
+        <div className="hint">
+          将添加到：{selectedModuleId || "根节点"} 下方
+          {newNodeType === "action" ? "（功能作为按钮级节点，生成功能表时映射为「测试点」）" : ""}
+          {newNodeType === "page" ? "（页面作为子系统，生成功能表时映射为「子模块/功能点」）" : ""}
+        </div>
       </Modal>
 
       <Modal

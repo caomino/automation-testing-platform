@@ -228,9 +228,59 @@ export function toModuleView(nodes: ModuleNode[]): ModuleNodeView[] {
   return nodes.map((n) => ({
     id: n.id,
     name: n.label ?? n.id,
+    type: n.type,
     status: n.status === 'covered' ? '已覆盖' : n.status === 'needs_review' ? 'needs_review' : '未探索',
     children: n.children ? toModuleView(n.children) : undefined,
   }));
+}
+
+/**
+ * 将结构化模块树转换为九列功能表（FeatureRowView[]）。
+ *
+ * 业务规则（与 docs/问题分析与补充定义.md §1.4 字段映射一致）：
+ *   - 仅对 type==='action' 的叶子节点生成一行（按钮级颗粒度）
+ *   - 主模块 = 最近的 type==='module' 祖先标签（=父目录）
+ *   - 子模块 = 最近的 type==='page' 祖先标签（=子系统）
+ *   - 功能点 = 所在 page 标签；无 page 时回退为 module 标签
+ *   - 测试点 = action 标签（具体按钮）
+ *   - 测试点标识 = base_NN（NN 为全局顺序号，两位补零）
+ *   - 测试类型固定 '功能性测试'；需求章节留空
+ *
+ * 该转换器让「人工结构化补录的树」可直接刷新生成功能表，闭环了此前断开的链路。
+ */
+export function moduleTreeToFeatureTable(tree: ModuleNodeView[], systemName: string): FeatureRowView[] {
+  const rows: FeatureRowView[] = [];
+  let index = 0;
+
+  const walk = (nodes: ModuleNodeView[], moduleLabel: string, pageLabel: string): void => {
+    for (const n of nodes) {
+      const curModule = n.type === 'module' ? n.name : moduleLabel;
+      const curPage = n.type === 'page' ? n.name : pageLabel;
+
+      if (n.type === 'action') {
+        index += 1;
+        const nn = String(index).padStart(2, '0');
+        rows.push({
+          seq: String(index),
+          type: '功能性测试',
+          chapter: '',
+          system: systemName,
+          mainModule: moduleLabel,
+          subModule: pageLabel,
+          feature: pageLabel || moduleLabel,
+          testPoint: n.name,
+          testPointId: `base_${nn}`,
+        });
+      }
+
+      if (n.children && n.children.length > 0) {
+        walk(n.children, curModule, curPage);
+      }
+    }
+  };
+
+  walk(tree, '', '');
+  return rows;
 }
 
 // ===== 反向转换函数（前端 view → contract） =====
@@ -241,11 +291,11 @@ export function fromModuleView(nodes: ModuleNodeView[], parentId: string | null 
     label: n.name,
     parentId,
     subsystemId,
-    type: 'module' as const,
     status: n.status === '已覆盖' ? 'covered' : n.status === 'needs_review' ? 'needs_review' : 'unexplored',
     children: n.children ? fromModuleView(n.children, n.id, subsystemId, depth + 1) : [],
     depth,
     manuallyAdded: true,
+    type: (n.type ?? 'module') as 'system' | 'module' | 'page' | 'action',
   }));
 }
 

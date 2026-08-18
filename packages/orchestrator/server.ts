@@ -50,6 +50,18 @@ interface RecordingSession {
 }
 const activeRecordings = new Map<string, RecordingSession>();
 
+/** 判定 URL 是否为占位/示例地址（example.com 等），这类地址会导致探索/录制打开打不开的页面 */
+function isInvalidSystemUrl(url: string): boolean {
+  if (!url) return true;
+  try {
+    const parsed = new URL(url);
+    if (!/^https?:$/.test(parsed.protocol)) return true;
+    return /example\.(com|org|net)$/i.test(parsed.hostname);
+  } catch {
+    return true;
+  }
+}
+
 function setCors(res: http.ServerResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -536,25 +548,59 @@ const server = http.createServer(async (req, res) => {
         return jsonResponse(res, 400, false, undefined, '未找到登录浏览器，请先在「登录」阶段完成人工登录');
       }
       if (systemUrl) {
+        if (isInvalidSystemUrl(systemUrl)) {
+          return jsonResponse(res, 400, false, undefined, '系统 URL 无效，请配置真实系统地址（不要使用 example.com 占位地址）');
+        }
         await engine.navigate(systemUrl);
       }
       // 在登录浏览器内注入点击录制器：捕获每次点击的 url/selector/text
       // 以字符串形式注入，避免在 Node(无 DOM 类型) 下触发类型检查
+      // 收窄 selector + 过滤外链/锚点/装饰元素 + text 取 aria-label/直接文本，避免路径噪音
       try {
         await engine.evaluate(`(function(){
+          if (window.__tpCapture) {
+            try { document.removeEventListener('click', window.__tpCapture, true); } catch (e) {}
+          }
           window.__tpClicks = [];
+          var SEL = 'button,a[href],a[role="button"],[role="button"],input,select,textarea,[role="tab"],.ant-tabs-tab,.el-tabs__item,tr,.ant-list-item,[role="listitem"]';
+          var isVisible = function(n){
+            if(!n) return false;
+            if(n.getAttribute && n.getAttribute('aria-hidden')==='true') return false;
+            var r = n.getBoundingClientRect ? n.getBoundingClientRect() : null;
+            if(r && (r.width===0 || r.height===0)) return false;
+            return true;
+          };
+          var isExternalLink = function(a){
+            if(!a || a.tagName!=='A') return false;
+            var href = a.getAttribute('href') || '';
+            if(!href || href==='#' || /^javascript:/i.test(href)) return false;
+            try { var u = new URL(href, location.href); return u.origin !== location.origin && /^https?:$/.test(u.protocol); }
+            catch(e){ return false; }
+          };
+          var textOf = function(n){
+            if(!n) return '';
+            var aria = n.getAttribute ? n.getAttribute('aria-label') : '';
+            if(aria && aria.trim()) return aria.trim().slice(0,40);
+            var direct = '';
+            if(n.childNodes){ for(var i=0;i<n.childNodes.length;i++){ if(n.childNodes[i].nodeType===3) direct += n.childNodes[i].textContent; } }
+            direct = (direct||'').replace(/\\s+/g,' ').trim();
+            if(direct) return direct.slice(0,40);
+            return (n.textContent||'').replace(/\\s+/g,' ').trim().slice(0,40);
+          };
+          var describe = function(n){
+            if(!n) return '';
+            if(n.id) return '#'+n.id;
+            if(n.className && typeof n.className==='string' && n.className.trim()) return '.'+n.className.trim().split(/\\s+/).join('.');
+            return n.tagName ? n.tagName.toLowerCase() : '';
+          };
           var capture = function(e){
             var t = e.target;
-            var el = (t && t.closest) ? t.closest('a,button,[role="button"],input,select,textarea,li,tr,[class*="menu"],[class*="nav"],[class*="Menu"],[class*="Nav"]') : null;
-            var textOf = function(n){ return (n && n.textContent) ? n.textContent.trim().slice(0,80) : ''; };
-            var describe = function(n){
-              if(!n) return '';
-              if(n.id) return '#'+n.id;
-              if(n.className && typeof n.className==='string' && n.className.trim()) return '.'+n.className.trim().split(/\\s+/).join('.');
-              return n.tagName ? n.tagName.toLowerCase() : '';
-            };
+            var el = (t && t.closest) ? t.closest(SEL) : null;
+            if(!el || !isVisible(el)) return;
+            if(el.tagName==='A' && isExternalLink(el)) return;
             window.__tpClicks.push({ url: location.href, text: textOf(el||t), selector: describe(el||t), timestamp: Date.now() });
           };
+          window.__tpCapture = capture;
           document.addEventListener('click', capture, true);
         })()`);
       } catch {

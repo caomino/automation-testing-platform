@@ -128,6 +128,17 @@ export interface McpEngine {
   getSessionHeaders(): Promise<Record<string, string>>;
   /** 提取当前会话 Token（localStorage/sessionStorage，供复用） */
   getSessionTokens(): Promise<string[]>;
+  /**
+   * 抓取当前页面全部 localStorage + sessionStorage（任意 key，不限固定白名单）。
+   * 用于跨重载会话保持：context.storageState() 不抓取 sessionStorage，而 sessionStorage
+   * 在完整 page.goto 重载后必然清空且无法靠外部回灌恢复，故需本方法额外捕获。
+   */
+  getAllStorageTokens(): Promise<Array<{ storage: 'local' | 'session'; name: string; value: string }>>;
+  /**
+   * 注册页面初始化脚本：在每次导航/页面脚本执行前注入，可在 SPA 启动前写回会话存储，
+   * 从而跨重载无失真恢复登录态（含 sessionStorage）。arg 作为唯一参数传入脚本。
+   */
+  addInitScript(fn: (arg?: unknown) => void, arg?: unknown): Promise<void>;
   /** 注入复用会话（将门户会话的 cookies/headers/tokens 应用到当前上下文，实现跨子系统复用） */
   applySession(state: { cookies: string[]; headers?: Record<string, string>; tokens?: string[] }): Promise<void>;
   /** 等待指定毫秒数（用于 SPA 渲染/页面跳转等待） */

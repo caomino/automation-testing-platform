@@ -10,7 +10,7 @@ import type {
   SessionHandle,
 } from '@test-platform/contracts';
 import type { McpEngine } from '@test-platform/engine-mcp';
-import { mergeManualSupplement, run } from '../src/index';
+import { mergeManualSupplement, run, assertActionGranularity } from '../src/index';
 
 /** 可观测假引擎类型：在 McpEngine 基础上暴露 applySession 供断言 */
 type SpyEngine = McpEngine & {
@@ -40,6 +40,8 @@ function makeFakeEngine(tree: ModuleNode[]): SpyEngine {
     getStorageState: async () => ({ cookies: [], origins: [] }),
     getCurrentUrl: notImpl,
     applySession: vi.fn(async () => undefined),
+    getAllStorageTokens: async () => [],
+    addInitScript: async () => {},
     extractPageElements: async () => [],
     waitForTimeout: notImpl,
     evaluate: async <T = any>(_fn: string | ((...args: any[]) => T), ..._args: any[]): Promise<T> => undefined as T,
@@ -86,6 +88,90 @@ function supplement(
 ): ManualSupplement {
   return { clickPath, insertPosition, relativeToNodeId };
 }
+
+describe('assertActionGranularity 粒度闸门（P-A#4）', () => {
+  it('只有目录级叶子、零 action → 整体标 needs_review', () => {
+    const tree: ModuleNode[] = [
+      {
+        id: 'm',
+        label: '系统管理',
+        parentId: null,
+        subsystemId: 'sys_1',
+        type: 'module',
+        status: 'covered',
+        children: [
+          { id: 'p', label: '用户管理', parentId: 'm', subsystemId: 'sys_1', type: 'page', status: 'covered', children: [], depth: 1 },
+        ],
+        depth: 0,
+      },
+    ];
+    const r = assertActionGranularity(tree);
+    expect(r.actionCount).toBe(0);
+    expect(r.flagged).toBe(1);
+    // 目录级叶子被标 needs_review 且带原因
+    const leaf = tree[0].children[0];
+    expect(leaf.status).toBe('needs_review');
+    expect(leaf.reviewReason).toContain('操作级功能点');
+  });
+
+  it('含足够 action 功能点 → 不误标', () => {
+    const tree: ModuleNode[] = [
+      {
+        id: 'm',
+        label: '系统管理',
+        parentId: null,
+        subsystemId: 'sys_1',
+        type: 'module',
+        status: 'covered',
+        children: [
+          {
+            id: 'p',
+            label: '用户管理',
+            parentId: 'm',
+            subsystemId: 'sys_1',
+            type: 'page',
+            status: 'covered',
+            depth: 1,
+            children: [
+              { id: 'a1', label: '列表', parentId: 'p', subsystemId: 'sys_1', type: 'action', status: 'covered', children: [], depth: 2 },
+              { id: 'a2', label: '新增', parentId: 'p', subsystemId: 'sys_1', type: 'action', status: 'covered', children: [], depth: 2 },
+            ],
+          },
+        ],
+        depth: 0,
+      },
+    ];
+    const r = assertActionGranularity(tree);
+    expect(r.actionCount).toBe(2);
+    expect(r.flagged).toBe(0);
+    expect(tree[0].children[0].status).toBe('covered');
+  });
+
+  it('目录级叶子（即使已 covered 但无 action）也会被标 needs_review（颗粒度不足）', () => {
+    const tree: ModuleNode[] = [
+      { id: 'p', label: '老页面', parentId: null, subsystemId: 'sys_1', type: 'page', status: 'covered', children: [], depth: 0 },
+    ];
+    const r = assertActionGranularity(tree);
+    expect(r.flagged).toBe(1); // 即便 covered，无 action 子节点仍视为颗粒度不足
+    expect(tree[0].status).toBe('needs_review');
+    expect(tree[0].reviewReason).toContain('操作级功能点');
+  });
+});
+
+describe('run 集成（闸门 + 退化）', () => {
+  it('引擎产出目录级树 → run 输出 needsReview 非空', async () => {
+    const dirTree: ModuleNode[] = [
+      { id: 'p', label: '用户管理', parentId: null, subsystemId: 'sys_1', type: 'page', status: 'covered', children: [], depth: 0 },
+    ];
+    const engine = makeFakeEngine(dirTree);
+    const out = await run(
+      { subsystemId: 'sys_1', sessionHandle },
+      engine,
+      { engineHasActiveSession: true },
+    );
+    expect(out.needsReview).toContain('p');
+  });
+});
 
 describe('mergeManualSupplement / 批量兄弟插入顺序', () => {
   it('(s1) [Minor] 同 target 批量 below 插入保持 clickPath 顺序', () => {

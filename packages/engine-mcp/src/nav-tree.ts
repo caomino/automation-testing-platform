@@ -125,7 +125,8 @@ export function toModuleNodes(
     nodes.map((n) => {
       const id = `n_${counter++}`;
       const hasNavChildren = n.children.length > 0;
-      const actions = !hasNavChildren && actionsByKey ? actionsByKey.get(n.key) : undefined;
+      // 颗粒度修复：即使节点有子菜单，也允许挂 actions（识别出的页面功能点），不再因 hasNavChildren 丢弃
+      const actions = actionsByKey ? actionsByKey.get(n.key) : undefined;
       const type: ModuleNode['type'] = hasNavChildren ? 'module' : 'page';
       const navChildren = build(n.children, id, depth + 1);
       const actionChildren = (actions ?? []).map((a) => actionToModule(a, id, ctx.subsystemId, depth + 1));
@@ -147,19 +148,21 @@ export function toModuleNodes(
   return build(nav, null, 0);
 }
 
-/** 全局去重：按 (type|label|href|parentId) 指纹去重，保留首次出现（解决重复根因之一） */
+/** 全局去重：按「祖先 label 链 + label + url + type」指纹去重（不含 parentId，避免自嵌套同名节点去不掉），
+ *  保留首次出现（解决重复根因）。 */
 export function dedupModuleTree(tree: ModuleNode[]): ModuleNode[] {
   const seen = new Set<string>();
-  const walk = (nodes: ModuleNode[]): ModuleNode[] =>
+  const walk = (nodes: ModuleNode[], ancestorLabels: string[]): ModuleNode[] =>
     nodes
       .filter((n) => {
-        const fp = `${n.type}|${n.label}|${n.url ?? ''}|${n.parentId ?? 'root'}`;
+        const chain = [...ancestorLabels, n.label].join('/');
+        const fp = `${n.type}|${chain}|${n.url ?? ''}`;
         if (seen.has(fp)) return false;
         seen.add(fp);
         return true;
       })
-      .map((n) => ({ ...n, children: walk(n.children) }));
-  return walk(tree);
+      .map((n) => ({ ...n, children: walk(n.children, [...ancestorLabels, n.label]) }));
+  return walk(tree, []);
 }
 
 /** 页面功能点枚举：列出全部操作（查询/列表/新增/修改/删除/导出/导入/审核/启用禁用/提交…） */
@@ -181,6 +184,15 @@ export function extractPageActions(
     if (!text) continue;
     // 跳过纯装饰/无语义长文本
     if (text.length > 30) continue;
+
+    // Tab/标签页：作为「页面菜单下的标签」功能点（颗粒度要求）
+    if (c.type === 'tab') {
+      if (!seenLabels.has(text)) {
+        seenLabels.add(text);
+        out.push({ label: text, kind: 'other', selector: c.selector, url: c.href });
+      }
+      continue;
+    }
 
     const matched = OPERATION_KEYWORDS.find((o) => o.re.test(text));
     if (matched) {

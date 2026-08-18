@@ -59,7 +59,9 @@ main { padding: 24px 28px 80px; }
 .ph { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 14px; gap: 16px; flex-wrap: wrap; }
 .ph h2 { margin: 0 0 4px; font-size: 22px; }
 .ph .sub { color: var(--mut); font-size: 13px; }
-.row { display: flex; gap: 10px; flex-wrap: wrap; }
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.ai-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--txt); cursor: pointer; user-select: none; }
+.ai-toggle input { margin: 0; }
 .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
 .card h4 { margin: 0 0 10px; font-size: 14px; }
 .grid { display: grid; gap: 16px; }

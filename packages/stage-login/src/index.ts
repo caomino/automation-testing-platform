@@ -33,8 +33,27 @@ const NO_LOGIN_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MANUAL_TIMEOUT_MS = 600_000;
 /** 人工接管轮询间隔（ms） */
 const DEFAULT_POLL_INTERVAL_MS = 2000;
+/** 子系统自动登录检测窗口（ms）：fillAndSubmit 后等待父门户 URL 路径变化（登录成功）的最大时长。
+ * 原 5s 太短：用户输入账号/密码/验证码必然超过，导致 launch 阶段「登录成功后自动跳转子系统」
+ * 从未生效——waitForPortalLoginSuccess 超时返回 barrier，之后无任何自动跳转逻辑，
+ * 用户只能手动跳转子系统页，正是「子系统登录未跳转、停留门户」的直接原因。
+ * 放宽到 90s，覆盖真实人工登录（含验证码）耗时；超时仍返回 barrier 等待用户确认。 */
+const DEFAULT_PORTAL_LOGIN_WAIT_MS = 90_000;
 /** 人工接管浏览器最大存活时间（ms）：15min，超时自动关闭 */
 const TAKEOVER_ENGINE_TTL_MS = 15 * 60 * 1000;
+/**
+ * DOM 提取重试次数：提交登录后页面处于导航/重定向中时，`page.evaluate` 会抛
+ * "Execution context was destroyed"，属**瞬时**异常而非登录失败，必须重试而非判死。
+ */
+const DOM_EXTRACT_RETRIES = 3;
+/** DOM 提取重试间隔（ms） */
+const DOM_EXTRACT_RETRY_DELAY_MS = 1200;
+/** URL 稳定判定：连续读到相同 URL 的次数（判定重定向链已结束） */
+const URL_STABLE_CHECKS = 2;
+/** URL 稳定判定：单次轮询间隔（ms） */
+const URL_STABLE_INTERVAL_MS = 400;
+/** URL 稳定判定：最大等待（ms）。SPA 异步重定向（如根路径 → #/login）通常在 2s 内完成 */
+const URL_STABLE_TIMEOUT_MS = 6000;
 
 /**
  * 活动的人工接管浏览器实例
@@ -44,6 +63,8 @@ interface TakeoverEntry {
   engine: SessionCapableEngine;
   createdAt: number;
   systemId: string;
+  /** 父门户实际登录页 URL（navigate 后重定向稳定），作为「路径变化 = 登录成功」的基准 */
+  portalLoginPageUrl?: string;
 }
 const activeTakeoverEngines = new Map<string, TakeoverEntry>();
 
@@ -103,6 +124,8 @@ export interface LoginStageDeps {
   manualTimeoutMs: number;
   /** 人工接管轮询间隔（ms） */
   pollIntervalMs: number;
+  /** 子系统自动登录检测窗口（ms）：fillAndSubmit 后等待父门户 URL 路径变化的最大时长 */
+  portalLoginWaitMs: number;
   /** 项目数据存储（用于会话持久化） */
   store?: ProjectStore;
 }
@@ -163,6 +186,169 @@ export function detectLoginState(params: { dom: SemanticNode[] }): LoginDetectio
   if (!hasPasswordField && !loggedInSignal && hasMinimalContent) return { status: 'barrier', reason: 'SPA 页面未渲染完成' };
   if (loggedInSignal || (!hasPasswordField && !hasMinimalContent)) return { status: 'ok', reason: '已登录' };
   return { status: 'failed', reason: '无法确认登录状态' };
+}
+
+/**
+ * 归一化 URL 用于「路径变化」比较：取 host + pathname + hash，忽略协议/端口/query。
+ * 登录页 → 登录后主页（如 /login → /dashboard，或 #/login → #/home）会被判定为路径变化。
+ */
+export function normalizePath(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.host}${u.pathname}${u.hash}`;
+  } catch {
+    return url.trim();
+  }
+}
+
+/**
+ * 等待页面 URL 稳定（连续 `URL_STABLE_CHECKS` 次读到同一 URL 视为重定向链结束）。
+ *
+ * 为什么必需：真实门户常见「根路径 → 302/SPA 路由 → 登录页」的**异步**重定向。
+ * 若在 navigate 后固定 sleep 800ms 就取 URL 作为「登录页基准」，基准会落在根路径上，
+ * 随后那次迟到的重定向本身就构成「路径变化」，被 `isPortalLoggedIn` 误判为登录成功，
+ * 从而在门户尚未登录时提前跳转子系统。同理，点击提交后也需等页面稳定再检测登录态。
+ *
+ * @returns 稳定后的当前 URL；`getCurrentUrl` 不可用时返回空串（调用方回退到入口 URL）
+ */
+export async function waitForUrlStable(
+  engine: SessionCapableEngine,
+  timeoutMs: number = URL_STABLE_TIMEOUT_MS,
+  intervalMs: number = URL_STABLE_INTERVAL_MS,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  let lastUrl = '';
+  let sameCount = 0;
+  while (Date.now() < deadline) {
+    let cur = '';
+    try {
+      cur = await engine.getCurrentUrl();
+    } catch {
+      // 导航中读取失败：视为未稳定，继续轮询
+      cur = '';
+    }
+    if (cur && cur === lastUrl) {
+      sameCount += 1;
+      if (sameCount >= URL_STABLE_CHECKS) return cur;
+    } else {
+      sameCount = cur ? 1 : 0;
+      lastUrl = cur;
+    }
+    await sleep(intervalMs);
+  }
+  return lastUrl;
+}
+
+/**
+ * 带重试的语义 DOM 提取。
+ *
+ * 为什么必需：登录提交后页面正在导航时，`extractSemanticDom` 底层的 `page.evaluate`
+ * 会抛 "Execution context was destroyed, most likely because of a navigation"。
+ * 这是**页面正在成功跳转**的表现，绝不能当成登录失败——旧实现在此异常上直接判
+ * `failed` 并删除引擎引用，导致「浏览器实际已登录、平台却报登录失败且无法恢复」。
+ *
+ * @throws 重试仍全部失败时抛出最后一次错误，由调用方按「可接管障碍」处理
+ */
+export async function extractDomWithRetry(
+  engine: SessionCapableEngine,
+  retries: number = DOM_EXTRACT_RETRIES,
+  delayMs: number = DOM_EXTRACT_RETRY_DELAY_MS,
+): Promise<SemanticNode[]> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      return await engine.extractSemanticDom();
+    } catch (err) {
+      lastErr = err;
+      console.warn(
+        `[stage-login] extractSemanticDom attempt ${attempt}/${retries} failed: ${err instanceof Error ? err.message : err}`,
+      );
+      if (attempt < retries) await sleep(delayMs);
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('extractSemanticDom failed');
+}
+
+/**
+ * 判断父门户是否已登录成功（子系统进入前的前置闸门）。
+ * 只认 URL 路径变化（离开登录页 = 登录成功）。不用 DOM 关键词判断——
+ * 门户首页常含「工作台/控制台/系统管理」等词，DOM 检测会把未登录的门户首页误判为已登录。
+ * URL 路径未变化即视为仍在登录页（未登录 / 待验证码 / 待人工点击登录）。
+ */
+export async function isPortalLoggedIn(engine: SessionCapableEngine, portalLoginUrl: string): Promise<boolean> {
+  const basePath = normalizePath(portalLoginUrl);
+  try {
+    const curUrl = await engine.getCurrentUrl();
+    return !!(curUrl && normalizePath(curUrl) !== basePath);
+  } catch {
+    // getCurrentUrl 失败视为未登录
+    return false;
+  }
+}
+
+/**
+ * 轮询等待父门户登录成功（URL 路径变化），用于子系统 launch 阶段的自动登录检测。
+ * 超时未登录返回 false（应转为 barrier 等待人工接管）。
+ */
+export async function waitForPortalLoginSuccess(
+  engine: SessionCapableEngine,
+  portalLoginUrl: string,
+  timeoutMs: number,
+  pollIntervalMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await isPortalLoggedIn(engine, portalLoginUrl)) return true;
+    await sleep(pollIntervalMs);
+  }
+  return false;
+}
+
+/**
+ * 子系统进入前置闸门：等待父门户登录成功（URL 从登录页路径变化）后导航到子系统。
+ * 基准不是 parentPortalUrl（可能只是门户根路径，navigate 后 302 重定向到登录页），
+ * 而是实际登录页 URL `loginPageUrl`（navigate 后重定向稳定，如根路径 → sxrdtypt/#/login）。
+ * - 父门户已登录（路径从登录页变化，如 #/login → #/home）→ 导航到 systemUrl，返回 undefined；
+ * - 父门户未登录 → 返回 barrier LoginOutput，并把登录页基准写入 entry 供 confirm 阶段复用。
+ * 绝不在父门户登录未完成时跳转子系统，避免用户「来不及点击登录」就被带走。
+ */
+async function enterSubsystemAfterPortalLogin(
+  systemId: string,
+  systemUrl: string | undefined,
+  loginPageUrl: string | undefined,
+  engine: SessionCapableEngine,
+  deps: LoginStageDeps,
+  loginMode: 'credential' | 'manual-takeover',
+): Promise<LoginOutput | undefined> {
+  if (!loginPageUrl || !systemUrl) return undefined;
+
+  const portalLoggedIn = await waitForPortalLoginSuccess(
+    engine,
+    loginPageUrl,
+    deps.portalLoginWaitMs,
+    deps.pollIntervalMs,
+  );
+  if (!portalLoggedIn) {
+    activeTakeoverEngines.set(systemId, {
+      engine,
+      createdAt: Date.now(),
+      systemId,
+      portalLoginPageUrl: loginPageUrl,
+    });
+    console.log(`[stage-login] portal login not yet succeeded for ${systemId}, returning barrier for manual takeover`);
+    return buildOutput({
+      systemId,
+      status: 'barrier',
+      cookies: [],
+      loginMode,
+      detectionReason: '父门户登录未完成，请在浏览器完成登录后点击「确认登录」',
+    });
+  }
+
+  console.log(`[stage-login] portal login succeeded, navigating to subsystem ${systemUrl}`);
+  await engine.navigate(systemUrl);
+  await sleep(600);
+  return undefined;
 }
 
 /**
@@ -363,7 +549,7 @@ async function runCredential(input: LoginInput, deps: LoginStageDeps): Promise<L
   console.log(`[stage-login] credential launch: system=${systemId}, url=${systemUrl}, action=${action}`);
 
   if (action === 'confirm') {
-    return confirmManualLogin(systemId, systemUrl, parentPortalUrl, deps, 'credential');
+    return confirmManualLogin(systemId, systemUrl, parentPortalUrl, deps, 'credential', true);
   }
 
   // Step 1: launch
@@ -371,16 +557,29 @@ async function runCredential(input: LoginInput, deps: LoginStageDeps): Promise<L
     console.error(`[stage-login] credential launch failed: systemUrl missing for ${systemId}`);
     return buildOutput({ systemId, status: 'failed', cookies: [], loginMode: 'credential', detectionReason: '系统 URL 未配置' });
   }
-  // credential 模式必须提供凭证引用（契约层缺省时此处显式抛出，便于上层识别为「输入错误」）
-  if (!credentialRef) {
-    throw new Error('credentialRef 未配置：credential 模式必须提供凭证引用');
-  }
-
-  const store = deps.credentialStoreFactory(deps.credConfig);
-  const cred = await store.get(credentialRef);
-  if (!cred) {
-    console.error(`[stage-login] credential launch failed: credential not found for ref ${credentialRef}`);
-    return buildOutput({ systemId, status: 'failed', cookies: [], loginMode: 'credential', detectionReason: '凭证引用无效' });
+  // 不再于「启动浏览器之前」抛错：credential 模式允许「未挂凭证引用」，
+  // 此时先打开浏览器、由用户在浏览器中手动登录（降级为人工接管），
+  // 满足需求「点击登录按钮第一步先打开浏览器；账号密码模式再自动填入」。
+  // 方案 X：优先采用前端会话态直接传入的 username/password 自动填充（不落库）；
+  // 否则兼容旧路径：按 credentialRef 从凭证库取（用于 storageState/历史 capture）。
+  let cred: { username: string; password: string } | null = null;
+  if (input.username && input.password) {
+    cred = { username: input.username, password: input.password };
+    console.log(`[stage-login] 使用会话态账号密码自动填充: system=${systemId}`);
+  } else if (credentialRef) {
+    try {
+      const store = deps.credentialStoreFactory(deps.credConfig);
+      const fetched = await store.get(credentialRef);
+      if (fetched) {
+        cred = { username: fetched.username, password: fetched.password };
+      } else {
+        console.warn(`[stage-login] credentialRef ${credentialRef} 无对应凭证，将打开浏览器由用户手动登录`);
+      }
+    } catch (e) {
+      console.warn(`[stage-login] 读取凭证 ${credentialRef} 失败: ${e instanceof Error ? e.message : e}（降级为手动登录）`);
+    }
+  } else {
+    console.warn(`[stage-login] credential 模式但未配置账号密码或凭证引用（system=${systemId}），将打开浏览器由用户手动登录`);
   }
 
   // 如果已有该系统的浏览器实例，仅替换引用
@@ -399,26 +598,47 @@ async function runCredential(input: LoginInput, deps: LoginStageDeps): Promise<L
     const entryUrl = parentPortalUrl ?? systemUrl;
     console.log(`[stage-login] navigating to ${entryUrl}`);
     await engine.navigate(entryUrl);
-    await sleep(800);
+    // 等待重定向链结束再取「实际登录页」基准 URL。真实门户常见「根路径 → SPA 路由 → 登录页」
+    // 的**异步**重定向：若固定 sleep 800ms 就取 URL，基准会落在根路径，随后那次迟到的重定向
+    // 本身构成「路径变化」，被 isPortalLoggedIn 误判为「父门户已登录成功」，从而在用户尚未登录时
+    // 提前跳转子系统（与 §18.1「底层单系统、登录方式差异」相悖，且踩中冻结用例忌讳的误跳转）。
+    const loginPageUrl = (await waitForUrlStable(engine)) || entryUrl;
+    console.log(`[stage-login] resolved login page url: ${loginPageUrl}`);
 
-    // 自动填充凭证并提交（credential 模式：尝试自动登录，而非停在 barrier 等人工）
-    try {
-      await fillAndSubmit(engine, cred.username, cred.password);
-      console.log(`[stage-login] auto-filled credentials + submitted for credential mode: ${systemId}`);
-    } catch (fillErr) {
-      console.warn(`[stage-login] auto-fill/submit failed: ${fillErr instanceof Error ? fillErr.message : fillErr}`);
+    // 自动填充凭证并提交（仅当存在有效凭证；否则等待用户在浏览器中手动登录）
+    if (cred) {
+      try {
+        await fillAndSubmit(engine, cred.username, cred.password);
+        console.log(`[stage-login] auto-filled credentials + submitted for credential mode: ${systemId}`);
+      } catch (fillErr) {
+        console.warn(`[stage-login] auto-fill/submit failed: ${fillErr instanceof Error ? fillErr.message : fillErr}`);
+      }
+    } else {
+      console.log(`[stage-login] 无可用凭证，跳过自动填充，等待用户在浏览器中手动登录`);
     }
     await sleep(800);
 
-    // 子系统：门户登录后进入子系统 URL，再统一检测登录态
+    // 子系统：先等待父门户登录成功（URL 从登录页路径变化），再进入子系统；
+    // 绝不在父门户登录未完成时跳转子系统（否则用户「来不及点击登录」就被带走）
     if (parentPortalUrl && systemUrl) {
-      console.log(`[stage-login] navigating to subsystem ${systemUrl}`);
-      await engine.navigate(systemUrl);
-      await sleep(600);
+      const barrierOut = await enterSubsystemAfterPortalLogin(
+        systemId,
+        systemUrl,
+        loginPageUrl,
+        engine,
+        deps,
+        'credential',
+      );
+      if (barrierOut) return barrierOut;
     }
 
     // 存储浏览器实例（barrier 时供用户接管 confirm）
-    activeTakeoverEngines.set(systemId, { engine, createdAt: Date.now(), systemId });
+    activeTakeoverEngines.set(systemId, {
+      engine,
+      createdAt: Date.now(),
+      systemId,
+      portalLoginPageUrl: loginPageUrl,
+    });
 
     // 复用 confirm 逻辑：检测登录态 + (子系统)跳转 + 捕获会话 → ok/failed/barrier
     const out = await confirmManualLogin(systemId, systemUrl, parentPortalUrl, deps, 'credential');
@@ -452,7 +672,7 @@ async function runManualTakeover(input: LoginInput, deps: LoginStageDeps): Promi
   console.log(`[stage-login] manual-takeover launch: system=${systemId}, url=${systemUrl}, action=${action}`);
 
   if (action === 'confirm') {
-    return confirmManualLogin(systemId, systemUrl, parentPortalUrl, deps, 'manual-takeover');
+    return confirmManualLogin(systemId, systemUrl, parentPortalUrl, deps, 'manual-takeover', true);
   }
 
   // Step 1: launch
@@ -493,7 +713,10 @@ async function runManualTakeover(input: LoginInput, deps: LoginStageDeps): Promi
     const entryUrl = parentPortalUrl ?? systemUrl;
     console.log(`[stage-login] navigating to ${entryUrl}`);
     await engine.navigate(entryUrl);
-    await sleep(800);
+    // 等待重定向链结束再取「实际登录页」基准 URL（理由同 runCredential：避免 SPA 异步
+    // 重定向使基准落在根路径，被误判为「父门户已登录成功」而提前跳转子系统）。
+    const loginPageUrl = (await waitForUrlStable(engine)) || entryUrl;
+    console.log(`[stage-login] resolved login page url: ${loginPageUrl}`);
 
     // 有凭证时自动填充并提交（尝试自动登录）；无凭证则直接进入人工接管流程
     if (credUsername && credPassword) {
@@ -506,15 +729,26 @@ async function runManualTakeover(input: LoginInput, deps: LoginStageDeps): Promi
     }
     await sleep(800);
 
-    // 子系统：门户登录后进入子系统 URL
+    // 子系统：先等待父门户登录成功（URL 从登录页路径变化），再进入子系统
     if (parentPortalUrl && systemUrl) {
-      console.log(`[stage-login] navigating to subsystem ${systemUrl}`);
-      await engine.navigate(systemUrl);
-      await sleep(600);
+      const barrierOut = await enterSubsystemAfterPortalLogin(
+        systemId,
+        systemUrl,
+        loginPageUrl,
+        engine,
+        deps,
+        'manual-takeover',
+      );
+      if (barrierOut) return barrierOut;
     }
 
     // 存储浏览器实例（barrier 时供用户接管 confirm）
-    activeTakeoverEngines.set(systemId, { engine, createdAt: Date.now(), systemId });
+    activeTakeoverEngines.set(systemId, {
+      engine,
+      createdAt: Date.now(),
+      systemId,
+      portalLoginPageUrl: loginPageUrl,
+    });
 
     // 复用 confirm 逻辑：检测登录态 + (子系统)跳转 + 捕获会话 → ok/failed/barrier
     const out = await confirmManualLogin(systemId, systemUrl, parentPortalUrl, deps, 'manual-takeover');
@@ -531,6 +765,11 @@ async function runManualTakeover(input: LoginInput, deps: LoginStageDeps): Promi
 /**
  * Step 2: 确认登录状态
  * 从存储的浏览器实例中检测登录状态，捕获会话
+ *
+ * @param isUserConfirm 是否来自用户显式点击「确认登录」（takeoverAction='confirm'）。
+ *   launch 流程内部复用本函数时为 false，用于守住「父门户登录判定只认 URL 路径变化」
+ *   的冻结行为；用户显式确认时为 true，允许以「导航子系统的结果」验证门户会话，
+ *   避免门户登录后 URL 不变的真实系统永久卡在 barrier（子系统永不跳转）。
  */
 async function confirmManualLogin(
   systemId: string,
@@ -538,6 +777,7 @@ async function confirmManualLogin(
   parentPortalUrl: string | undefined,
   deps: LoginStageDeps,
   loginMode: 'credential' | 'manual-takeover' = 'manual-takeover',
+  isUserConfirm = false,
 ): Promise<LoginOutput> {
   const entry = activeTakeoverEngines.get(systemId);
   if (!entry) {
@@ -550,24 +790,75 @@ async function confirmManualLogin(
   let detectionReason = '';
 
   try {
-    // 如果是子系统，先检查父门户是否已登录
+    // 如果是子系统，先检查父门户是否已登录（URL 从登录页路径变化）。
+    // 基准优先用 entry 里保存的「实际登录页 URL」（navigate 后重定向稳定），
+    // 而非 parentPortalUrl（可能只是门户根路径，重定向会误判为路径变化）。
     if (parentPortalUrl) {
-      const dom = await engine.extractSemanticDom();
-      const det = detectLoginState({ dom });
-      detectionReason = det.reason;
-      if (det.status === 'ok' && systemUrl) {
+      const portalBaseUrl = entry.portalLoginPageUrl ?? parentPortalUrl;
+      const portalLoggedIn = await isPortalLoggedIn(engine, portalBaseUrl);
+      // 关键修复：用户确认登录时可能已人工跳转到子系统/应用页（URL 已离开登录页）。
+      // 此时**保留当前页**，绝不再 navigate(systemUrl) —— 否则会把浏览器从子系统页
+      // 拉回门户闸门/工作台（systemUrl 往往只是门户根路径），导致后续探索门户而非子系统。
+      // 判定：当前 URL 已离开「登录页基准」且与目标 systemUrl **同源**（都在门户 SPA 内，
+      // 如门户工作台 #/sy 与子系统 #/manager 同源不同 hash）→ 视为已在应用页，保留当前页，
+      // capturedUrl 记录用户真实所在页而非门户工作台。
+      // 若与目标**跨源**（真正从门户跳转到独立子系统域名）→ 仍需 navigate(systemUrl)。
+      let curUrl = '';
+      try { curUrl = await engine.getCurrentUrl(); } catch { curUrl = ''; }
+      let sameApp = false;
+      try {
+        sameApp = !!curUrl && !!systemUrl && new URL(curUrl).origin === new URL(systemUrl).origin;
+      } catch { sameApp = false; }
+      const alreadyOnAppPage =
+        !!curUrl &&
+        curUrl !== portalBaseUrl &&
+        normalizePath(curUrl) !== normalizePath(portalBaseUrl) &&
+        sameApp;
+      if (alreadyOnAppPage) {
+        // 已在应用页（用户人工跳转或门户登录后自然跳转）：直接检测当前页登录态，不导航
+        console.log(`[stage-login] ${systemId} already on app page (${curUrl}), keep current page, skip navigate to ${systemUrl}`);
+        const domNow = await extractDomWithRetry(engine);
+        const detNow = detectLoginState({ dom: domNow });
+        status = detNow.status;
+        detectionReason = detNow.reason;
+      } else if (portalLoggedIn && systemUrl) {
         await engine.navigate(systemUrl);
-        // 再次检测子系统登录状态
-        const dom2 = await engine.extractSemanticDom();
+        // 等重定向链结束再检测，避免在跳转中途取到登录页/空白页
+        await waitForUrlStable(engine);
+        const dom2 = await extractDomWithRetry(engine);
         const det2 = detectLoginState({ dom: dom2 });
         status = det2.status;
         detectionReason = det2.reason;
+      } else if (isUserConfirm && systemUrl) {
+        // 用户已显式确认「已在浏览器完成登录」，但父门户 URL 路径未变化。
+        // 真实门户大量存在这种形态：登录成功后仍停留同一 hash 路由 / 同一首页 URL。
+        // 此时若继续只靠 URL 猜测，会永久返回 barrier —— 子系统永远等不到跳转（死锁）。
+        // 改为**以导航结果验证**：打开子系统 → 不再出现登录表单即证明门户会话有效。
+        console.log(
+          `[stage-login] ${systemId} portal url unchanged on user confirm, verifying portal session via subsystem navigation`,
+        );
+        await engine.navigate(systemUrl);
+        await waitForUrlStable(engine);
+        const domSub = await extractDomWithRetry(engine);
+        const detSub = detectLoginState({ dom: domSub });
+        status = detSub.status;
+        detectionReason =
+          detSub.status === 'ok' ? '父门户会话有效，已进入子系统' : `子系统仍需登录：${detSub.reason}`;
+        if (detSub.status !== 'ok') {
+          // 验证未通过：退回父门户，便于用户继续完成门户登录后再次确认
+          await engine.navigate(portalBaseUrl).catch(() => {});
+        }
       } else {
+        // 父门户仍未登录成功（仍停留登录页 / 需验证码）
+        const dom = await extractDomWithRetry(engine);
+        const det = detectLoginState({ dom });
         status = det.status === 'failed' ? 'failed' : 'barrier';
+        detectionReason = det.reason;
       }
     } else {
-      // 直接检测登录状态
-      const dom = await engine.extractSemanticDom();
+      // 直接检测登录状态（门户/单系统）。带重试：提交后若页面仍在跳转，
+      // extractSemanticDom 会因执行上下文被销毁而抛错，属瞬时态而非登录失败。
+      const dom = await extractDomWithRetry(engine);
       const det = detectLoginState({ dom });
       status = det.status;
       detectionReason = det.reason;
@@ -605,15 +896,26 @@ async function confirmManualLogin(
       console.log(`[stage-login] ${systemId} still requires manual intervention: ${detectionReason}`);
       return buildOutput({ systemId, status: 'barrier', cookies: [], loginMode, detectionReason });
     } else {
-      // 登录失败，从 Map 中移除引用，但浏览器保持打开
-      console.log(`[stage-login] ${systemId} login failed: ${detectionReason}`);
-      activeTakeoverEngines.delete(systemId);
+      // 登录失败（凭据错误等硬失败）。**保留引擎引用**：浏览器仍打开，用户可在同一
+      // 窗口改用正确账号重新登录后再次「确认登录」。旧实现在此 delete 引用，导致
+      // 用户重试时必然收到「无活跃浏览器实例」的二次 failed，且探索阶段也拿不到登录浏览器。
+      console.log(`[stage-login] ${systemId} login failed: ${detectionReason}（engine kept for retry）`);
       return buildOutput({ systemId, status: 'failed', cookies: [], loginMode, detectionReason });
     }
   } catch (err) {
-    console.error(`[stage-login] confirm login failed for ${systemId}:`, err instanceof Error ? err.message : err);
-    activeTakeoverEngines.delete(systemId);
-    return buildOutput({ systemId, status: 'failed', cookies: [], loginMode, detectionReason: '检测异常' });
+    // 检测过程异常：绝大多数是「页面正在跳转导致 evaluate 执行上下文销毁」，
+    // 此时浏览器仍存活、且往往登录已经成功。必须按**可接管障碍**处理：
+    // 保留引擎引用 + 返回 barrier，让用户再点一次「确认登录」即可完成。
+    // 旧实现在此判 failed 并删除引擎，是「登录完成: failed」的直接根因。
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[stage-login] confirm login detection incomplete for ${systemId} (browser kept): ${msg}`);
+    return buildOutput({
+      systemId,
+      status: 'barrier',
+      cookies: [],
+      loginMode,
+      detectionReason: `登录状态检测未完成（${msg}）；若已在浏览器完成登录，请再次点击「确认登录」`,
+    });
   }
   // 注意：浏览器永不关闭，保持可视状态
 }
@@ -630,6 +932,7 @@ export function createLoginStage(
     credConfig: deps.credConfig ?? defaultCredConfig(),
     manualTimeoutMs: deps.manualTimeoutMs ?? DEFAULT_MANUAL_TIMEOUT_MS,
     pollIntervalMs: deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+    portalLoginWaitMs: deps.portalLoginWaitMs ?? DEFAULT_PORTAL_LOGIN_WAIT_MS,
     store: deps.store,
   };
   async function run(input: LoginInput): Promise<LoginOutput> {

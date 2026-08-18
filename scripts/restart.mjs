@@ -1,11 +1,12 @@
 /**
  * @file restart.mjs
- * @description 前端编译 + 服务重启协调器
- *   生产构建模式：编译前端静态文件 → 停止旧服务 → 启动新服务
+ * @description 前端整体构建 + 服务重启协调器
+ *   生产构建模式：先重建所有库包(dist) → 再编译前端静态文件 → 停止旧服务 → 启动新服务
+ *   重建库包是为了让前端始终基于最新 src 打包，避免陈旧 dist 被带入前端产物。
  *
  *   使用方式:
- *     node scripts/restart.mjs build        # 仅编译前端
- *     node scripts/restart.mjs restart      # 编译+重启（完整流程）
+ *     node scripts/restart.mjs build        # 重建库包 + 编译前端
+ *     node scripts/restart.mjs restart      # 重建库包 + 编译前端 + 重启（完整流程）
  *     node scripts/restart.mjs stop         # 停止所有服务
  *     node scripts/restart.mjs status       # 查看服务状态
  *
@@ -172,8 +173,25 @@ function checkFrontendBuild() {
   }
 }
 
+function buildLibraries() {
+  log('Building library packages (contracts/engine/infra/stages)...', 'info');
+  try {
+    execSync('pnpm build', {
+      cwd: ROOT,
+      encoding: 'utf-8',
+      stdio: 'inherit',
+      timeout: 300000,
+    });
+    log('Library packages built successfully', 'info');
+    return true;
+  } catch (err) {
+    log(`Library build failed: ${err.message}`, 'error');
+    return false;
+  }
+}
+
 function buildFrontend() {
-  log('Building frontend...', 'info');
+  log('Building frontend app...', 'info');
   try {
     execSync('pnpm --filter @test-platform/app build', {
       cwd: ROOT,
@@ -193,6 +211,20 @@ function buildFrontend() {
   }
 }
 
+async function buildAll() {
+  log('=== Build All (libraries + frontend) ===', 'info');
+  if (!buildLibraries()) {
+    log('Library build failed, aborting', 'error');
+    return false;
+  }
+  if (!buildFrontend()) {
+    log('Frontend build failed, aborting', 'error');
+    return false;
+  }
+  log('Full build completed', 'info');
+  return true;
+}
+
 function startBackendServer() {
   log('Starting backend API server...', 'info');
   const child = spawn('pnpm', ['--filter', '@test-platform/orchestrator', 'run', 'server'], {
@@ -207,8 +239,7 @@ function startBackendServer() {
 }
 
 async function cmdBuild() {
-  log('=== Build Frontend ===', 'info');
-  const ok = buildFrontend();
+  const ok = await buildAll();
   if (ok) {
     log('Build completed', 'info');
   } else {
@@ -225,7 +256,7 @@ async function cmdRestart() {
   await waitForPortFree(CONFIG.backendPort);
   await waitForPortFree(CONFIG.frontendPort);
 
-  if (!buildFrontend()) {
+  if (!await buildAll()) {
     log('Build failed, aborting restart', 'error');
     process.exit(1);
   }

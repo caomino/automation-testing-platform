@@ -51,6 +51,8 @@ export function createMockEngine(opts?: {
     getStorageState: async () => ({ cookies: [], origins: [] }),
     getCurrentUrl: async () => '',
     applySession: async (_state: { cookies: string[]; headers?: Record<string, string>; tokens?: string[] }) => {},
+    getAllStorageTokens: async () => [],
+    addInitScript: async () => {},
     extractPageElements: async (_url?: string): Promise<ExploredElement[]> => [],
     waitForTimeout: async (_ms: number) => {},
     evaluate: async <T = any>(_fn: string | ((...args: any[]) => T), ..._args: any[]): Promise<T> => undefined as T,

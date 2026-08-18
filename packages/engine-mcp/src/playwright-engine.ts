@@ -252,12 +252,35 @@ const DOM_WALK = `
   return [];
 })`;
 
+/**
+ * 递归把整棵模块树标记为 needs_review，并写入原因。
+ * 用于「探索退化」场景：产出仍返回（便于人工审核补充），但绝不以 covered 伪装成功。
+ * 契约兼容：仅使用 ModuleNode 既有字段 status / reviewReason，不新增契约字段。
+ */
+export function markTreeNeedsReview(nodes: ModuleNode[], reason: string): ModuleNode[] {
+  for (const n of nodes) {
+    n.status = 'needs_review';
+    n.reviewReason = reason;
+    if (n.children.length > 0) markTreeNeedsReview(n.children, reason);
+  }
+  return nodes;
+}
+
 export class PlaywrightEngine implements CaptureEngine {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
   private readonly config: EngineConfig;
   private navigationPath: string[] = [];
+  /** 所有已打开的页面（含用户点击门户业务系统后自动弹出的新标签页），最新活动页优先 */
+  private pages: Page[] = [];
+  /** 最近一次活跃的页面（新标签页出现或页面被点击后更新） */
+  private activePage: Page | null = null;
+  /**
+   * 上一次 exploreModules 是否退化为「单页静态 DOM 兜底」。
+   * 供 stage-explore 的粒度闸门读取：true 表示本次产出只有目录级颗粒度，不可当成成功探索。
+   */
+  lastExploreDegraded = false;
 
   constructor(config: EngineConfig) {
     this.config = config;
@@ -289,19 +312,50 @@ export class PlaywrightEngine implements CaptureEngine {
     }
 
     this.context = await this.browser.newContext(contextOptions);
+    // 追踪新标签页（如门户「业务系统」点击后弹出的子系统页）：后续 getCurrentUrl /
+    // 会话捕获 / 探索必须落在最新活动页，否则 capturedUrl 永远停在门户工作台。
+    this.context.on('page', (p) => {
+      if (!this.pages.includes(p)) this.pages.push(p);
+      this.activePage = p;
+      p.bringToFront().catch(() => {});
+      p.on('close', () => {
+        this.pages = this.pages.filter((x) => x !== p);
+        if (this.activePage === p) this.activePage = this.pages[this.pages.length - 1] ?? null;
+      });
+    });
     this.page = await this.context.newPage();
     this.page.setDefaultTimeout(this.config.timeoutMs ?? 30000);
+    this.pages = [this.page];
+    this.activePage = this.page;
+  }
+
+  /** 最新活动页：新标签页优先（用户手动跳转/门户业务系统弹窗），否则回退主页面 */
+  private currentPage(): Page {
+    // 优先最近活动页；mock 场景（测试注入对象字面量）无 isClosed，用 try 兜底
+    try {
+      if (this.activePage && !(this.activePage as any).isClosed?.()) return this.activePage;
+    } catch { /* fallthrough */ }
+    try {
+      if (this.page && !(this.page as any).isClosed?.()) return this.page;
+    } catch { /* fallthrough */ }
+    const alive = this.pages.filter((p) => {
+      try { return !(p as any).isClosed?.(); } catch { return true; }
+    });
+    if (alive.length > 0) return alive[alive.length - 1];
+    // 测试场景：直接注入 engine.page 对象字面量（未走 launch，pages 为空）→ 回退 this.page
+    if (this.page) return this.page;
+    throw new Error('engine not launched');
   }
 
   async navigate(url: string): Promise<void> {
-    if (!this.page) throw new Error('engine not launched');
-    await this.page.goto(url, { waitUntil: 'load' });
+    const page = this.currentPage();
+    await page.goto(url, { waitUntil: 'load' });
     this.navigationPath.push(url);
     // Wait for SPA rendering: give JavaScript time to render navigation/menus
     await new Promise((resolve) => setTimeout(resolve, 1500));
     // Try waiting for common navigation elements to appear
     try {
-      await this.page.waitForSelector(
+      await page.waitForSelector(
         'nav, .sidebar, .menu, .el-menu, .ant-menu, [class*="sidebar"], [class*="menu"], [class*="nav"]',
         { timeout: 5000 }
       );
@@ -310,7 +364,7 @@ export class PlaywrightEngine implements CaptureEngine {
     }
     // Try waiting for login form elements (for login pages)
     try {
-      await this.page.waitForSelector(
+      await page.waitForSelector(
         'input[type="password"], .login-form, .login-container, [class*="login"], [class*="Login"]',
         { timeout: 3000 }
       );
@@ -319,7 +373,7 @@ export class PlaywrightEngine implements CaptureEngine {
     }
     // Final safety wait: ensure SPA has rendered enough content
     try {
-      await this.page.waitForFunction(() => {
+      await page.waitForFunction(() => {
         const root = document.querySelector('#app, #root, #__nuxt, #__next');
         if (!root) return document.body && document.body.children.length > 0;
         // SPA root should have children (app mounted)
@@ -331,8 +385,8 @@ export class PlaywrightEngine implements CaptureEngine {
   }
 
   async extractSemanticDom(rootSelector?: string): Promise<SemanticNode[]> {
-    if (!this.page) throw new Error('engine not launched');
-    const result = await this.page.evaluate(
+    const page = this.currentPage();
+    const result = await page.evaluate(
       ({ fn, selector }: { fn: string; selector: string | null }) => {
         const f = new Function('return (' + fn.trim() + ')')();
         const root = selector ? (globalThis as any).document.querySelector(selector) : null;
@@ -344,30 +398,43 @@ export class PlaywrightEngine implements CaptureEngine {
   }
 
   async exploreModules(): Promise<ModuleNode[]> {
-    if (!this.page) throw new Error('engine not launched');
+    const page = this.currentPage();
     const subsystemId = this.config.subsystemId ?? '';
     const systemId = this.config.systemId ?? subsystemId;
+    this.lastExploreDegraded = false;
+    let degradeReason = '菜单遍历返回空结果（未识别到导航菜单）';
     // 优先：结构化菜单遍历（一次性抽导航层级 + 逐叶子采功能点 + 全局去重）
     try {
-      const menuTree = await exploreViaMenus(this.page, {
-        ai: this.config.ai,
+      const menuTree = await exploreViaMenus(page, {
         subsystemId,
         systemId,
       });
       if (menuTree.length > 0) return menuTree;
-    } catch {
-      // 菜单遍历失败时回退静态提取
+    } catch (e) {
+      degradeReason = `菜单遍历抛错: ${e instanceof Error ? e.message : String(e)}`;
+      console.error('[explore] exploreViaMenus 失败:', e);
     }
-    // 回退：静态 DOM 提取（页面无可见菜单容器的场景）
+    // 退化路径：单页静态 DOM 提取。
+    // 【禁止静默降级】此路径只能产出「容器=module / 可交互叶子=action」的单页浅层树，
+    // 拿不到菜单层级、也不含逐叶子进页采集的操作级功能点 —— 正是「探索只抓父集目录」的现场。
+    // 因此必须：①醒目告警 ②置退化标志供上层闸门读取 ③整树标 needs_review，绝不伪装成功。
+    console.error(
+      `[explore][DEGRADED] ${degradeReason} → 退化为单页 DOM 提取，颗粒度可能仅到目录级，结果已整体标记 needs_review`,
+    );
+    this.lastExploreDegraded = true;
     const dom = await this.extractSemanticDom();
     const nodes = this.domToModules(dom, null, 0, subsystemId);
-    return nodes;
+    return markTreeNeedsReview(
+      nodes,
+      `菜单遍历失败（${degradeReason}），退化为单页 DOM 提取，颗粒度可能仅到目录级`,
+    );
   }
 
   async extractPageElements(url?: string): Promise<ExploredElement[]> {
     if (url) {
       await this.navigate(url);
-      await this.page?.waitForLoadState('networkidle').catch(() => {});
+      const page = this.currentPage();
+      await page?.waitForLoadState('networkidle').catch(() => {});
     }
 
     const dom = await this.extractSemanticDom();
@@ -424,12 +491,17 @@ export class PlaywrightEngine implements CaptureEngine {
   /** 语义节点 → 模块树：容器=module，可交互叶子=action/page */
   private domToModules(nodes: SemanticNode[], parentId: string | null, depth: number, subsystemId: string): ModuleNode[] {
     const out: ModuleNode[] = [];
+    // 降级路径 url 兜底：单页 DOM 摊开的节点多无 href，若全部无 url 则 featurePaths 恒空、
+    // 用例阶段拿不到任何定位 → 静默模板直出。故叶子无 href 时补当前页 URL，
+    // 保证至少能定位到系统首页（配合用例阶段按功能点名称兜底）。
+    const currentUrl = this.currentPage().url();
     for (const n of nodes) {
       const id = randomUUID();
       const isContainer = ['DIV', 'SECTION', 'ASIDE', 'NAV', 'UL', 'OL', 'LI', 'FORM', 'TABLE', 'HEADER', 'FOOTER', 'MAIN', 'ARTICLE'].includes(n.tag);
       const type: ModuleNode['type'] = n.interactive && !isContainer ? 'action' : n.children.length ? 'module' : 'page';
       const rawLabel = n.text || n.name || n.tag;
       const label = this.cleanLabel(rawLabel);
+      const isLeaf = n.children.length === 0;
       out.push({
         id,
         label,
@@ -438,7 +510,8 @@ export class PlaywrightEngine implements CaptureEngine {
         type,
         status: 'covered',
         children: this.domToModules(n.children, id, depth + 1, subsystemId),
-        url: n.href,
+        // 无 href 的叶子补当前页 URL（若 href 为 javascript:; / # 等无效值也忽略，仅用真实地址）
+        url: n.href && !/^(javascript:|#|void)/i.test(n.href) ? n.href : isLeaf && currentUrl ? currentUrl : undefined,
         depth,
         evidenceId: 'ev_dom',
       });
@@ -469,7 +542,7 @@ export class PlaywrightEngine implements CaptureEngine {
   }
 
   async runStep(cmd: BrowserCommand): Promise<ExecutionStepResult> {
-    if (!this.page) throw new Error('engine not launched');
+    const page = this.currentPage();
     if (this.config.readOnly && (cmd.kind === 'fill' || cmd.kind === 'select' || cmd.kind === 'press')) {
       return { step: cmd.kind, operation: JSON.stringify(cmd), expected: '', actual: '只读模式禁止写操作', result: 'skipped' };
     }
@@ -479,22 +552,22 @@ export class PlaywrightEngine implements CaptureEngine {
           await this.navigate(cmd.url);
           break;
         case 'click':
-          await this.page.click(cmd.selector, { timeout: this.config.timeoutMs ?? 30000 });
+          await page.click(cmd.selector, { timeout: this.config.timeoutMs ?? 30000 });
           break;
         case 'fill':
-          await this.page.fill(cmd.selector, cmd.value);
+          await page.fill(cmd.selector, cmd.value);
           break;
         case 'select':
-          await this.page.selectOption(cmd.selector, cmd.value);
+          await page.selectOption(cmd.selector, cmd.value);
           break;
         case 'press':
-          await this.page.press(cmd.selector, cmd.key);
+          await page.press(cmd.selector, cmd.key);
           break;
         case 'wait':
-          await this.page.waitForSelector(cmd.selector, { timeout: this.config.timeoutMs ?? 30000 });
+          await page.waitForSelector(cmd.selector, { timeout: this.config.timeoutMs ?? 30000 });
           break;
         case 'screenshot':
-          await this.page.screenshot({ path: cmd.path });
+          await page.screenshot({ path: cmd.path });
           break;
         case 'dom':
           await this.extractSemanticDom(cmd.selector);
@@ -661,27 +734,26 @@ export class PlaywrightEngine implements CaptureEngine {
   }
 
   async screenshot(path: string): Promise<ScreenshotRef> {
-    if (!this.page) throw new Error('engine not launched');
-    await this.page.screenshot({ path, fullPage: true });
+    const page = this.currentPage();
+    await page.screenshot({ path, fullPage: true });
     return { id: randomUUID(), fileName: basename(path), path };
   }
 
   async waitForTimeout(ms: number): Promise<void> {
-    if (!this.page) throw new Error('engine not launched');
     await new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   /** 提取当前会话 Cookie（name=value 形式），供登录后捕获与跨子系统复用 */
   async getSessionCookies(): Promise<string[]> {
-    if (!this.page) throw new Error('engine not launched');
-    const cookies = await this.page.context().cookies();
+    const page = this.currentPage();
+    const cookies = await page.context().cookies();
     return cookies.map((c) => `${c.name}=${c.value}`);
   }
 
   /** 提取当前会话请求头（扫描文档内鉴权 meta 头，供复用） */
   async getSessionHeaders(): Promise<Record<string, string>> {
-    if (!this.page) throw new Error('engine not launched');
-    return this.page.evaluate(() => {
+    const page = this.currentPage();
+    return page.evaluate(() => {
       // engine-mcp 为 Node 包（tsconfig 不含 dom lib），浏览器全局经 globalThis 访问并显式收窄类型
       const g = globalThis as unknown as {
         document: { querySelector(sel: string): { content?: string } | null };
@@ -697,8 +769,8 @@ export class PlaywrightEngine implements CaptureEngine {
 
   /** 提取当前会话 Token（localStorage/sessionStorage），供复用 */
   async getSessionTokens(): Promise<string[]> {
-    if (!this.page) throw new Error('engine not launched');
-    return this.page.evaluate(() => {
+    const page = this.currentPage();
+    return page.evaluate(() => {
       const g = globalThis as unknown as {
         localStorage: { getItem(k: string): string | null };
         sessionStorage: { getItem(k: string): string | null };
@@ -714,8 +786,7 @@ export class PlaywrightEngine implements CaptureEngine {
 
   /** 注入复用会话：将门户会话的 cookies/tokens 应用到当前上下文，实现跨子系统复用 */
   async applySession(state: { cookies: string[]; headers?: Record<string, string>; tokens?: string[] }): Promise<void> {
-    if (!this.page) throw new Error('engine not launched');
-    const page = this.page;
+    const page = this.currentPage();
     const currentUrl = page.url();
     // Playwright addCookies 要求合法 http(s) 页面上下文；about:blank 注入会抛异常
     if (!/^https?:\/\//i.test(currentUrl)) {
@@ -748,28 +819,25 @@ export class PlaywrightEngine implements CaptureEngine {
     }
   }
 
-  /** 获取当前页面 URL（实现 CaptureEngine 接口） */
+  /** 获取当前页面 URL（实现 CaptureEngine 接口）：返回最新活动页（新标签页优先） */
   async getCurrentUrl(): Promise<string> {
-    if (!this.page) throw new Error('engine not launched');
-    return this.page.url();
+    return this.currentPage().url();
   }
 
   /** 获取当前页面标题（实现 CaptureEngine 接口） */
   async getCurrentTitle(): Promise<string> {
-    if (!this.page) throw new Error('engine not launched');
-    return this.page.title();
+    return this.currentPage().title();
   }
 
   /** 在页面上下文执行表达式（人工补录录制等场景使用） */
   async evaluate<T = any>(fn: string | ((...args: any[]) => T), ...args: any[]): Promise<T> {
-    if (!this.page) throw new Error('engine not launched');
-    return this.page.evaluate(fn as any, ...args);
+    return this.currentPage().evaluate(fn as any, ...args);
   }
 
   /** 检查当前页面是否有登录表单（判断是否需要登录） */
   async hasLoginForm(): Promise<boolean> {
-    if (!this.page) throw new Error('engine not launched');
-    return this.page.evaluate(() => {
+    const page = this.currentPage();
+    return page.evaluate(() => {
       const g = globalThis as unknown as {
         document: Document;
       };
@@ -811,8 +879,6 @@ export class PlaywrightEngine implements CaptureEngine {
     url: string,
     sessionState?: { cookies?: string[]; headers?: Record<string, string>; tokens?: string[] }
   ): Promise<{ loggedIn: boolean; method: 'reuse' | 'applied' | 'anonymous' }> {
-    if (!this.page) throw new Error('engine not launched');
-
     console.log(`[engine] ensureSession: 导航到 ${url}`);
     await this.navigate(url);
 
@@ -861,6 +927,8 @@ export class PlaywrightEngine implements CaptureEngine {
     await this.browser?.close();
     this.browser = null;
     this.page = null;
+    this.pages = [];
+    this.activePage = null;
   }
 
   /** 获取当前浏览器上下文的 Storage State（用于会话复用） */
@@ -869,5 +937,33 @@ export class PlaywrightEngine implements CaptureEngine {
       return { cookies: [], origins: [] };
     }
     return await this.context.storageState() as PlaywrightStorageState;
+  }
+
+  /** 抓取当前页面全部 localStorage + sessionStorage（任意 key），供跨重载会话保持 */
+  async getAllStorageTokens(): Promise<Array<{ storage: 'local' | 'session'; name: string; value: string }>> {
+    const page = this.currentPage();
+    return page.evaluate(() => {
+      const out: Array<{ storage: 'local' | 'session'; name: string; value: string }> = [];
+      const ls = window.localStorage;
+      for (let i = 0; i < ls.length; i++) {
+        const k = ls.key(i);
+        if (k != null) out.push({ storage: 'local', name: k, value: ls.getItem(k) ?? '' });
+      }
+      const ss = window.sessionStorage;
+      for (let i = 0; i < ss.length; i++) {
+        const k = ss.key(i);
+        if (k != null) out.push({ storage: 'session', name: k, value: ss.getItem(k) ?? '' });
+      }
+      return out;
+    });
+  }
+
+  /**
+   * 注册页面初始化脚本：在每次页面导航前注入，用于跨重载保持会话（含 sessionStorage 恢复）。
+   * 注册于 context 级，对后续所有页面/重载生效；脚本在页面自身脚本之前运行。
+   */
+  async addInitScript(fn: (arg?: unknown) => void, arg?: unknown): Promise<void> {
+    if (!this.context) throw new Error('engine not launched');
+    await this.context.addInitScript(fn as any, arg as any);
   }
 }
