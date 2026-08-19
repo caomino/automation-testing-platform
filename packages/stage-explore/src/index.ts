@@ -541,17 +541,29 @@ export async function run(
       }
 
       // 执行探索：按 AI 开关二选一（双模式隔离，运行时只走一条路径，绝不互相污染）
-      console.log(`[stage-explore] 正在${opts?.ai ? 'AI 辅助' : '结构化'}探索模块树...`);
-      moduleTree = opts?.ai
-        ? await exploreWithAi(activeEngine, opts.ai, {
-            subsystemId: validated.subsystemId,
-            systemId: validated.subsystemId,
-            startUrl: validated.systemUrl,
-          })
-        : await exploreNonAi(activeEngine, {
-            subsystemId: validated.subsystemId,
-            startUrl: validated.systemUrl,
-          });
+      console.log(`[stage-explore] 正在${opts?.ai ? 'AI 辅助' : '结构化'}探索模块树 (via AutoHub)...`);
+      try {
+        const mod = await import('@test-platform/engine-mcp/dist/autohub/index.js');
+        const getGenAI = () => null;
+        moduleTree = await mod.exploreViaAutoHub(
+          validated.subsystemId,
+          validated.systemUrl || '',
+          opts?.ai ? 'ai_mcp' : 'non_ai',
+          getGenAI
+        );
+      } catch (autohubErr) {
+        console.error('[stage-explore] AutoHub 探索异常，降级回原有逻辑', autohubErr);
+        moduleTree = opts?.ai
+          ? await exploreWithAi(activeEngine, opts.ai, {
+              subsystemId: validated.subsystemId,
+              systemId: validated.subsystemId,
+              startUrl: validated.systemUrl,
+            })
+          : await exploreNonAi(activeEngine, {
+              subsystemId: validated.subsystemId,
+              startUrl: validated.systemUrl,
+            });
+      }
       console.log(`[stage-explore] 探索完成，发现 ${moduleTree.length} 个节点`);
 
       if (moduleTree.length === 0) {

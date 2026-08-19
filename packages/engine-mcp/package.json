@@ -6,6 +6,12 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
+    "./src/autohub/index.ts": {
+      "import": "./src/autohub/index.ts"
+    },
+    "./dist/autohub/index.js": {
+      "import": "./dist/autohub/index.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -24,7 +30,10 @@
     "@test-platform/contracts": "workspace:*",
     "@test-platform/infra-ai": "workspace:*",
     "playwright": "^1.49.0",
-    "zod": "^3.23.8"
+    "zod": "^3.23.8",
+    "axios": "^1.7.2",
+    "cheerio": "^1.0.0",
+    "@google/genai": "^2.4.0"
   },
   "devDependencies": {
     "typescript": "^5.7.2",
