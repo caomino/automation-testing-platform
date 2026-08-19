@@ -39,7 +39,7 @@ export class AdaptiveLayoutDetector {
     for (const sel of dualColSelectors) {
       const $tabs = $(sel);
       if ($tabs.length > 0) {
-        $tabs.find('button, a, .tab-item, .item, [role="tab"]').each((idx, el) => {
+        $tabs.find('button, a, .tab-item, .item, [role="tab"]').each((idx: number, el: any) => {
           const $el = $(el);
           const title = ($el.attr('title') || $el.attr('aria-label') || $el.text()).trim().replace(/\s+/g, ' ');
           if (title && title.length >= 1 && title.length <= 15) {
@@ -76,7 +76,7 @@ export class AdaptiveLayoutDetector {
     for (const hSel of headerNavSelectors) {
       const $h = $(hSel);
       if ($h.length > 0) {
-        $h.find('li, a, .menu-item, [role="menuitem"]').each((idx, el) => {
+        $h.find('li, a, .menu-item, [role="menuitem"]').each((idx: number, el: any) => {
           const $el = $(el);
           const title = ($el.text() || $el.attr('title') || '').trim().replace(/\s+/g, ' ');
           if (title && title.length >= 2 && title.length <= 20) {
@@ -117,14 +117,14 @@ export class AdaptiveLayoutDetector {
     if ($container.length === 0) return nodes;
 
     // 寻找一级折叠块或单项
-    $container.find('li.el-sub-menu, li.ant-menu-submenu, .menu-item-has-children, .nav-item-dropdown, li.layui-nav-item').each((pIdx, pEl) => {
+    $container.find('li.el-sub-menu, li.ant-menu-submenu, .menu-item-has-children, .nav-item-dropdown, li.layui-nav-item').each((pIdx: number, pEl: any) => {
       const $p = $(pEl);
       const title = ($p.children('.el-sub-menu__title, .ant-menu-submenu-title, a, span.title').text() || $p.contents().first().text()).trim().replace(/\s+/g, ' ');
       if (!title || title.length < 2 || seenTitles.has(title)) return;
       seenTitles.add(title);
 
       const children: PageNodeDescriptor[] = [];
-      $p.find('li.el-menu-item, li.ant-menu-item, ul.layui-nav-child dd a, .sub-menu a').each((cIdx, cEl) => {
+      $p.find('li.el-menu-item, li.ant-menu-item, ul.layui-nav-child dd a, .sub-menu a').each((cIdx: number, cEl: any) => {
         const $c = $(cEl);
         const cTitle = $c.text().trim().replace(/\s+/g, ' ');
         if (!cTitle || cTitle.length < 2) return;
@@ -153,7 +153,7 @@ export class AdaptiveLayoutDetector {
 
     // 如果未找到任何 el-sub-menu，则查找直接的一级 menu-item
     if (nodes.length === 0) {
-      $container.find('li.el-menu-item, li.ant-menu-item, a.nav-link, li.menu-item').each((idx, el) => {
+      $container.find('li.el-menu-item, li.ant-menu-item, a.nav-link, li.menu-item').each((idx: number, el: any) => {
         const $el = $(el);
         const title = $el.text().trim().replace(/\s+/g, ' ');
         if (!title || title.length < 2 || seenTitles.has(title)) return;

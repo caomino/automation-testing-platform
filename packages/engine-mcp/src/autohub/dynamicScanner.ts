@@ -76,13 +76,13 @@ export class UniversalDOMExtractor {
       let isPortalExp = false;
       const portalNodes: DynamicPageNode[] = [];
 
-      portalSections.each((pIdx, sec) => {
+      portalSections.each((pIdx: number, sec: any) => {
         const $sec = $(sec);
         const secTitle = $sec.find('h1, h2, h3, h4, .title, strong, b').first().text().trim() ||
                          $sec.prevAll('h2, h3, h4, .title').first().text().trim();
         
         const subLinks: DynamicPageNode[] = [];
-        $sec.find('tr, .item, li, a').each((rIdx, row) => {
+        $sec.find('tr, .item, li, a').each((rIdx: number, row: any) => {
           const $row = $(row);
           const tds = $row.find('td');
           if (tds.length >= 2) {
@@ -158,7 +158,7 @@ export class UniversalDOMExtractor {
       const $nav = $(navSel);
       if ($nav.length > 0) {
         // 查找所有顶层目录 / 子菜单项
-        $nav.find('li, .menu-item, .nav-item, .ant-menu-submenu, .el-sub-menu, .el-submenu').each((_, el) => {
+        $nav.find('li, .menu-item, .nav-item, .ant-menu-submenu, .el-sub-menu, .el-submenu').each((_: number, el: any) => {
           const $el = $(el);
           // 判断是否有子级菜单
           const $subUl = $el.find('ul, .el-menu, .ant-menu-sub, .layui-nav-child');
@@ -175,7 +175,7 @@ export class UniversalDOMExtractor {
           if ($subUl.length > 0) {
             // 父级折叠菜单
             const children: DynamicPageNode[] = [];
-            $subUl.find('li, .el-menu-item, .ant-menu-item, .layui-nav-item').each((cIdx, cEl) => {
+            $subUl.find('li, .el-menu-item, .ant-menu-item, .layui-nav-item').each((cIdx: number, cEl: any) => {
               const $c = $(cEl);
               const cTitle = $c.text().trim().replace(/\s+/g, ' ').slice(0, 30);
               if (!cTitle || cTitle.length < 2) return;
@@ -229,7 +229,7 @@ export class UniversalDOMExtractor {
     const actions: DynamicActionNode[] = [];
     const seenTexts = new Set<string>();
 
-    $('button, input[type="button"], input[type="submit"], a.btn, a.el-button, a.ant-btn, .action-btn, [role="button"]').each((idx, el) => {
+    $('button, input[type="button"], input[type="submit"], a.btn, a.el-button, a.ant-btn, .action-btn, [role="button"]').each((idx: number, el: any) => {
       const $el = $(el);
       const btnText = ($el.text() || $el.attr('value') || $el.attr('aria-label') || $el.attr('title') || '').trim().replace(/\s+/g, ' ');
       if (!btnText || btnText.length < 2 || btnText.length > 25 || seenTexts.has(btnText)) return;
@@ -287,7 +287,7 @@ export class UniversalDOMExtractor {
    */
   static extractTableColumnsFromDOM($: cheerio.CheerioAPI): string[] {
     const columns: string[] = [];
-    $('table th, .el-table__header th, .ant-table-thead th').each((_, el) => {
+    $('table th, .el-table__header th, .ant-table-thead th').each((_: number, el: any) => {
       const text = $(el).text().trim().replace(/\s+/g, ' ');
       if (text && text.length < 20 && !columns.includes(text)) {
         columns.push(text);

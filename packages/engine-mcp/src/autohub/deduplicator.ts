@@ -30,7 +30,7 @@ export class HierarchyTreeFormatter {
 
     for (const node of tree.rootNodes || []) {
       const modRoute = (node.routePath || '').toLowerCase().trim();
-      const modKey = `${node.id}_${modRoute}_${node.title}`;
+      const _modKey = `${node.id}_${modRoute}_${node.title}`;
       if (seenModuleIds.has(node.id) || (modRoute && seenModuleRoutes.has(modRoute))) {
         duplicatesRemoved++;
         continue;

@@ -1,4 +1,4 @@
-import { PageNodeDescriptor, ActionDescriptor, MenuSourceCategory } from './types.js';
+import { PageNodeDescriptor,  MenuSourceCategory } from './types.js';
 
 /**
  * 类别 ② & ⑤: 客户端 SPA 路由内存与代码逆向提取器

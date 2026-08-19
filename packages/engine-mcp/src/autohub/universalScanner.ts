@@ -26,8 +26,8 @@ export class UniversalMultiEngineScanner {
       requiresCaptcha?: boolean;
     },
     mode: 'non_ai' | 'ai_mcp',
-    getGenAI: () => GoogleGenAI | null,
-    manualCaptcha?: string,
+    _getGenAI: () => GoogleGenAI | null,
+    _manualCaptcha?: string,
     onLog?: (log: any) => void
   ): Promise<HierarchyTreeDescriptor> {
     const mcp = new PlaywrightMCPController(onLog);
