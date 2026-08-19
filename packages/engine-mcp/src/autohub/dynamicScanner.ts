@@ -1852,7 +1852,7 @@ export async function dynamicRealTimeScan(
  * AI 直接对数据做【增】、【删】、【改】
  * 绝不捏造假动作，只做真实业务动作的补齐与定位器修改
  */
-function applyAiDirectDataMutations(nodes: DynamicPageNode[], prefix: string, mcp: PlaywrightMCPController): DynamicPageNode[] {
+function _applyAiDirectDataMutations(nodes: DynamicPageNode[], prefix: string, mcp: PlaywrightMCPController): DynamicPageNode[] {
   return nodes.map(node => {
     const updatedActions: DynamicActionNode[] = [];
 
@@ -1889,7 +1889,7 @@ function applyAiDirectDataMutations(nodes: DynamicPageNode[], prefix: string, mc
       }
     }
 
-    const updatedChildren = node.children ? applyAiDirectDataMutations(node.children, prefix, mcp) : undefined;
+    const updatedChildren = node.children ? _applyAiDirectDataMutations(node.children, prefix, mcp) : undefined;
 
     return {
       ...node,
@@ -1902,7 +1902,7 @@ function applyAiDirectDataMutations(nodes: DynamicPageNode[], prefix: string, mc
 /**
  * 0 重复校验与格式化
  */
-function formatAndDeduplicateTree(tree: any, mode: 'non_ai' | 'ai_mcp'): DynamicSystemTree {
+function _formatAndDeduplicateTree(tree: any, mode: 'non_ai' | 'ai_mcp'): DynamicSystemTree {
   const seenPageIds = new Set<string>();
   const seenActionIds = new Set<string>();
   let duplicatesRemoved = 0;
