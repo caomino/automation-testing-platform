@@ -2,20 +2,25 @@
  * @file aiExplore.ts
  * @description AI 辅助探索实现（P-B / 双模式之「开启 AI」侧）。
  *
- * 隔离硬约束（design §3）：本文件**不得** import `menu-explorer.ts` / `nonAiExplore.ts` /
- * `infra-ai` 的 AIClient 实现细节（仅用其类型）；唯一交汇点是入参 `engine: McpEngine` 与
- * 出参 `ModuleNode[]`。运行时与 non-AI 路径二选一，绝不共用探索器代码。
+ * 隔离硬约束（design §3 + S1 测试）：本文件**不得** import `menu-explorer.ts` / `nonAiExplore.ts` /
+ * `infra-ai` 的 AIClient 值级实现（仅用其类型）；唯一交汇点是入参 `engine: McpEngine` 与
+ * 出参 `ModuleNode[]`。本文件可 import 共享模块 `./menuFusion`（不属于被禁文件）。
  *
- * 算法（T3.2 增强）：独立 agent 循环 ——
- *   extractPageElements → 标注「菜单候选」（sidebar/menu 容器内）→ AIClient 决策
- *   → 本地危险词硬挡 → runStep(click) → 等待稳定 → 采集该页功能点挂为 action 叶子
- *   → 循环（封顶 maxSteps 防失控）。
- * 引导目标：**优先点击未访问的菜单项，进入每个菜单页面**，在每个页面内识别
- * 列表/新增/修改/删除/查询/导出等按钮级功能点。全程只读，失败安全降级。
+ * 算法：
+ *  ① 先跑「无权限多级降级融合管线」(buildModuleTreeViaDegradation) 得到基线树（路由/分包/DOM）。
+ *  ② 再跑 AI 深入循环 (aiDeepenPages)：引导模型优先点未访问菜单，进入每个页面识别功能点，
+ *     补基线未覆盖的页面/动作（P6 AI 自愈）。全程只读，失败安全降级。
+ *  ③ mergeExternalPages 把 AI 发现的页面合并回基线（同名 path 吸收 action，新页面按 path 挂入）。
  */
 import type { McpEngine } from '@test-platform/engine-mcp';
 import type { AIClient, AIRequest } from '@test-platform/infra-ai';
 import type { ExploredElement, ModuleNode } from '@test-platform/contracts';
+import {
+  buildModuleTreeViaDegradation,
+  emptyPlaceholderNode,
+  formatDegradationSummary,
+  mergeExternalPages,
+} from './menuFusion.js';
 
 /** AI 模式的探索上下文 */
 export interface AiExploreContext {
@@ -84,7 +89,6 @@ function parseDecision(text: string): { kind: 'done' } | { kind: 'click'; ref: s
   if (/done|完成|结束|没有|无需|stop|finish/i.test(t) && !/ref/i.test(t)) {
     return { kind: 'done' };
   }
-  // 优先解析 JSON {ref:"..."} 或 {action:"click", ref:"..."}
   const jsonMatch = t.match(/\{[\s\S]*\}/);
   if (jsonMatch) {
     try {
@@ -93,10 +97,9 @@ function parseDecision(text: string): { kind: 'done' } | { kind: 'click'; ref: s
       if (ref) return { kind: 'click', ref: String(ref) };
       if (/done|finish|stop/i.test(String(obj.action ?? ''))) return { kind: 'done' };
     } catch {
-      // 非 JSON，走下方宽松解析
+      /* 非 JSON，走下方宽松解析 */
     }
   }
-  // 宽松：提取 ref="..." 或 ref: "..." 或末尾 token
   const refMatch = t.match(/ref[=:\s]+["']?([^\s"',}]+)/i);
   if (refMatch) return { kind: 'click', ref: refMatch[1].replace(/["']/g, '') };
   return { kind: 'done' };
@@ -121,7 +124,6 @@ async function markMenuCandidates(
   const selectors = els.map((e) => e.selector).filter(Boolean);
   if (selectors.length === 0) return new Set();
   try {
-    // 字符串形式注入（引擎 evaluate 原样传给 page.evaluate），避开 Node tsconfig 无 dom lib 的检查
     const marked = await engine.evaluate<number[]>(
       `(sels) => {
         const MENU_CONTAINERS = '[class*="sidebar"], [class*="menu"], [class*="nav"], nav, aside, [role="menubar"], [role="navigation"], [role="tree"]';
@@ -171,18 +173,17 @@ const SYSTEM_PROMPT = `你是一个 Web 系统功能探索助手。当前已登�
 6. 回答格式：ref="<候选的 ref>"，或 "done"。不要解释。`;
 
 /**
- * AI 辅助探索主流程。
- * @returns 模块树（page 节点下挂 action 级功能点；异常时返回已收集节点并整体标 needs_review，绝不抛崩）
+ * AI 深入循环：在融合基线之上，让模型优先遍历菜单进入每个子页面，识别功能点。
+ * @returns page 节点数组（每个含 action 级功能点）；异常时返回已收集节点并整体标 needs_review，绝不抛崩。
  */
-export async function exploreWithAi(
+async function aiDeepenPages(
   engine: McpEngine,
   ai: AIClient,
   ctx: AiExploreContext,
-  limits: Partial<AiExploreLimits> = {},
+  limits: AiExploreLimits,
 ): Promise<ModuleNode[]> {
-  const cfg = { ...DEFAULT_LIMITS, ...limits };
   const subsystemId = ctx.subsystemId;
-  const pages = new Map<string, ModuleNode>(); // 已访问 URL → page 节点
+  const pages = new Map<string, ModuleNode>();
   const visitedRefs = new Set<string>();
   const visitedUrls = new Set<string>();
 
@@ -190,7 +191,7 @@ export async function exploreWithAi(
     try {
       await engine.navigate(ctx.startUrl);
     } catch {
-      // 已在该页则忽略
+      /* 已在该页则忽略 */
     }
   }
 
@@ -217,7 +218,6 @@ export async function exploreWithAi(
     return node;
   };
 
-  /** 采集当前页功能点挂到对应 page 节点 */
   const harvest = async (): Promise<void> => {
     const pageNode = await getOrCreatePage();
     let els: ExploredElement[] = [];
@@ -230,7 +230,6 @@ export async function exploreWithAi(
     for (const el of els) {
       if (seen.has(el.ref)) continue;
       seen.add(el.ref);
-      // 识别「操作级」元素（按钮/链接/可点控件）挂为 action；纯输入框不挂
       const tag = (el.tag || '').toLowerCase();
       if (tag === 'input' || tag === 'select' || tag === 'textarea') continue;
       pageNode.children.push(actionNode(el, pageNode.id, subsystemId, pageNode.depth + 1));
@@ -242,10 +241,8 @@ export async function exploreWithAi(
   };
 
   try {
-    // 起点页先采一次
     await harvest();
-
-    for (let step = 0; step < cfg.maxSteps; step++) {
+    for (let step = 0; step < limits.maxSteps; step++) {
       let candidates: ExploredElement[] = [];
       try {
         candidates = (await engine.extractPageElements()).filter(isSafeClickable);
@@ -255,7 +252,6 @@ export async function exploreWithAi(
       const fresh = candidates.filter((c) => !visitedRefs.has(c.ref));
       if (fresh.length === 0) break;
 
-      // 标注菜单候选（T3.2：AI 优先遍历菜单，才能进入每个子页面）
       const menuRefs = await markMenuCandidates(engine, fresh);
       const menuCands = fresh.filter((c) => menuRefs.has(c.ref));
       const otherCands = fresh.filter((c) => !menuRefs.has(c.ref));
@@ -273,7 +269,6 @@ export async function exploreWithAi(
       try {
         decision = parseDecision((await ai.complete(req)).text);
       } catch (e) {
-        // AI 调用异常：安全收束，已收集节点整体标 needs_review（不抛崩）
         console.error('[explore][AI] AI 调用异常，已收集节点标 needs_review:', e);
         for (const p of pages.values()) {
           p.status = 'needs_review';
@@ -286,18 +281,17 @@ export async function exploreWithAi(
       const target = fresh.find(
         (c) => c.ref === decision.ref || decision.ref.endsWith(c.ref) || c.ref.endsWith(decision.ref),
       );
-      if (!target) continue; // AI 给了无效 ref，跳过本轮
+      if (!target) continue;
 
       visitedRefs.add(target.ref);
       const urlBefore = await engine.getCurrentUrl();
       try {
         await engine.runStep({ kind: 'click', selector: target.selector || target.ref });
-        await engine.waitForTimeout(cfg.settleMs);
+        await engine.waitForTimeout(limits.settleMs);
       } catch {
-        continue; // 点击失败则该候选放弃，继续下一轮
+        continue;
       }
       const urlAfter = await engine.getCurrentUrl();
-      // 仅当 URL 变化且未访问过 → 新页面，harvest；否则可能是展开操作，下一轮自然发现新候选
       if (urlAfter !== urlBefore && !visitedUrls.has(urlAfter)) {
         await harvest();
       }
@@ -311,4 +305,33 @@ export async function exploreWithAi(
   }
 
   return Array.from(pages.values());
+}
+
+/**
+ * AI 辅助探索主流程（双模式之「开启 AI」）。
+ * ① 无权限降级融合基线 → ② AI 深入补遗漏页面/动作 → ③ 合并返回。
+ * @returns 模块树（子目录 page 节点 + 操作级 action 功能点）
+ */
+export async function exploreWithAi(
+  engine: McpEngine,
+  ai: AIClient,
+  ctx: AiExploreContext,
+  limits: Partial<AiExploreLimits> = {},
+): Promise<ModuleNode[]> {
+  const cfg = { ...DEFAULT_LIMITS, ...limits };
+  const subsystemId = ctx.subsystemId;
+
+  const base = await buildModuleTreeViaDegradation(engine, {
+    subsystemId,
+    startUrl: ctx.startUrl,
+  });
+  // 说明「为什么降级」：把降级链打印到日志，便于运行时直接看到每级降级根因
+  if (base.degradations.length) {
+    console.warn(`[explore][降级链] ${formatDegradationSummary(base.degradations)}`);
+  }
+  const aiPages = await aiDeepenPages(engine, ai, ctx, cfg);
+  const merged = mergeExternalPages(base.tree, aiPages, subsystemId);
+
+  if (merged.length > 0) return merged;
+  return [emptyPlaceholderNode(subsystemId, base.degradations)];
 }

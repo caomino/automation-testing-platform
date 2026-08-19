@@ -195,34 +195,53 @@ export function computeNeedsReview(tree: ModuleNode[]): string[] {
 /**
  * in-pipeline 粒度闸门（S2 / P-A#4）。
  *
- * 核心断言：探索产出必须包含**操作级功能点**（`type==='action'`，即列表/添加/修改/删除/查询/导出）。
- * 仅当 action 叶子为 0（彻底没抓到任何操作级功能点）时，把目录级叶子整体标 `needs_review` + 原因并告警；
- * 这正是「只抓父集目录」的真凶场景。若已存在 action，则视为部分成功，不全局罢工（混合树靠人工审核补遗漏页）。
+ * 核心断言：探索产出必须包含**已验证（covered）的操作级功能点**（`type==='action'` 且 `status==='covered'`，
+ * 即列表/添加/修改/删除/查询/导出等经浏览器实采确认者）。
+ * 仅当「实采确认的功能点为 0」时（彻底没在浏览器里抓到任何真实操作功能点——无论是否有标题推断的
+ * needs_review 占位），把目录级叶子整体标 `needs_review` + 原因并告警；这正是「只抓父集目录」的真凶场景。
+ * 若已存在 covered 的 action，则视为部分成功，不全局罢工（混合树靠人工审核补遗漏页）。
  *
  * 设计约束：
  *  - 不新增任何契约字段，完全复用 ModuleNode.status / reviewReason / ExploreOutput.needsReview。
+ *  - 仅统计 covered 动作：标题推断出的 needs_review 占位不计入成功，避免「靠猜功能点」骗过粒度闸门。
  */
 export function assertActionGranularity(
   tree: ModuleNode[],
   _minActionRatio = 0.8,
 ): { totalLeaves: number; actionCount: number; flagged: number } {
   const all = flatten(tree);
-  const leaves = all.filter((n) => n.children.length === 0);
-  const actionLeaves = leaves.filter((n) => n.type === 'action');
-  const dirLeaves = leaves.filter((n) => n.type !== 'action');
-  const actionCount = actionLeaves.length;
-  const totalLeaves = leaves.length;
-  const flagged = actionCount === 0 ? dirLeaves.length : 0;
+  // covered 动作 = 浏览器实采确认的操作级功能点（needs_review 推断占位不计入）
+  const actionCount = all.filter(
+    (n) => n.type === 'action' && n.status === 'covered',
+  ).length;
 
-  if (actionCount === 0) {
-    const reason =
-      '未采集到任何操作级功能点（列表/添加/修改/删除/查询/导出），疑似仅探索到目录层';
-    for (const n of dirLeaves) {
-      n.status = 'needs_review';
-      n.reviewReason = reason;
+  const countCoveredActionsUnder = (node: ModuleNode): number =>
+    node.children.reduce(
+      (acc, c) =>
+        acc +
+        (c.type === 'action' && c.status === 'covered' ? 1 : 0) +
+        countCoveredActionsUnder(c),
+      0,
+    );
+
+  // 按「页面」粒度判定：任一页面在其整棵子树内都未采集到实采确认功能点 → 该页标 needs_review。
+  // 用子树计数可避免误伤「仅仅是容器页」：其子孙页若已采到功能点则不算缺失。
+  const pages = all.filter((n) => n.type === 'page');
+  let flagged = 0;
+  for (const page of pages) {
+    if (countCoveredActionsUnder(page) === 0) {
+      page.status = 'needs_review';
+      page.reviewReason =
+        '未在该页面（含子页）采集到任何「浏览器实采确认」的操作级功能点（列表/添加/修改/删除/查询/导出），' +
+        '疑似仅探索到目录层，或仅有标题推断的待确认占位';
+      flagged++;
     }
+  }
+
+  const totalLeaves = pages.length;
+  if (flagged > 0) {
     console.error(
-      `[explore][GRANULARITY] 颗粒度不足：${reason}（action=0, 目录级叶子=${flagged}/${totalLeaves}）→ 已标记 needs_review`,
+      `[explore][GRANULARITY] 颗粒度不足：${flagged}/${totalLeaves} 个页面未采集到实采确认功能点 → 已标记 needs_review`,
     );
   }
   return { totalLeaves, actionCount, flagged };
@@ -529,7 +548,10 @@ export async function run(
             systemId: validated.subsystemId,
             startUrl: validated.systemUrl,
           })
-        : await exploreNonAi(activeEngine);
+        : await exploreNonAi(activeEngine, {
+            subsystemId: validated.subsystemId,
+            startUrl: validated.systemUrl,
+          });
       console.log(`[stage-explore] 探索完成，发现 ${moduleTree.length} 个节点`);
 
       if (moduleTree.length === 0) {
