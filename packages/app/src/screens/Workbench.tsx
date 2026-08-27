@@ -6,11 +6,14 @@ import { fromModuleView, fromFeatureView, fromCaseView, fromExecView } from "../
 function LoginModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { project, system, systems, setActiveScreen, toast, setLoginStatus, runPipelineLogin } = useApp();
   const flowHint =
-    system.credentialMode === "manual-takeover"
+    (system.type === "subsystem"
+      ? "子系统模式：浏览器打开门户 → 完成门户登录后请【手动进入子系统页面】→ 点击「确认登录」→ 平台记录子系统入口并捕获会话 → 后续探索复用该登录。\n"
+      : "") +
+    (system.credentialMode === "manual-takeover"
       ? "人工接管：启动可见浏览器 → 您在浏览器中手动完成登录 → 点击「确认登录」→ 平台捕获会话（cookies/headers/tokens）→ 自动继续后续流程"
       : system.credentialMode === "credential"
         ? "账号密码：启动可见浏览器 → 自动填充已配置凭据 → 您在浏览器中点击登录 → 点击「确认登录」→ 平台捕获会话 → 自动继续"
-        : "免登录：直接进入系统，无需鉴权";
+        : "免登录：直接进入系统，无需鉴权");
 
   const [loginStep, setLoginStep] = useState("");
   const [loginWorking, setLoginWorking] = useState(false);
@@ -140,7 +143,8 @@ function LoginModal({ open, onClose }: { open: boolean; onClose: () => void }) {
         setCaptchaInput("");
         onClose();
       } else if (result && result.loginStatus === 'barrier') {
-        setLoginStep("⚠ 仍在等待登录完成，请继续在浏览器中操作后再点击确认");
+        const reason = result?.sessionHandle?.detectionReason || "请继续在浏览器中操作后再点击确认";
+        setLoginStep(`⚠ 尚未登录成功：${reason}`);
         setLoginWorking(false);
       } else {
         setLoginStep("✗ 登录失败，请在浏览器中重新操作后再确认");

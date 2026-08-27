@@ -51,14 +51,15 @@ function makeFakeEngine(opts: {
   onApply?: (state: { cookies: string[]; headers?: Record<string, string>; tokens?: string[] }) => void;
   /** 让 launch 抛错，模拟接管中断（engine 抛错 → catch → failed） */
   throwOnLaunch?: boolean;
-}): SessionCapableEngine {
+}): SessionCapableEngine & { _setCurrentUrl(url: string): Promise<void> } {
   let dom = opts.initialDom;
   let submitted = false;
   const navigated: string[] = [];
   let currentUrl = opts.initialUrl ?? '';
   const current = (): SemanticNode[] => {
-    const url = navigated[navigated.length - 1];
-    if (url && opts.domByUrl && url in opts.domByUrl) return opts.domByUrl[url];
+    // DOM 以「当前 URL」为准：`_setCurrentUrl` 模拟用户手动导航（含子系统深页），
+    // 此时导航历史未变但页面内容应跟随当前 URL 变化。
+    if (opts.domByUrl && currentUrl in opts.domByUrl) return opts.domByUrl[currentUrl];
     return submitted ? opts.afterSubmitDom ?? dom : dom;
   };
   return {
@@ -180,21 +181,28 @@ describe('stage-login 三模式 + 契约', () => {
     expect(out.sessionHandle.loginStatus).toBe('ok');
   });
 
-  it('credential：空凭证（无 credentialRef，也未传 username/password）→ 先开浏览器降级 barrier（Issue 2 修复后行为）', async () => {
+  it('credential：空凭证（占位 credentialRef，凭证库无记录）→ 先开浏览器降级 barrier（Issue 2 修复后行为）', async () => {
     const stage = createLoginStage({
       engineFactory: () => makeFakeEngine({ initialDom: loginFormDom() }),
       credentialStoreFactory: () => makeStore({}),
     });
-    const out = await stage.run(baseInput('credential'));
+    // 冻结契约要求 mode=credential 时 credentialRef 必填；「完全无凭证」的业务场景由
+    // server 桥注入占位 credentialRef 通过校验（见 orchestrator/server.ts preprocessLoginInput），
+    // stage-login 查不到占位引用对应凭证 → 降级为打开浏览器人工登录（barrier）。
+    const out = await stage.run({ ...baseInput('credential'), credentialRef: 'placeholder-empty' });
     expect(out.loginStatus).toBe('barrier');
   });
 
-  it('credential：会话态直传 username/password（无 credentialRef）→ 自动填充并提交登录', async () => {
+  it('credential：会话态直传 username/password（credentialRef 为服务端占位）→ 自动填充并提交登录', async () => {
     const stage = createLoginStage({
       engineFactory: () => makeFakeEngine({ initialDom: loginFormDom(), afterSubmitDom: loggedInDom(), cookies: ['session=abc'] }),
     });
-    // 方案 X：账号密码经前端会话态传入，stage-login 直接用其自动填充（不落库/不写 Vault）
-    const out = await stage.run({ ...baseInput('credential'), username: 'admin', password: 'pw' });
+    // 冻结契约允许 LoginInput 携带可选 username/password：stage-login 收到时优先直接
+    // 填充提交（不落库/不写 Vault，credentialRef 不会被查询）。注：两个 server 桥
+    // （orchestrator/server.ts 与根 server.mjs）实际会把 username/password 存入凭证库
+    // 并改注入真实 credentialRef（见 preprocessLoginInput），本用例覆盖的是 stage 层
+    // 直调（绕过 server 桥）时的契约行为。
+    const out = await stage.run({ ...baseInput('credential'), username: 'admin', password: 'pw', credentialRef: 'placeholder-session' });
     expect(out.loginStatus).toBe('ok');
     expect(out.cookies).toContain('session=abc');
   });
@@ -285,99 +293,98 @@ describe('stage-login 三模式 + 契约', () => {
     expect(reused.expiresAt).toBeGreaterThan(handle.expiresAt);
   });
 
-  it('subsystem（credential）：父门户登录成功（URL 路径变化）后才进入子系统，而非直接导航 systemUrl', async () => {
+  it('subsystem（credential）：launch 仅打开门户登录页返回 barrier；手动进入子系统后 confirm → ok（全程不 navigate 子系统）', async () => {
     const portalUrl = 'https://portal.example.com/login';
-    const dashboardUrl = 'https://portal.example.com/dashboard';
-    const subUrl = 'https://sub.example.com/console';
-    const navigated: string[] = [];
-    const stage = createLoginStage({
-      engineFactory: () =>
-        makeFakeEngine({
-          initialDom: loginFormDom(),
-          initialUrl: portalUrl,
-          afterSubmitUrl: dashboardUrl, // 提交后登录成功 → 离开登录页（路径变化）
-          afterSubmitDom: loggedInDom(),
-          domByUrl: {
-            [portalUrl]: loginFormDom(),
-            [dashboardUrl]: loggedInDom(),
-            [subUrl]: loggedInDom(),
-          },
-          onNavigate: (u) => navigated.push(u),
-          cookies: ['portal=session'],
-        }),
-      credentialStoreFactory: () => makeStore({ 'cred-1': { username: 'admin', password: 'pw' } }),
-      portalLoginWaitMs: 500,
-    });
-    const out = await stage.run({
-      ...baseInput('credential'),
-      credentialRef: 'cred-1',
-      systemUrl: subUrl,
-      parentPortalUrl: portalUrl,
-    });
-    // 路径：先父门户，后子系统；不可跳过父门户直接到 systemUrl
-    expect(navigated[0]).toBe(portalUrl);
-    expect(navigated).toContain(subUrl);
-    expect(navigated.indexOf(subUrl)).toBeGreaterThan(navigated.indexOf(portalUrl));
-    expect(out.loginStatus).toBe('ok');
-    expect(out.cookies).toContain('portal=session');
-    expect(out.sessionHandle.systemId).toBe('sys1');
-  });
-
-  it('subsystem（credential）：父门户登录未完成（URL 未变化，如遇验证码）→ 不跳子系统，返回 barrier', async () => {
-    const portalUrl = 'https://portal.example.com/login';
-    const subUrl = 'https://sub.example.com/console';
-    const navigated: string[] = [];
-    const stage = createLoginStage({
-      engineFactory: () =>
-        makeFakeEngine({
-          initialDom: loginFormDom(),
-          initialUrl: portalUrl,
-          // 不设 afterSubmitUrl：提交后 URL 仍在登录页（登录未完成 / 需验证码）
-          afterSubmitDom: captchaDom(),
-          domByUrl: {
-            [portalUrl]: loginFormDom(),
-            [subUrl]: loggedInDom(),
-          },
-          onNavigate: (u) => navigated.push(u),
-        }),
-      credentialStoreFactory: () => makeStore({ 'cred-1': { username: 'admin', password: 'pw' } }),
-      portalLoginWaitMs: 200,
-    });
-    const out = await stage.run({
-      ...baseInput('credential'),
-      credentialRef: 'cred-1',
-      systemUrl: subUrl,
-      parentPortalUrl: portalUrl,
-    });
-    // 父门户登录未完成：绝不跳子系统
-    expect(navigated).not.toContain(subUrl);
-    expect(out.loginStatus).toBe('barrier');
-  });
-
-  it('subsystem（manual-takeover）：父门户未登录时 launch 返回 barrier，URL 路径变化后 confirm 进入子系统', async () => {
-    const portalUrl = 'https://portal.example.com/login';
-    const dashboardUrl = 'https://portal.example.com/dashboard';
     const subUrl = 'https://sub.example.com/console';
     const navigated: string[] = [];
     const engine = makeFakeEngine({
-      initialDom: loggedInDom(),
+      initialDom: loginFormDom(),
       initialUrl: portalUrl,
-      domByUrl: {
-        [portalUrl]: loggedInDom(),
-        [dashboardUrl]: loggedInDom(),
-        [subUrl]: loggedInDom(),
-      },
+      domByUrl: { [portalUrl]: loginFormDom(), [subUrl]: loggedInDom() },
+      onNavigate: (u) => navigated.push(u),
+      cookies: ['portal=session'],
+    });
+    const stage = createLoginStage({
+      engineFactory: () => engine,
+      credentialStoreFactory: () => makeStore({ 'cred-1': { username: 'admin', password: 'pw' } }),
+    });
+    // launch：打开门户登录页即 barrier（D:\test 人工接管模式），绝不等待登录、绝不自动导航子系统
+    const launchOut = await stage.run({
+      ...baseInput('credential'),
+      credentialRef: 'cred-1',
+      systemUrl: subUrl,
+      parentPortalUrl: portalUrl,
+    });
+    expect(launchOut.loginStatus).toBe('barrier');
+    expect(navigated).toEqual([portalUrl]);
+    expect(navigated).not.toContain(subUrl);
+
+    // 模拟用户完成门户登录并【手动进入子系统】后点击「确认登录」
+    await engine._setCurrentUrl(subUrl);
+    const confirmOut = await stage.run({
+      ...baseInput('credential'),
+      credentialRef: 'cred-1',
+      systemUrl: subUrl,
+      parentPortalUrl: portalUrl,
+      takeoverAction: 'confirm',
+    });
+    expect(confirmOut.loginStatus).toBe('ok');
+    expect(confirmOut.cookies).toContain('portal=session');
+    expect(confirmOut.sessionHandle.systemId).toBe('sys1');
+    expect(navigated).not.toContain(subUrl); // 确认过程绝不 navigate 子系统
+  });
+
+  it('subsystem（credential）：confirm 时浏览器仍在门户登录表单（未完成门户登录）→ 返回 barrier', async () => {
+    const portalUrl = 'https://portal.example.com/login';
+    const subUrl = 'https://sub.example.com/console';
+    const navigated: string[] = [];
+    const engine = makeFakeEngine({
+      initialDom: loginFormDom(),
+      initialUrl: portalUrl,
+      domByUrl: { [portalUrl]: loginFormDom(), [subUrl]: loggedInDom() },
+      onNavigate: (u) => navigated.push(u),
+    });
+    const stage = createLoginStage({
+      engineFactory: () => engine,
+      credentialStoreFactory: () => makeStore({ 'cred-1': { username: 'admin', password: 'pw' } }),
+    });
+    // launch：打开门户登录页即 barrier（建立接管引擎）
+    const launchOut = await stage.run({
+      ...baseInput('credential'),
+      credentialRef: 'cred-1',
+      systemUrl: subUrl,
+      parentPortalUrl: portalUrl,
+    });
+    expect(launchOut.loginStatus).toBe('barrier');
+    // 用户仍停在登录表单（未完成门户登录）就点「确认登录」→ barrier，绝不 navigate
+    const out = await stage.run({
+      ...baseInput('credential'),
+      credentialRef: 'cred-1',
+      systemUrl: subUrl,
+      parentPortalUrl: portalUrl,
+      takeoverAction: 'confirm',
+    });
+    expect(out.loginStatus).toBe('barrier');
+    expect(out.sessionHandle.detectionReason).toContain('登录');
+    expect(navigated).not.toContain(subUrl);
+  });
+
+  it('subsystem（manual-takeover）：launch 打开门户登录页返回 barrier；手动进入子系统后 confirm → ok（全程不 navigate）', async () => {
+    const portalUrl = 'https://portal.example.com/login';
+    const subUrl = 'https://sub.example.com/console';
+    const navigated: string[] = [];
+    const engine = makeFakeEngine({
+      initialDom: loginFormDom(),
+      initialUrl: portalUrl,
+      domByUrl: { [portalUrl]: loginFormDom(), [subUrl]: loggedInDom() },
       onNavigate: (u) => navigated.push(u),
       cookies: ['manual=portal'],
     });
     const stage = createLoginStage({
       engineFactory: () => engine,
       credentialStoreFactory: () => makeStore({}),
-      manualTimeoutMs: 1000,
-      pollIntervalMs: 50,
-      portalLoginWaitMs: 200,
     });
-    // launch：父门户 URL 未变化（仍停留登录页）→ barrier，不跳子系统
+    // launch：打开门户登录页即 barrier（D:\test 人工接管模式），不等待、不导航子系统
     const launchOut = await stage.run({
       ...baseInput('manual-takeover'),
       systemId: 'sys2',
@@ -386,12 +393,11 @@ describe('stage-login 三模式 + 契约', () => {
       credentialRef: 'manual-cred',
     });
     expect(launchOut.loginStatus).toBe('barrier');
+    expect(navigated).toEqual([portalUrl]);
     expect(navigated).not.toContain(subUrl);
 
-    // 模拟用户在浏览器完成登录：URL 路径变化（/login → /dashboard）
-    (engine as any)._setCurrentUrl(dashboardUrl);
-
-    // confirm：检测到路径变化 → 跳子系统 → ok
+    // 模拟用户完成门户登录并手动进入子系统后点击「确认登录」
+    await engine._setCurrentUrl(subUrl);
     const confirmOut = await stage.run({
       ...baseInput('manual-takeover'),
       systemId: 'sys2',
@@ -401,106 +407,174 @@ describe('stage-login 三模式 + 契约', () => {
       takeoverAction: 'confirm',
     });
     expect(confirmOut.loginStatus).toBe('ok');
-    expect(navigated).toContain(subUrl);
     expect(confirmOut.cookies).toContain('manual=portal');
+    expect(navigated).not.toContain(subUrl); // 确认过程绝不 navigate
   });
 
-  it('subsystem（credential）：父门户首页含「工作台/控制台/系统管理」等词但 URL 未变化 → 不误判为已登录，返回 barrier', async () => {
-    const portalUrl = 'https://portal.example.com/home';
-    const subUrl = 'https://sub.example.com/console';
-    const navigated: string[] = [];
-    // 门户首页：无密码框，但含「工作台」「控制台」「系统管理」等导航词（detectLoginState 会误判为 ok）
+  it('subsystem（credential）：信任模型——confirm 时已离开登录表单（门户工作台，pathname 与 systemUrl 不同）→ 直接 ok', async () => {
+    // 信任模型（用户确认）：子系统是门户 SPA 的 webview/iframe 嵌入页，顶层 URL 的
+    // pathname 与配置 systemUrl 永远不同（如 /typtnew/dist vs /typtnew/sxrdtypt），
+    // URL 匹配必然失败。confirm **不做 URL 匹配**，仅以「已离开登录表单」判定：
+    // 用户在门户工作台（含「工作台/控制台」等词、无密码框）确认 → detectLoginState ok
+    // → 信任已登录 → ok，当前 URL 即子系统入口（capturedUrl 由 orchestrator 记录）。
+    const portalWorkbench = 'https://app.example.com/typtnew/dist/#/governmentIndex';
+    const subUrl = 'https://app.example.com/typtnew/sxrdtypt/#/sy';
     const portalHomeDom = (): SemanticNode[] => [
       node({ tag: 'DIV', selector: '#nav', text: '工作台 控制台 系统管理 首页导航' }),
     ];
-    const stage = createLoginStage({
-      engineFactory: () =>
-        makeFakeEngine({
-          initialDom: portalHomeDom(),
-          initialUrl: portalUrl,
-          domByUrl: { [portalUrl]: portalHomeDom(), [subUrl]: loggedInDom() },
-          onNavigate: (u) => navigated.push(u),
-        }),
-      credentialStoreFactory: () => makeStore({ 'cred-1': { username: 'admin', password: 'pw' } }),
-      portalLoginWaitMs: 200,
-      pollIntervalMs: 50,
-    });
-    const out = await stage.run({
-      ...baseInput('credential'),
-      credentialRef: 'cred-1',
-      systemUrl: subUrl,
-      parentPortalUrl: portalUrl,
-    });
-    // 关键：URL 未变化（仍停留门户首页），即使 DOM 含「工作台」等词，也不得判定为已登录
-    expect(navigated).not.toContain(subUrl);
-    expect(out.loginStatus).toBe('barrier');
-  });
-
-  it('subsystem（credential）：门户根路径 302 重定向到登录页后，以登录页为基准检测登录成功', async () => {
-    const portalRoot = 'https://portal.example.com/';
-    const loginUrl = 'https://portal.example.com/sxrdtypt/#/login';
-    const homeUrl = 'https://portal.example.com/sxrdtypt/#/home';
-    const subUrl = 'https://sub.example.com/console';
     const navigated: string[] = [];
-    const stage = createLoginStage({
-      engineFactory: () =>
-        makeFakeEngine({
-          initialDom: loginFormDom(),
-          initialUrl: portalRoot,
-          redirectMap: { [portalRoot]: loginUrl }, // 根路径 302 → 登录页
-          afterSubmitUrl: homeUrl, // 登录成功 → 主页
-          afterSubmitDom: loggedInDom(),
-          domByUrl: {
-            [loginUrl]: loginFormDom(),
-            [homeUrl]: loggedInDom(),
-            [subUrl]: loggedInDom(),
-          },
-          onNavigate: (u) => navigated.push(u),
-        }),
-      credentialStoreFactory: () => makeStore({ 'cred-1': { username: 'admin', password: 'pw' } }),
-      portalLoginWaitMs: 1000,
-      pollIntervalMs: 50,
+    const engine = makeFakeEngine({
+      initialDom: portalHomeDom(),
+      initialUrl: portalWorkbench,
+      domByUrl: { [portalWorkbench]: portalHomeDom(), [subUrl]: loggedInDom() },
+      onNavigate: (u) => navigated.push(u),
+      cookies: ['portal=session'],
     });
+    const stage = createLoginStage({
+      engineFactory: () => engine,
+      credentialStoreFactory: () => makeStore({ 'cred-1': { username: 'admin', password: 'pw' } }),
+    });
+    // launch：打开门户登录页即 barrier（建立接管引擎）
+    const launchOut = await stage.run({
+      ...baseInput('credential'),
+      credentialRef: 'cred-1',
+      systemUrl: subUrl,
+      parentPortalUrl: portalWorkbench,
+    });
+    expect(launchOut.loginStatus).toBe('barrier');
+    // 用户停在门户工作台（已登录态）确认 → 信任模型 → ok，全程不 navigate
     const out = await stage.run({
       ...baseInput('credential'),
       credentialRef: 'cred-1',
       systemUrl: subUrl,
-      parentPortalUrl: portalRoot,
+      parentPortalUrl: portalWorkbench,
+      takeoverAction: 'confirm',
     });
-    // 基准是重定向后的登录页 loginUrl，登录后 URL 变化到 homeUrl → 判定成功
     expect(out.loginStatus).toBe('ok');
-    expect(navigated).toContain(subUrl);
+    expect(out.cookies).toContain('portal=session');
+    expect(navigated).not.toContain(subUrl);
   });
 
-  it('subsystem（credential）：门户根路径重定向到登录页后未登录（URL 停留登录页）→ 不跳子系统，返回 barrier', async () => {
+  it('subsystem（credential）：用户手动进入子系统（webview 嵌入深页，pathname 与 systemUrl 不同）后 confirm → 信任模型 → ok', async () => {
+    // 信任模型：confirm **不做 URL 匹配**（子系统是门户 SPA 的 webview/iframe 嵌入页，
+    // 顶层 URL pathname 与配置 systemUrl 永远不同）。用户手动进入子系统**业务深页**
+    // （如 typtnew/dist/#/gnzx/webview?...，pathname=/typtnew/dist，与配置 sxrdtypt 不同）
+    // 后确认 → 当前页无登录表单（detectLoginState ok）→ 信任已登录 → ok，全程不 navigate。
+    const portalWorkbench = 'https://app.example.com/typtnew/dist/#/governmentIndex';
+    const subEntry = 'https://app.example.com/typtnew/sxrdtypt/#/sy';
+    const subDeepPage = 'https://app.example.com/typtnew/dist/#/gnzx/webview?openUrl=%2Ftyptnew%2Fqymldepartment.action';
+    const navigated: string[] = [];
+    const engine = makeFakeEngine({
+      initialDom: loginFormDom(),
+      initialUrl: portalWorkbench,
+      domByUrl: {
+        [portalWorkbench]: loginFormDom(),
+        [subEntry]: loggedInDom(),
+        [subDeepPage]: loggedInDom(),
+      },
+      onNavigate: (u) => navigated.push(u),
+      cookies: ['portal=session'],
+    });
+    const stage = createLoginStage({
+      engineFactory: () => engine,
+      credentialStoreFactory: () => makeStore({ 'cred-1': { username: 'admin', password: 'pw' } }),
+    });
+    const launchOut = await stage.run({
+      ...baseInput('credential'),
+      credentialRef: 'cred-1',
+      systemUrl: subEntry,
+      parentPortalUrl: portalWorkbench,
+    });
+    expect(launchOut.loginStatus).toBe('barrier');
+    // 用户手动进入子系统业务深页（顶层 URL 与 systemUrl pathname 不同）后确认 → ok
+    await engine._setCurrentUrl(subDeepPage);
+    const confirmOut = await stage.run({
+      ...baseInput('credential'),
+      credentialRef: 'cred-1',
+      systemUrl: subEntry,
+      parentPortalUrl: portalWorkbench,
+      takeoverAction: 'confirm',
+    });
+    expect(confirmOut.loginStatus).toBe('ok');
+    expect(confirmOut.cookies).toContain('portal=session');
+    expect(navigated).not.toContain(subDeepPage); // 确认过程绝不 navigate
+  });
+
+  it('subsystem（credential）：门户根路径 302 重定向到登录页，以实际登录页为门户源基准；手动进入子系统后 confirm → ok', async () => {
     const portalRoot = 'https://portal.example.com/';
     const loginUrl = 'https://portal.example.com/sxrdtypt/#/login';
     const subUrl = 'https://sub.example.com/console';
     const navigated: string[] = [];
-    const stage = createLoginStage({
-      engineFactory: () =>
-        makeFakeEngine({
-          initialDom: loginFormDom(),
-          initialUrl: portalRoot,
-          redirectMap: { [portalRoot]: loginUrl },
-          // 无 afterSubmitUrl：登录未完成，URL 停在登录页（如遇验证码）
-          afterSubmitDom: captchaDom(),
-          domByUrl: { [loginUrl]: loginFormDom(), [subUrl]: loggedInDom() },
-          onNavigate: (u) => navigated.push(u),
-        }),
-      credentialStoreFactory: () => makeStore({ 'cred-1': { username: 'admin', password: 'pw' } }),
-      portalLoginWaitMs: 200,
-      pollIntervalMs: 50,
+    const engine = makeFakeEngine({
+      initialDom: loginFormDom(),
+      initialUrl: portalRoot,
+      redirectMap: { [portalRoot]: loginUrl }, // 根路径 302 → 登录页
+      domByUrl: { [loginUrl]: loginFormDom(), [subUrl]: loggedInDom() },
+      onNavigate: (u) => navigated.push(u),
+      cookies: ['portal=session'],
     });
-    const out = await stage.run({
+    const stage = createLoginStage({
+      engineFactory: () => engine,
+      credentialStoreFactory: () => makeStore({ 'cred-1': { username: 'admin', password: 'pw' } }),
+    });
+    // launch：navigate 根路径 → 302 到登录页 → 返回 barrier（不导航子系统）
+    const launchOut = await stage.run({
       ...baseInput('credential'),
       credentialRef: 'cred-1',
       systemUrl: subUrl,
       parentPortalUrl: portalRoot,
     });
-    // 关键：重定向后 URL 停在登录页（未登录），不得因「根路径→登录页」的重定向误判为登录成功
+    expect(launchOut.loginStatus).toBe('barrier');
+    expect(navigated).toEqual([portalRoot]);
     expect(navigated).not.toContain(subUrl);
+
+    // 用户手动进入子系统后确认 → ok（跨源子系统）
+    await engine._setCurrentUrl(subUrl);
+    const confirmOut = await stage.run({
+      ...baseInput('credential'),
+      credentialRef: 'cred-1',
+      systemUrl: subUrl,
+      parentPortalUrl: portalRoot,
+      takeoverAction: 'confirm',
+    });
+    expect(confirmOut.loginStatus).toBe('ok');
+    expect(confirmOut.cookies).toContain('portal=session');
+  });
+
+  it('subsystem（credential）：confirm 时仍停留门户登录页（未手动进入子系统）→ 返回 barrier', async () => {
+    const portalRoot = 'https://portal.example.com/';
+    const loginUrl = 'https://portal.example.com/sxrdtypt/#/login';
+    const subUrl = 'https://sub.example.com/console';
+    const navigated: string[] = [];
+    const engine = makeFakeEngine({
+      initialDom: loginFormDom(),
+      initialUrl: portalRoot,
+      redirectMap: { [portalRoot]: loginUrl },
+      domByUrl: { [loginUrl]: loginFormDom(), [subUrl]: loggedInDom() },
+      onNavigate: (u) => navigated.push(u),
+    });
+    const stage = createLoginStage({
+      engineFactory: () => engine,
+      credentialStoreFactory: () => makeStore({ 'cred-1': { username: 'admin', password: 'pw' } }),
+    });
+    // launch：打开门户登录页即 barrier（建立接管引擎）
+    const launchOut = await stage.run({
+      ...baseInput('credential'),
+      credentialRef: 'cred-1',
+      systemUrl: subUrl,
+      parentPortalUrl: portalRoot,
+    });
+    expect(launchOut.loginStatus).toBe('barrier');
+    // 用户仍停留登录页就点「确认登录」→ 仍在门户 → barrier，绝不 navigate 子系统
+    const out = await stage.run({
+      ...baseInput('credential'),
+      credentialRef: 'cred-1',
+      systemUrl: subUrl,
+      parentPortalUrl: portalRoot,
+      takeoverAction: 'confirm',
+    });
     expect(out.loginStatus).toBe('barrier');
+    expect(navigated).not.toContain(subUrl);
   });
 
   it('manual-takeover：硬失败（凭据错误/错误页）映射 failed 而非 barrier', async () => {

@@ -92,6 +92,8 @@ export function Explore() {
     runPipelineExplore,
     exploreAiOn,
     exploreToggleAi,
+    readOnlyClickPolicy,
+    setReadOnlyClickPolicy,
     pipelineLoading,
     pipelineStage,
     pipelineError: _pipelineError,
@@ -478,6 +480,14 @@ export function Explore() {
               onChange={(e) => exploreToggleAi(e.target.checked)}
             />
             AI 辅助探索（实验）
+          </label>
+          <label className="ai-toggle" title="只读点击安全策略：严格=仅放行 a[href]/弹窗/安全标记按钮；放行=放行所有非写操作按钮（新增/详情/查询等），仍拦截删除/提交/导出等写操作。适用于真实业务系统二次探索采证。">
+            <input
+              type="checkbox"
+              checked={readOnlyClickPolicy === 'allow_all'}
+              onChange={(e) => setReadOnlyClickPolicy(e.target.checked ? 'allow_all' : 'strict')}
+            />
+            只读点击：放行
           </label>
           <div>
             <Button variant="pri" onClick={handleStartRecording} disabled={isRecording}>

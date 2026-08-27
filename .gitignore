@@ -42,3 +42,7 @@ packages/engine-mcp*.zip
 
 # ===== credentials store (keep encrypted creds local only) =====
 packages/orchestrator/.credentials/
+
+# ===== test artifacts (generated, do not commit) =====
+test-results/
+playwright-report/

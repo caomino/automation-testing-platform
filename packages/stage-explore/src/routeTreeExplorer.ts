@@ -213,7 +213,11 @@ function deriveParamActionLabel(title: string, path: string): string {
   if (/detail|详情|view/.test(t) || /\/detail\//.test(p) || p.endsWith('/detail')) return '详情';
   if (/info|信息/.test(t)) return '查看信息';
   const last = path.split('/').filter(Boolean).pop() || '详情';
-  return `${last.replace(/:.*$/, '') || '详情'}(:id)`;
+  const base = last.replace(/:.*$/, '') || '详情';
+  // 探索阶段不得主动为 label 追加括号（用户要求：仅 DOM/路由原文自带的括号可保留）。
+  // 这里的「:id」是动态路由参数占位（原文没有），用「参数-xxx」形式承载同等信息且无括号。
+  if (!base) return '详情';
+  return `参数${base}`;
 }
 
 const normalizePath = (p: string): string =>

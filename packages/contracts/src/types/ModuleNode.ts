@@ -29,6 +29,12 @@ export interface ModuleNode {
   evidenceId?: string;
   /** 树深度（根=0） */
   depth: number;
+  /** @新增 动作类型（type=action 时由 stage-explore 透传 classifyActionType 结果，不重新分类） */
+  actionKind?: 'list' | 'query' | 'reset' | 'create' | 'update' | 'delete' | 'batch_delete' | 'detail' | 'import' | 'export' | 'auth' | 'permission' | 'workflow' | 'other';
+  /** @新增 动作原始 selector */
+  actionSelector?: string;
+  /** @新增 动作原始文本 */
+  actionText?: string;
   /** 人工补充标记 */
   manuallyAdded?: boolean;
   /** needs_review 原因 */

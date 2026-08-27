@@ -12,19 +12,15 @@
  */
 import type { McpEngine } from '@test-platform/engine-mcp';
 import type { ModuleNode } from '@test-platform/contracts';
+import type { ActionKind } from '@test-platform/contracts';
 
-/** 功能点类型（与 contracts ModuleNode.type='action' 配套；此处细分动作语义） */
-export type ActionKind =
-  | 'create'
-  | 'update'
-  | 'delete'
-  | 'query'
-  | 'export'
-  | 'import'
-  | 'detail'
-  | 'batch_delete'
-  | 'auth'
-  | 'other';
+/**
+ * 单一动作分类来源 = contracts.ACTION_KINDS。
+ * 此处保留局部 ACTION_DICTIONARY 用于「关键词→动作」识别，但其产出统一映射到 contracts.ActionKind，
+ * 不再各自维护互不兼容的枚举（消除三处动作词典分歧）。
+ * 局部 'auth' 直接对齐 contracts 'auth'；'toggle'/'submit' 等是 UI 控件而非业务动作，不进入 ActionKind。
+ */
+export type LocalActionKind = ActionKind;
 
 interface RawAction {
   text: string;
@@ -54,12 +50,12 @@ const ACTION_DICTIONARY: Array<{ re: RegExp; kind: ActionKind; label: string }> 
   },
 ];
 
-/** 把按钮/链接文字归类为动作类型；无匹配按「查看」兜底 */
+/** 把按钮/链接文字归类为 contracts.ActionKind；无匹配按「查看」兜底 */
 export function classifyActionType(text: string): { kind: ActionKind; label: string } {
   for (const d of ACTION_DICTIONARY) {
     if (d.re.test(text)) return { kind: d.kind, label: d.label };
   }
-  return { kind: 'other', label: text ? `查看(${text.slice(0, 8)})` : '查看' };
+  return { kind: 'other', label: text ? `查看${text.slice(0, 8)}` : '查看' };
 }
 
 /**
@@ -159,6 +155,10 @@ export async function extractPageActions(
       children: [],
       url: r.href || page.url,
       depth: page.depth + 1,
+      // @T2 透传动作语义，避免下游重新猜测（根因#1）
+      actionKind: kind,
+      actionSelector: r.selector,
+      actionText: r.text,
       reviewReason: `页面内实采按钮「${r.text}」→ ${label}`,
     });
   }
@@ -197,6 +197,8 @@ export function inferActionsFromTitle(
     status: 'needs_review' as const,
     children: [],
     depth: page.depth + 1,
+    // @T2 透传动作语义（推断型，仍标 needs_review）
+    actionKind: d.kind,
     reviewReason: `标题「${title}」推断的 CRUD 功能点，未从页面 DOM 实采，需确认`,
   }));
 }

@@ -3,7 +3,7 @@
  * @description engine-mcp DOM 语义抽象层类型 — 框架无关，只读标准 HTML 语义
  * @frozen v1.0 — 适配 95% 系统的核心抽象，类型只允许加可选字段
  */
-import type { ModuleNode, CaseRow, ExecutionStepResult, ScreenshotRef, ExploredElement } from '@test-platform/contracts';
+import type { ModuleNode, CaseRow, ExecutionStepResult, ScreenshotRef, ExploredElement, ContainerState, UncoveredItem } from '@test-platform/contracts';
 import type { AIClient } from '@test-platform/infra-ai';
 
 /** 语义化 DOM 节点（不依赖 Vue/React/jQuery，只读标准 HTML 语义；70 项矩阵落点） */
@@ -32,7 +32,68 @@ export interface SemanticNode {
   interactive: boolean;
   /** 是否数据写操作控件（input/textarea/提交按钮等；只读模式红线禁用） */
   isDataControl: boolean;
+
+  // —— @T3 字段约束语义（只读抽取，不写数据） —— //
+  /** 是否必填（required / aria-required / * 标记） */
+  required?: boolean;
+  /** 最小长度（minlength 属性或校验规则） */
+  minLength?: number;
+  /** 最大长度（maxlength 属性） */
+  maxLength?: number;
+  /** 数值最小值（min 属性） */
+  minimum?: number;
+  /** 数值最大值（max 属性） */
+  maximum?: number;
+  /** 格式正则（pattern 属性 / aria 描述 / data-rule） */
+  pattern?: string;
+  /** 枚举可选项（select option / radio / checkbox-group 文本） */
+  options?: string[];
+  /** 是否多选（multiple 属性） */
+  multiple?: boolean;
+  /** 是否只读（readonly 属性） */
+  readonly?: boolean;
+  /** 是否禁用（disabled 属性） */
+  disabled?: boolean;
+  /** 当前选中状态（checkbox/radio 等） */
+  checked?: boolean;
+  /** 只读状态采集的实际 DOM 语义；不作为通用 contracts 输出。 */
+  ariaHasPopup?: string;
+  safeReadOnlyOpener?: boolean;
+  /** 表格列头（仅 tag=TABLE 节点） */
+  columns?: string[];
+  /** 当前页可见行数（仅 tag=TABLE 节点） */
+  rowCount?: number;
+  /** 是否有分页（含分页控件/文本） */
+  hasPagination?: boolean;
+  /** 分页信息文本（如 "第 1/10 页"） */
+  paginationInfo?: string;
+  /** 是否有排序（表头 sortable / aria-sort） */
+  hasSorting?: boolean;
+  /** 可排序列 */
+  sortableColumns?: string[];
+  /** 是否有筛选（筛选区/筛选按钮） */
+  hasFilter?: boolean;
+  /** 筛选字段名 */
+  filterFields?: string[];
+  /** 是否为虚拟列表 */
+  isVirtualList?: boolean;
+  /** 已安全读取到的嵌套容器 */
+  containers?: ContainerState[];
+  /** 无法安全读取的语义边界 */
+  uncovered?: UncoveredItem[];
 }
+
+/** 一次受保护的只读点击结果。blocked/unsupported 时调用方不得继续采集该状态。 */
+export interface ReadOnlyClickResult {
+  status: 'performed' | 'blocked' | 'unsupported';
+  beforeUrl?: string;
+  afterUrl?: string;
+  reason?: string;
+  writeRequest?: { method: string; url: string };
+  download?: boolean;
+}
+
+export type ReadOnlyClickPurpose = 'action' | 'sample' | 'container';
 
 /** 浏览器原子命令 */
 export type BrowserCommand =
@@ -77,6 +138,10 @@ export interface EngineConfig {
   systemId?: string;
   /** 可选 AI 客户端：仅在调用方显式注入时启用（受应用层 AI 开关门控），不注入则纯结构化探索 */
   ai?: AIClient;
+  /** @新增 只读点击安全策略：strict=仅放行 a[href]/dialog/safe-opener（默认）；allow_all=放行所有非写操作按钮（新增/详情/查询等），仍拦截提交/保存/删除/导出/导入/审核等写操作与危险导航 */
+  readOnlyClickPolicy?: 'strict' | 'allow_all';
+  /** @新增 连接已运行浏览器（用户 Chrome / agent-browser）的 CDP 端点：复用其已登录会话，免验证码独立开窗 */
+  cdpUrl?: string;
 }
 
 /** Playwright Storage State 类型定义 */
@@ -114,6 +179,11 @@ export interface McpEngine {
   extractPageElements(url?: string): Promise<ExploredElement[]>;
   /** 执行单条浏览器命令 */
   runStep(cmd: BrowserCommand): Promise<ExecutionStepResult>;
+  /**
+   * 仅供证据采集使用的点击。实现必须在点击前核验 DOM 语义，并在窗口内阻止写请求与下载。
+   * 缺省代表该引擎不具备可证明的只读点击能力，采集器必须不点击。
+   */
+  runReadOnlyClick?(selector: string, purpose: ReadOnlyClickPurpose): Promise<ReadOnlyClickResult>;
   /** 执行一条用例（解析步骤/操作，供 stage-execute 消费） */
   runCase(row: CaseRow): Promise<ExecutionStepResult[]>;
   /** 截图 */

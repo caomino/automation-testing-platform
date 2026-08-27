@@ -71,8 +71,9 @@ describe('stage-feature 契约', () => {
     expect(out.featureTable).toHaveLength(2);
     const jcx = out.featureTable[0].map((r) => r[8]);
     const pz = out.featureTable[1].map((r) => r[8]);
-    expect(jcx).toEqual(['QYYX_JCS_JCX_01', 'QYYX_JCS_JCX_02', 'QYYX_JCS_JCX_03']);
-    expect(pz).toEqual(['QYYX_JCS_PZ_01', 'QYYX_JCS_PZ_02']);
+    // 缩写改为按中文 label：系统(区域影像系统=QYYXXT)、主模块(检查室管理=JCSGL)、子模块(检查室=JCX/配置=PZ)
+    expect(jcx).toEqual(['QYYX_JCSGL_JCX_01', 'QYYX_JCSGL_JCX_02', 'QYYX_JCSGL_JCX_03']);
+    expect(pz).toEqual(['QYYX_JCSGL_PZ_01', 'QYYX_JCSGL_PZ_02']);
   });
 
   it('round-trip 一致：确定性、与末列一致、通过契约 schema、JSON 可还原', async () => {
@@ -106,9 +107,9 @@ describe('stage-feature 契约', () => {
 
     const filtered = await run({ ...buildInput(), confirmedOnly: true });
     expect(filtered.featureIds).toHaveLength(4);
-    expect(filtered.featureIds).not.toContain('QYYX_JCS_JCX_03');
+    expect(filtered.featureIds).not.toContain('QYYX_JCSGL_JCX_03');
     // 组内 NN 重新从 01 连续（检查室组仅剩查询/新增）
-    expect(filtered.featureTable[0].map((r) => r[8])).toEqual(['QYYX_JCS_JCX_01', 'QYYX_JCS_JCX_02']);
+    expect(filtered.featureTable[0].map((r) => r[8])).toEqual(['QYYX_JCSGL_JCX_01', 'QYYX_JCSGL_JCX_02']);
     // 所有保留行均为已确认
     expect(filtered.provenance.every((p) => p.confirmed)).toBe(true);
     // 人工补充（删除）在 confirmedOnly 下仍保留 — 测试点列为 '删除'
@@ -206,7 +207,7 @@ describe('stage-feature 缩写兜底', () => {
     expect(toAbbrToken('sub_配置')).toBe('PZ'); // 去前缀 SUB + 配置→PZ
     expect(toAbbrToken('检查室管理')).toBe('JCSGL');
     const t = toAbbrToken('区域影像系统');
-    expect(t).toBe('QYYXXT'); // 区Q域Y影Y像X系X统T
+    expect(t).toBe('QYYX'); // 冻结词条：金标准 docs 约定 QYYX = 区域影像系统（QYYX_PZ_JCX 示例）
     expect(/[一-鿿]/.test(t)).toBe(false); // 无原生中文
     // 纯中文系统名回退路径（仅前缀/无词元 + CJK）
     expect(toAbbrToken('企业')).toBe('QY');
@@ -221,15 +222,15 @@ describe('stage-feature 缩写兜底', () => {
 
 describe('stage-feature 测试点标识全局唯一', () => {
   /**
-   * 两个子系统分组：id 大小写不同（SUB_PZ / sub_pz）但去前缀后 token 同为 PZ，
-   * 与同一主模块 JCS、系统 QYYX 组合 → 两组的 base 完全相同（QYYX_JCS_PZ），
+   * 两个子系统分组：label 完全相同（配置 / 配置），
+   * 与同一主模块「检查室管理」、系统「区域影像系统」组合 → 两组 base 完全相同（QYYX_JCSGL_PZ），
    * 跨分组出现 base 碰撞。验证 testPointId 仍整表行内全局唯一。
    */
   function collisionInput(): FeatureInput {
     const pA = node({ id: 'p_a', label: '查询', subsystemId: 'sys_qyyx', type: 'page', parentId: 'SUB_PZ', status: 'covered', depth: 3, evidenceId: 'e1' });
-    const subA = node({ id: 'SUB_PZ', label: '配置A', subsystemId: 'sys_qyyx', type: 'module', parentId: 'mod_jcs', status: 'covered', depth: 2, children: [pA] });
+    const subA = node({ id: 'SUB_PZ', label: '配置', subsystemId: 'sys_qyyx', type: 'module', parentId: 'mod_jcs', status: 'covered', depth: 2, children: [pA] });
     const pB = node({ id: 'p_b', label: '查询', subsystemId: 'sys_qyyx', type: 'page', parentId: 'sub_pz', status: 'covered', depth: 3, evidenceId: 'e2' });
-    const subB = node({ id: 'sub_pz', label: '配置B', subsystemId: 'sys_qyyx', type: 'module', parentId: 'mod_jcs', status: 'covered', depth: 2, children: [pB] });
+    const subB = node({ id: 'sub_pz', label: '配置', subsystemId: 'sys_qyyx', type: 'module', parentId: 'mod_jcs', status: 'covered', depth: 2, children: [pB] });
     const modJcs = node({ id: 'mod_jcs', label: '检查室管理', subsystemId: 'sys_qyyx', type: 'module', parentId: 'sys_root', status: 'covered', depth: 1, children: [subA, subB] });
     const root = node({ id: 'sys_root', label: '区域影像系统', subsystemId: 'sys_qyyx', type: 'system', parentId: null, status: 'covered', depth: 0, children: [modJcs] });
     return { moduleTree: [root], systemName: '区域影像系统', confirmedOnly: false };
@@ -257,12 +258,205 @@ describe('stage-feature 测试点标识全局唯一', () => {
     const modJcs = node({ id: 'mod_jcs', label: '检查室管理', subsystemId: 'sys_qyyx', type: 'module', parentId: 'sys_root', status: 'covered', depth: 1, children: [subJcx] });
     const root = node({ id: 'sys_root', label: '区域影像系统', subsystemId: 'sys_qyyx', type: 'system', parentId: null, status: 'covered', depth: 0, children: [modJcs] });
     const out = await run({ moduleTree: [root], systemName: '区域影像系统', confirmedOnly: false });
-    expect(out.featureIds).toEqual(['QYYX_JCS_JCX_01', 'QYYX_JCS_JCX_02']);
+    expect(out.featureIds).toEqual(['QYYX_JCSGL_JCX_01', 'QYYX_JCSGL_JCX_02']);
     expect(new Set(out.featureIds).size).toBe(2);
   });
 
   it('featureIds 去重：不同行不产生重复条目', async () => {
     const out = await run(collisionInput());
     expect(out.featureIds).toEqual(Array.from(new Set(out.featureIds)));
+  });
+});
+
+describe('stage-feature 动作档案', () => {
+  it('透传探索阶段已识别的动作语义，不根据测试点名称重新分类', async () => {
+    const action = node({
+      id: 'action_create',
+      label: '维护资料',
+      actionKind: 'create',
+      actionText: '新增患者',
+      actionSelector: '#patient-create',
+      url: 'https://his.example/patients',
+      subsystemId: 'sys_his',
+      type: 'action',
+      parentId: 'sub_patient',
+      status: 'covered',
+      depth: 3,
+    });
+    const legacy = node({
+      id: 'action_legacy',
+      label: '历史节点',
+      subsystemId: 'sys_his',
+      type: 'action',
+      parentId: 'sub_patient',
+      status: 'needs_review',
+      depth: 3,
+    });
+    const sub = node({ id: 'sub_patient', label: '患者', subsystemId: 'sys_his', type: 'module', parentId: 'mod_registry', status: 'covered', depth: 2, children: [action, legacy] });
+    const mod = node({ id: 'mod_registry', label: '挂号', subsystemId: 'sys_his', type: 'module', parentId: 'root', status: 'covered', depth: 1, children: [sub] });
+    const root = node({ id: 'root', label: 'HIS', subsystemId: 'sys_his', type: 'system', parentId: null, status: 'covered', depth: 0, children: [mod] });
+
+    const output = await run({ moduleTree: [root], systemName: 'HIS', confirmedOnly: false });
+
+    expect(output.featureProfiles).toEqual([
+      expect.objectContaining({
+        featureId: output.featureIds[0],
+        testPoint: '维护资料',
+        actionKind: 'create',
+        pageUrl: 'https://his.example/patients',
+        clickSelector: '#patient-create',
+        sourceLabel: '新增患者',
+        sourceSelector: '#patient-create',
+        parentModule: '挂号',
+        subsystemId: 'sys_his',
+      }),
+      expect.objectContaining({
+        featureId: output.featureIds[1],
+        actionKind: 'other',
+      }),
+    ]);
+  });
+});
+
+describe('stage-feature 结构化设计源适配', () => {
+  it('解析 OpenAPI JSON/YAML 与 workflow，GET 不误判新增且无效 workflow 显式待复核', async () => {
+    const openapi = JSON.stringify({
+      openapi: '3.0.3',
+      paths: {
+        '/patients': {
+          get: { parameters: [{ name: 'page', in: 'query', schema: { type: 'integer', minimum: 1 } }], responses: { '200': { description: 'ok' } } },
+          post: { security: [{ bearerAuth: [] }], parameters: [{ name: 'tenantId', in: 'header', required: true, description: '租户标识', schema: { type: 'string', minLength: 1 } }], requestBody: { required: true, description: '患者资料', content: { 'application/json': { schema: { type: 'object', required: ['name'], properties: { name: { type: 'string', minLength: 1 }, phone: { type: 'string', pattern: '^1\\d{10}$' } } } } } }, responses: { '201': { description: 'created', content: { 'application/json': { schema: { type: 'object', properties: { id: { type: 'string' }, name: { type: 'string' } } } } } } } },
+        },
+      },
+    });
+    const workflow = JSON.stringify({ id: 'admission', name: '入院', entities: ['患者'], roles: ['医生'], states: ['待入院', '已入院'], transitions: [{ id: 'admit', action: '办理入院', from: '待入院', to: '已入院', actorRoles: ['医生'], preconditions: ['患者已登记'], postconditions: ['生成住院记录'] }] });
+    const out = await run({
+      moduleTree: [], systemName: 'HIS', confirmedOnly: false,
+      designSources: [
+        { kind: 'openapi', content: openapi, name: 'patients.json' },
+        { kind: 'workflow', content: workflow, name: 'admission.json' },
+        { kind: 'workflow', content: '{"id":"broken"}', name: 'broken.json' },
+      ],
+    });
+
+    const getProfile = out.featureProfiles?.find((profile) => profile.testPoint === 'GET /patients');
+    const postProfile = out.featureProfiles?.find((profile) => profile.testPoint === 'POST /patients');
+    const workflowProfile = out.featureProfiles?.find((profile) => profile.testPoint === '办理入院');
+    expect(getProfile?.actionKind).toBe('list');
+    expect(postProfile?.actionKind).toBe('create');
+    expect(workflowProfile?.actionKind).toBe('workflow');
+    expect(out.featureEvidence?.[postProfile!.featureId].fields.map((field) => field.name)).toEqual(expect.arrayContaining(['name', 'phone']));
+    expect(postProfile?.source).toBe('openapi');
+    expect(out.featureEvidence?.[postProfile!.featureId].structuredDesign?.api).toEqual(expect.objectContaining({
+      method: 'POST', path: '/patients', security: ['bearerAuth'],
+      parameters: expect.arrayContaining([expect.objectContaining({ name: 'tenantId', in: 'header', required: true, description: '租户标识' })]),
+      requestBody: expect.objectContaining({ description: '患者资料' }),
+      responses: expect.arrayContaining([expect.objectContaining({ status: '201', description: 'created', schema: expect.objectContaining({ properties: expect.arrayContaining(['id', 'name']) }) })]),
+    }));
+    expect(out.featureEvidence?.[workflowProfile!.featureId].coverageKeys).toContain('workflow.transition.admit');
+    expect(workflowProfile?.source).toBe('workflow');
+    expect(out.featureEvidence?.[workflowProfile!.featureId].structuredDesign?.workflow?.transitions[0]).toEqual(expect.objectContaining({
+      id: 'admit', action: '办理入院', from: '待入院', to: '已入院', actorRoles: ['医生'],
+      preconditions: ['患者已登记'], postconditions: ['生成住院记录'],
+    }));
+    expect(Object.values(out.featureEvidence ?? {}).some((evidence) => evidence.needsReview && /workflow/i.test(evidence.reviewReason ?? ''))).toBe(true);
+  });
+
+  it('Swagger 2 body/$ref/allOf/oneOf 与响应、安全声明均转为可追溯证据', async () => {
+    const swagger = JSON.stringify({
+      swagger: '2.0',
+      securityDefinitions: { bearerAuth: { type: 'apiKey', name: 'Authorization', in: 'header' } },
+      paths: {
+        '/patients/{id}': {
+          parameters: [{ name: 'id', in: 'path', required: true, type: 'string' }],
+          put: {
+            security: [{ bearerAuth: [] }],
+            parameters: [{
+              name: 'body', in: 'body', required: true,
+              schema: { allOf: [
+                { $ref: '#/definitions/PatientBase' },
+                { type: 'object', required: ['level'], properties: { level: { type: 'string', enum: ['normal', 'urgent'] } } },
+                { oneOf: [
+                  { type: 'object', properties: { sms: { type: 'string' } } },
+                  { type: 'object', properties: { email: { type: 'string', format: 'email' } } },
+                ] },
+              ] },
+            }],
+            responses: { '200': { description: 'ok', schema: { $ref: '#/definitions/PatientBase' } }, '400': { description: 'bad request' } },
+          },
+        },
+      },
+      definitions: {
+        PatientBase: { type: 'object', required: ['name'], properties: { name: { type: 'string', minLength: 2 } } },
+      },
+    });
+
+    const out = await run({
+      moduleTree: [], systemName: 'HIS', confirmedOnly: false,
+      designSources: [{ kind: 'openapi', content: swagger, name: 'patients.swagger.json' }],
+    });
+    const profile = out.featureProfiles?.find((item) => item.testPoint === 'PUT /patients/{id}');
+    const evidence = profile && out.featureEvidence?.[profile.featureId];
+
+    expect(profile?.actionKind).toBe('update');
+    expect(evidence?.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'id', required: true }),
+      expect.objectContaining({ name: 'name', required: true, minLength: 2 }),
+      expect.objectContaining({ name: 'level', required: true, options: ['normal', 'urgent'] }),
+      expect.objectContaining({ name: 'sms' }),
+      expect.objectContaining({ name: 'email', inputType: 'string' }),
+    ]));
+    expect(evidence?.coverageKeys).toEqual(expect.arrayContaining([
+      'api.response.200',
+      'api.response.400',
+      'api.security.bearerAuth',
+    ]));
+    expect(evidence?.structuredDesign?.api?.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'id', in: 'path', required: true }),
+    ]));
+    expect(evidence?.structuredDesign?.api?.responses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: '200', description: 'ok', schema: expect.objectContaining({ properties: expect.arrayContaining(['name']) }) }),
+    ]));
+  });
+
+  it('外部 $ref 被禁用并降级为 needs_review，不读取网络或本地文件', async () => {
+    const out = await run({
+      moduleTree: [], systemName: 'HIS', confirmedOnly: false,
+      designSources: [{
+        kind: 'openapi',
+        name: 'external-ref.json',
+        content: JSON.stringify({
+          swagger: '2.0',
+          paths: { '/patients': { get: { responses: { '200': { description: 'ok', schema: { $ref: 'https://example.test/patient.json#/Patient' } } } } } },
+        }),
+      }],
+    });
+
+    expect(Object.values(out.featureEvidence ?? {})).toEqual(expect.arrayContaining([
+      expect.objectContaining({ needsReview: true, reviewReason: expect.stringContaining('openapi') }),
+    ]));
+  });
+
+  it('operation 级参数覆盖 path 参数，显式 security 空数组覆盖全局鉴权（OpenAPI / Swagger）', async () => {
+    const openapi = JSON.stringify({
+      openapi: '3.0.3', security: [{ bearerAuth: [] }], paths: {
+        '/patients': { parameters: [{ name: 'page', in: 'query', schema: { type: 'integer', minimum: 1 } }], get: { security: [], parameters: [{ name: 'page', in: 'query', schema: { type: 'integer', minimum: 2 } }], responses: { '200': { description: 'ok' } } } },
+      },
+    });
+    const swagger = JSON.stringify({
+      swagger: '2.0', security: [{ bearerAuth: [] }], paths: {
+        '/visits': { parameters: [{ name: 'page', in: 'query', type: 'integer', minimum: 1 }], get: { security: [], parameters: [{ name: 'page', in: 'query', type: 'integer', minimum: 3 }], responses: { '200': { description: 'ok' } } } },
+      },
+    });
+    const out = await run({ moduleTree: [], systemName: 'HIS', confirmedOnly: false, designSources: [{ kind: 'openapi', name: 'openapi.json', content: openapi }, { kind: 'openapi', name: 'swagger.json', content: swagger }] });
+    for (const testPoint of ['GET /patients', 'GET /visits']) {
+      const profile = out.featureProfiles?.find((item) => item.testPoint === testPoint)!;
+      const evidence = out.featureEvidence?.[profile.featureId]!;
+      expect(evidence.structuredDesign?.api?.security).toEqual([]);
+      expect(evidence.structuredDesign?.api?.parameters.filter((item) => item.name === 'page')).toHaveLength(1);
+      expect(evidence.coverageKeys.filter((key) => key === 'api.parameter.query.page')).toHaveLength(1);
+    }
+    expect(out.featureEvidence?.[out.featureProfiles?.find((item) => item.testPoint === 'GET /patients')!.featureId].structuredDesign?.api?.parameters[0]?.schema?.minimum).toBe(2);
+    expect(out.featureEvidence?.[out.featureProfiles?.find((item) => item.testPoint === 'GET /visits')!.featureId].structuredDesign?.api?.parameters[0]?.schema?.minimum).toBe(3);
   });
 });

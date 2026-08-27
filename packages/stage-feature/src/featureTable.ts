@@ -7,8 +7,8 @@
  * NN 按子系统维度从 01 递增。整张功能点表每个测试点标识行内全局唯一
  * （跨分组 base 碰撞时追加去重后缀），它是用例编号绑定键（见 docs §5.4）。
  */
-import type { ModuleNode, FeatureRow, FeatureProvenance } from '@test-platform/contracts';
-import { toAbbrToken, systemAbbrFromSubsystemId } from './abbreviation';
+import type { FeatureProfile, ModuleNode, FeatureRow, FeatureProvenance } from '@test-platform/contracts';
+import { toAbbrToken, systemAbbrFromSubsystemId, toAbbrTokenWithLabel } from './abbreviation';
 import { deriveProvenance, makeProvenanceId } from './provenance';
 
 /** 默认测试类型（功能性测试；后续可由知识库/配置扩展） */
@@ -41,15 +41,20 @@ function buildIndex(nodes: ModuleNode[]): TreeIndex {
 }
 
 /**
- * 由节点向上收集 module/system/subsystem 类型祖先（最近祖先在前）。
- * - 最近 module 祖先 = 子系统（subModule）
- * - 其上一层 module 祖先 = 主模块（mainModule）
+ * 由节点向上收集所有「层级祖先」（page/module/system，不含 action），最近祖先在前。
+ * 业务映射（与前端 moduleTreeToFeatureTable、docs 主规格 §5.3 一致）：
+ * - 最近层级祖先 = 子系统（subModule）
+ * - 再上一层层级祖先 = 主模块（mainModule，=父目录）
+ * 兼容两种真实树形：
+ *   a) system → module(主模块) → page(子模块) → action   （ruoyi 系统管理/用户管理）
+ *   b) system → page(子模块) → action                     （ruoyi 首页/AI对话，无 module 层 → mainModule 空）
+ * 以及 verify 测试树：system → module(主) → module(子) → page(功能点叶子)。
  */
 function moduleAncestors(node: ModuleNode, parentOf: Map<string, ModuleNode | null>): ModuleNode[] {
   const result: ModuleNode[] = [];
   let cur = parentOf.get(node.id) ?? null;
   while (cur) {
-    if (cur.type === 'module' || cur.type === 'system') {
+    if (cur.type === 'module' || cur.type === 'system' || cur.type === 'page') {
       result.push(cur);
     }
     cur = parentOf.get(cur.id) ?? null;
@@ -63,6 +68,8 @@ export interface BuildResult {
   provenance: FeatureProvenance[];
   /** 测试点标识 → 真实页面 URL（探索阶段采集，供用例阶段二次探索定位页面） */
   featurePaths: Record<string, string>;
+  /** 功能点动作档案（仅透传探索阶段语义，不在本阶段重新分类） */
+  featureProfiles: FeatureProfile[];
 }
 
 /**
@@ -95,19 +102,24 @@ export function buildFeatureTable(
 
   const resolved: Resolved[] = leaves.map((node) => {
     const ancestors = moduleAncestors(node, parentOf);
-    const subModuleNode = ancestors[0] ?? null;
+    // 业务映射（用户规则 + docs §5.3 + verify 契约树）：
+    //   ancestors 按「从叶子向上」收集：ancestors[0]=最近层级祖先(二级目录)，ancestors[1]=次近层级祖先(一级目录)
+    //   一级目录永远 = 主模块（ancestors[1]，如 系统管理/检查室管理）
+    //   二级目录 = 子模块（ancestors[0]，如 用户管理/检查室）
+    //   仅有一级目录时（首页/AI对话 顶层 page 直接挂 action）：主=该层、子=空 → RUOYI_SY_X_01
     const mainModuleNode = ancestors[1] ?? ancestors[0] ?? null;
+    const subModuleNode = ancestors.length >= 2 ? ancestors[0] : null;
     return { node, mainModuleNode, subModuleNode, prov: deriveProvenance(node) };
   });
 
   // confirmedOnly：丢弃未确认（ai_generated）行，合并后过滤
   const kept = confirmedOnly ? resolved.filter((r) => r.prov.confirmed) : resolved;
 
-  // 按子系统分组（保持 DFS 顺序）
+  // 按子系统分组（保持 DFS 顺序）；无子模块时按主模块分组（首页/AI对话 各自独立递增）
   const groupOrder: string[] = [];
   const groups = new Map<string, Resolved[]>();
   for (const r of kept) {
-    const key = r.subModuleNode?.id ?? `__root_${systemName}`;
+    const key = r.subModuleNode?.id ?? r.mainModuleNode?.id ?? `__root_${systemName}`;
     if (!groups.has(key)) {
       groups.set(key, []);
       groupOrder.push(key);
@@ -119,6 +131,7 @@ export function buildFeatureTable(
   const featureIds: string[] = [];
   const provenance: FeatureProvenance[] = [];
   const featurePaths: Record<string, string> = {};
+  const featureProfiles: FeatureProfile[] = [];
   const usedTestPointIds = new Set<string>();
   let collisionSeq = 0;
   let globalIndex = 0;
@@ -126,9 +139,15 @@ export function buildFeatureTable(
   groupOrder.forEach((key, groupIdx) => {
     const group = groups.get(key)!;
     const rep = group[0];
+    // 系统缩写：subsystemId 语义 id 优先；subsystemId 为 system 型时也接受中文 fallback（systemName）
     const systemAbbr = systemAbbrFromSubsystemId(rep.node.subsystemId, systemName);
-    const mainAbbr = rep.mainModuleNode ? toAbbrToken(rep.mainModuleNode.id) : toAbbrToken(systemName);
-    const subAbbr = rep.subModuleNode ? toAbbrToken(rep.subModuleNode.id) : toAbbrToken(rep.node.id);
+    // 主模块缩写 = 一级目录 label；子模块缩写 = 二级目录 label（无二级时留空 → X 占位，保证 base 恒 3 段）
+    const mainAbbr = rep.mainModuleNode
+      ? toAbbrTokenWithLabel(rep.mainModuleNode.id, rep.mainModuleNode.label)
+      : toAbbrTokenWithLabel(systemName, systemName);
+    const subAbbr = rep.subModuleNode
+      ? toAbbrTokenWithLabel(rep.subModuleNode.id, rep.subModuleNode.label)
+      : 'X';
     const base = `${systemAbbr}_${mainAbbr}_${subAbbr}`;
     // 需求章节：优先使用真实数据（requirementSections 映射），否则采用 X.0.0 分组占位
     const realSection = requirementSections?.get(key);
@@ -146,10 +165,10 @@ export function buildFeatureTable(
       }
       usedTestPointIds.add(testPointId);
 
-      // 功能点 = 父模块标签 + 当前节点标签（描述功能）
-      const featureName = r.mainModuleNode
-        ? `${r.mainModuleNode.label}-${r.node.label}`
-        : r.node.label;
+      // 功能点 = 子模块（二级目录）标签；无子模块时回退为主模块（一级目录）标签。
+      // 与前端 moduleTreeToFeatureTable 的 feature=curPage||curModule 保持一致：
+      // 功能点==子模块 时，UI 显示层会把功能点列置空（只显示子模块），原始数据仍保留。
+      const featureName = r.subModuleNode?.label ?? r.mainModuleNode?.label ?? r.node.label;
       // 测试点 = 当前节点标签（具体测试动作）
       const testPoint = r.node.label;
 
@@ -158,9 +177,9 @@ export function buildFeatureTable(
         TEST_TYPE_DEFAULT,             // 测试类型
         requirementSection,            // 需求章节（X.Y.Z 占位）
         systemName,                    // 系统名称
-        r.mainModuleNode?.label ?? '', // 主模块（=父目录）
-        r.subModuleNode?.label ?? r.node.label, // 子模块（=子系统）
-        featureName,                   // 功能点（父模块-节点）
+        r.mainModuleNode?.label ?? '', // 主模块（=一级目录）
+        r.subModuleNode?.label ?? '',  // 子模块（=二级目录；无二级时留空）
+        featureName,                   // 功能点（子模块名，无则主模块名）
         testPoint,                     // 测试点（节点标签）
         testPointId,                   // 测试点标识（base_NN，行内全局唯一）
       ];
@@ -168,6 +187,18 @@ export function buildFeatureTable(
       featureIds.push(testPointId);
       // 根因解法：把模块树叶子节点的真实页面 URL 带出，供用例阶段按所选模块精准探索
       if (r.node.url) featurePaths[testPointId] = r.node.url;
+      featureProfiles.push({
+        featureId: testPointId,
+        testPoint,
+        actionKind: r.node.actionKind ?? 'other',
+        pageUrl: r.node.url,
+        clickSelector: r.node.actionSelector,
+        parentModule: r.mainModuleNode?.label,
+        subsystemId: r.node.subsystemId,
+        sourceLabel: r.node.actionText,
+        sourceSelector: r.node.actionSelector,
+        source: r.node.actionSelector?.startsWith('design:openapi:') ? 'openapi' : r.node.actionSelector?.startsWith('design:workflow:') ? 'workflow' : r.node.manuallyAdded ? 'manual' : 'web',
+      });
 
       const rowContent = row.join('|');
       provenance.push({
@@ -184,5 +215,5 @@ export function buildFeatureTable(
 
   // featureIds 去重（testPointId 已全局唯一，此处仅作显式保底）
   const dedupedFeatureIds = Array.from(new Set(featureIds));
-  return { featureTable, featureIds: dedupedFeatureIds, provenance, featurePaths };
+  return { featureTable, featureIds: dedupedFeatureIds, provenance, featurePaths, featureProfiles };
 }

@@ -12,6 +12,8 @@ import type {
   McpToolCallParams,
   ExploredElement,
   PlaywrightStorageState,
+  ReadOnlyClickPurpose,
+  ReadOnlyClickResult,
 } from './types.js';
 import { snapshotToSemanticNodes, parseSnapshotEntries } from './snapshot-converter.js';
 import { buildNavHierarchy, toModuleNodes, dedupModuleTree, type RawNavItem } from './nav-tree.js';
@@ -105,6 +107,11 @@ export class McpPlaywrightAdapter implements McpEngine {
 
   async navigate(url: string): Promise<void> {
     await this.callTool('browser_navigate', { url });
+  }
+
+  async runReadOnlyClick(_selector: string, _purpose: ReadOnlyClickPurpose): Promise<ReadOnlyClickResult> {
+    // MCP click cannot install a request route or cancel downloads atomically. Never fall back to browser_click.
+    return { status: 'unsupported', reason: 'MCP 引擎未提供可拦截写请求和下载的只读点击能力' };
   }
 
   async getCurrentUrl(): Promise<string> {

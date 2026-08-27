@@ -94,8 +94,9 @@ describe('toCaseView', () => {
     expect(meta.testPoint).toBe('检查室');
     expect(meta.testers).toBe('张三');
     expect(meta.clientStaff).toBe('李四');
-    expect(meta.times).toBe('2026-08-01 / 2026-08-15');
-    expect(meta.rules).toBe('pass');
+    expect(meta.firstTestDate).toBe('2026-08-01');
+    expect(meta.regressionDate).toBe('2026-08-15');
+    expect(meta.conclusionRule).toBe('pass');
   });
 
   it('应处理空 sheets', () => {

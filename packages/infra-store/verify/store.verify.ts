@@ -4,7 +4,7 @@
  * @frozen v1.0
  */
 import { describe, it, expect } from 'vitest';
-import type { FeatureRow, CaseSheet, MetaHeader, System } from '@test-platform/contracts';
+import type { FeatureArtifactV2, FeatureRow, CaseSheet, MetaHeader, System } from '@test-platform/contracts';
 import { createStore } from '../src';
 
 const mockMeta: MetaHeader = {
@@ -61,6 +61,55 @@ describe('infra-store 冻结接口', () => {
     const store = createStore();
     const p = await store.createProject({ name: 'p' });
     await expect(store.setActiveSystem(p.id, 'nope')).rejects.toThrow();
+  });
+});
+
+describe('infra-store — FeatureArtifact v2 兼容', () => {
+  it('保存 v2 档案并保持旧功能点表读取接口', async () => {
+    const store = createStore();
+    const table: FeatureRow[][] = [[['1', '功能性测试', '1.0.0', 'HIS', '挂号', '患者', '患者-新增', '新增', 'HIS_GH_HZ_01']]];
+    const artifact: FeatureArtifactV2 = {
+      version: 2,
+      table,
+      featurePaths: { HIS_GH_HZ_01: 'https://his.example/patients' },
+      featureProfiles: [{ featureId: 'HIS_GH_HZ_01', testPoint: '新增', actionKind: 'create' }],
+    };
+
+    await store.saveFeatureArtifact('sys-artifact', artifact);
+
+    expect(await store.getFeatureArtifact('sys-artifact')).toEqual(artifact);
+    expect(await store.getFeatureTable('sys-artifact')).toEqual(table);
+  });
+
+  it('旧二维功能点表仍能经 getFeatureArtifact 读取', async () => {
+    const store = createStore();
+    const table: FeatureRow[][] = [['1', '功能性测试', '1.0.0', 'HIS', '挂号', '患者', '患者-查询', '查询', 'HIS_GH_HZ_02'] as unknown as FeatureRow[]];
+
+    await store.saveFeatureTable('sys-legacy-artifact', table);
+
+    expect(await store.getFeatureArtifact('sys-legacy-artifact')).toEqual(table);
+  });
+
+  it('九列表编辑通过旧保存接口时保留 v2 的证据和来源元数据', async () => {
+    const store = createStore();
+    const artifact: FeatureArtifactV2 = {
+      version: 2,
+      table: [[['1', '功能性测试', '', 'HIS', '用户', '用户', '用户管理', '新增', 'HIS_USER_01']]],
+      featureProfiles: [{ featureId: 'HIS_USER_01', testPoint: '新增', actionKind: 'create' }],
+      featureEvidence: {
+        HIS_USER_01: {
+          featureId: 'HIS_USER_01', actionKind: 'create', states: ['create'], fields: [], tables: [], actionEntries: [], containers: [], evidenceLevel: 'observed', coverageKeys: ['create.ready'], needsReview: false, uncovered: [],
+        },
+      },
+      provenance: [{ provenanceId: 'source-1', featureRowIndex: 0, source: 'exploration', confirmed: true }],
+      designSources: ['users.openapi.yaml'],
+    };
+    await store.saveFeatureArtifact('sys-v2-edit', artifact);
+    const editedTable: FeatureRow[][] = [[['1', '功能性测试', '', 'HIS', '用户', '用户', '用户管理', '新增用户', 'HIS_USER_01']]];
+
+    await store.saveFeatureTable('sys-v2-edit', editedTable);
+
+    expect(await store.getFeatureArtifact('sys-v2-edit')).toEqual({ ...artifact, table: editedTable });
   });
 });
 

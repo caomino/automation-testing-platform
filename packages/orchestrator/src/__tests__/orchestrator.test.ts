@@ -69,7 +69,7 @@ function makeFakeExploreOutput(): ExploreOutput {
 
 function makeFakeFeatureOutput(): FeatureOutput {
   const table: FeatureRow[][] = [
-    ['系统', '模块A', '功能点1', 'test_point_01', '正常', '', '', '', ''],
+    [['1', '功能性测试', '3.1', '系统', '模块A', '子模块A', '功能点1', '功能点1', 'test_point_01']],
   ];
   return {
     featureTable: table,
@@ -80,7 +80,7 @@ function makeFakeFeatureOutput(): FeatureOutput {
 
 function makeFakeCaseOutput(): CaseOutput {
   const rows = [
-    { caseNo: 'test_point_01_N1', content: 'test', step: 'Step1', operation: 'do', expected: 'ok', firstResult: '\\', regressionResult: '\\', conclusion: '\\', id: '1', featureId: 'test_point_01', targetTestPoint: 'test', scenarioId: 'normal', origin: 'system_generated', evidenceLevel: 'derived', confidence: 1 },
+    { caseNo: 'test_point_01', content: 'test', step: 'Step 1', operation: 'do', expected: 'ok', firstResult: '\\', regressionResult: '\\', conclusion: '\\', id: '1', featureId: 'test_point_01', targetTestPoint: 'test', scenarioId: 'normal', origin: 'system_generated', evidenceLevel: 'derived', confidence: 1 },
   ];
   const sheets: CaseSheet[] = [
     { sheetName: '模块A', meta: { precondition: 'test' }, rows, colWidths: [] },
@@ -90,7 +90,7 @@ function makeFakeCaseOutput(): CaseOutput {
 
 function makeFakeExecuteOutput(): ExecuteOutput {
   const results: ExecutionResult[] = [
-    { caseNo: 'test_point_01_N1', status: 'passed', steps: [], env: { os: 'Windows', browser: 'Chrome', version: '120' }, durationMs: 100, screenshotRef: 'ss-001' },
+    { caseNo: 'test_point_01', status: 'passed', steps: [], env: { os: 'Windows', browser: 'Chrome', version: '120' }, durationMs: 100, screenshotRef: 'ss-001' },
   ];
   return {
     executionReport: results,

@@ -4,6 +4,8 @@
  * @frozen v1.0
  */
 
+import type { ContainerState, UncoveredItem } from './TestDesign';
+
 /** 浏览器 × OS 环境 */
 export interface BrowserOS {
   /** 浏览器名 */
@@ -95,12 +97,9 @@ export interface QualityGateIssue {
 }
 
 /** AI 配置引用（业务屏只读引用，模型在 §14 统一配） */
-export interface AIConfigRef {
-  /** 配置 ID */
-  configId: string;
-  /** 是否启用 */
-  enabled: boolean;
-}
+export type AIConfigRef =
+  | { enabled: true; configId: string }
+  | { enabled: false; configId?: string };
 
 /** 探索断点（断点续跑） */
 export interface McpExplorationCheckpoint {
@@ -136,4 +135,44 @@ export interface ExploredElement {
   isFormControl: boolean;
   /** 建议的操作类型: click/fill/select/navigate */
   suggestedAction: 'click' | 'fill' | 'select' | 'navigate';
+
+  // —— @T3 字段约束语义（只读抽取，可选，旧数据可省略） —— //
+  /** 是否必填 */
+  required?: boolean;
+  /** 最小长度 */
+  minLength?: number;
+  /** 最大长度 */
+  maxLength?: number;
+  /** 数值最小值 */
+  minimum?: number;
+  /** 数值最大值 */
+  maximum?: number;
+  /** 格式正则 */
+  pattern?: string;
+  /** 枚举可选项 */
+  options?: string[];
+  /** 是否多选 */
+  multiple?: boolean;
+  /** 是否只读 */
+  readonly?: boolean;
+  /** 是否禁用 */
+  disabled?: boolean;
+  /** 当前选中状态 */
+  checked?: boolean;
+  /** 表格语义（tag=table 时填充） */
+  tableInfo?: {
+    columns: string[];
+    rowCount: number;
+    hasPagination: boolean;
+    paginationInfo?: string;
+    hasSorting: boolean;
+    sortableColumns?: string[];
+    hasFilter: boolean;
+    filterFields?: string[];
+    isVirtualList?: boolean;
+  };
+  /** 已安全读取到的嵌套容器状态（由 direct Playwright DOM 采集） */
+  containers?: ContainerState[];
+  /** 只读边界内无法读取的语义，必须上报而非伪装覆盖 */
+  uncovered?: UncoveredItem[];
 }

@@ -46,7 +46,8 @@ function convertToModuleNodes(nodes: any[], subsystemId: string, parentId: strin
     if (node.children && node.children.length > 0) {
       mNode.children = convertToModuleNodes(node.children, subsystemId, moduleId, depth + 1);
     } else if (node.actions && node.actions.length > 0) {
-      // leaf page with actions
+      // leaf page with actions：透传动作语义（type→actionKind、selector→actionSelector、title→actionText），
+      // 并让 action 继承页面 URL（routePath），供用例阶段按路径进入页面（参考 D:\Test 探索证据带页面层级）。
       mNode.type = 'page';
       const actionNodes: ModuleNode[] = node.actions.map((act: any) => ({
         id: act.id || Math.random().toString(36).substr(2, 9),
@@ -56,7 +57,11 @@ function convertToModuleNodes(nodes: any[], subsystemId: string, parentId: strin
         type: 'action',
         status: 'covered',
         depth: depth + 1,
-        children: []
+        children: [],
+        url: node.routePath,
+        actionKind: act.type,
+        actionSelector: act.selector,
+        actionText: act.title,
       }));
       mNode.children = actionNodes;
     }

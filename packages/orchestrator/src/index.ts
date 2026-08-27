@@ -30,6 +30,8 @@ import type {
   FeatureOutput,
   CaseInput,
   CaseOutput,
+  CaseSheet,
+  CaseGenerationContext,
   ExecuteInput,
   ExecuteOutput,
   DefectInput,
@@ -38,19 +40,134 @@ import type {
   SessionHandle,
   BrowserOS,
   ExploredElement,
+  FeatureEvidence,
+  FeatureProfile,
   FeatureRow,
+  FeatureArtifactV2,
   System,
 } from '@test-platform/contracts';
 import { DEFAULT_FEATURE_COLUMNS } from '@test-platform/contracts';
 
 import { createLoginStage } from '@test-platform/stage-login';
-import { getTakeoverEngine } from '@test-platform/stage-login';
+import { getTakeoverEngine, detectLoginState, extractDomWithRetry } from '@test-platform/stage-login';
 import * as stageExplore from '@test-platform/stage-explore';
 import * as stageFeature from '@test-platform/stage-feature';
 import * as stageCase from '@test-platform/stage-case';
 import * as stageExecute from '@test-platform/stage-execute';
 import * as stageDefect from '@test-platform/stage-defect';
-import { createAIClient, getDefault, type AIClient, type AIVendor } from '@test-platform/infra-ai';
+import { createAIClient, getDefault, getProvider, type AIClient, type AIVendor, type AIProviderConfig } from '@test-platform/infra-ai';
+import { exploreFeatureEvidence, exploreFeatureEvidenceMap, isSafeNavigationUrl } from './featureEvidenceExplorer.js';
+
+function mergeFeatureRows(existing: FeatureRow[][], incoming: FeatureRow[][], retainExistingIds: Set<string> = new Set()): FeatureRow[][] {
+  const id = (row: FeatureRow): string => row[DEFAULT_FEATURE_COLUMNS.testPointId] ?? '';
+  const replacements = new Map(incoming.flat().filter((row) => id(row) && !retainExistingIds.has(id(row))).map((row) => [id(row), row]));
+  const existingIds = new Set(existing.flat().map(id));
+  const merged = existing.map((group) => group.map((row) => replacements.get(id(row)) ?? row));
+  const additions = incoming.flat().filter((row) => !existingIds.has(id(row)));
+  if (additions.length) merged.push(additions);
+  return merged;
+}
+
+function mergeByFeatureId<T extends { featureId: string }>(existing: T[] | undefined, incoming: T[] | undefined, retainExistingIds: Set<string> = new Set()): T[] | undefined {
+  if (!existing?.length && !incoming?.length) return undefined;
+  return [...new Map([...(existing ?? []), ...(incoming ?? []).filter((item) => !retainExistingIds.has(item.featureId))].map((item) => [item.featureId, item])).values()];
+}
+
+function mergeFeatureEvidence(
+  existing: Record<string, FeatureEvidence> | undefined,
+  incoming: Record<string, FeatureEvidence> | undefined,
+  _existingProfiles?: FeatureProfile[],
+  _incomingProfiles?: FeatureProfile[],
+): Record<string, FeatureEvidence> {
+  const merged = { ...(existing ?? {}) };
+  for (const [featureId, evidence] of Object.entries(incoming ?? {})) {
+    merged[featureId] = evidence;
+  }
+  return merged;
+}
+
+function mergeFeatureArtifact(existing: FeatureArtifactV2 | undefined, incoming: Pick<FeatureArtifactV2, 'table' | 'featurePaths' | 'featureProfiles' | 'featureEvidence' | 'provenance' | 'designSources'>): FeatureArtifactV2 {
+  // Current confirmed input wins for matching feature IDs. Historical metadata
+  // is only retained for IDs omitted by this input, never used to override it.
+  const retainExistingIds = new Set<string>();
+  const incomingPaths = incoming.featurePaths ?? {};
+  return {
+    version: 2,
+    table: existing ? mergeFeatureRows(existing.table, incoming.table, retainExistingIds) : incoming.table,
+    featurePaths: { ...(existing?.featurePaths ?? {}), ...incomingPaths },
+    featureProfiles: mergeByFeatureId(existing?.featureProfiles, incoming.featureProfiles, retainExistingIds),
+    featureEvidence: mergeFeatureEvidence(existing?.featureEvidence, incoming.featureEvidence, existing?.featureProfiles, incoming.featureProfiles),
+    // Provenance only has row indexes, so retain prior records and let newer rows append rather than discarding API/HIS provenance.
+    provenance: [...(existing?.provenance ?? []), ...(incoming.provenance ?? [])],
+    designSources: [...new Set([...(existing?.designSources ?? []), ...(incoming.designSources ?? [])])],
+  };
+}
+
+/**
+ * Case generation consumes the confirmed feature table submitted by the caller.
+ * Existing artifacts may contribute evidence/profile metadata for matching IDs,
+ * but they must never add rows back into the case input.
+ */
+function alignArtifactToFeatureTable(artifact: FeatureArtifactV2, featureTable: FeatureRow[][]): FeatureArtifactV2 {
+  const ids = new Set(featureTable.flat().map((row) => row[DEFAULT_FEATURE_COLUMNS.testPointId] ?? '').filter(Boolean));
+  return {
+    ...artifact,
+    table: featureTable,
+    featurePaths: Object.fromEntries(Object.entries(artifact.featurePaths ?? {}).filter(([id]) => ids.has(id))),
+    featureProfiles: artifact.featureProfiles?.filter((profile) => ids.has(profile.featureId)),
+    featureEvidence: Object.fromEntries(Object.entries(artifact.featureEvidence ?? {}).filter(([id]) => ids.has(id))),
+  };
+}
+
+function collectMissingFeatureIds(
+  featureTable: FeatureRow[][],
+  scope: 'all' | 'selected_modules',
+  selectedModuleIds: string[] | undefined,
+  featurePaths: Record<string, string> | undefined,
+  featureProfiles: FeatureProfile[] | undefined,
+  featureEvidence: Record<string, FeatureEvidence> | undefined,
+  systemId?: string,
+  featureRevision?: string,
+): Set<string> {
+  const profileById = new Map((featureProfiles ?? []).map((profile) => [profile.featureId, profile]));
+  const selected = new Set(selectedModuleIds ?? []);
+  const missing = new Set<string>();
+  for (const row of featureTable.flat()) {
+    const featureId = row[DEFAULT_FEATURE_COLUMNS.testPointId] ?? '';
+    if (!featureId) continue;
+    if (scope === 'selected_modules' && selected.size > 0) {
+      const inSelectedModule = selected.has(row[DEFAULT_FEATURE_COLUMNS.mainModule] ?? '')
+        || selected.has(row[DEFAULT_FEATURE_COLUMNS.subModule] ?? '');
+      if (!inSelectedModule) continue;
+    }
+    const gate = stageCase.gateFeatureEvidence(
+      featureId,
+      profileById.get(featureId),
+      featureEvidence?.[featureId],
+      featurePaths?.[featureId],
+      { systemId, featureRevision },
+    );
+    if (!gate.hasEvidence || !gate.consistent) missing.add(featureId);
+  }
+  return missing;
+}
+
+function hasConcreteFeatureEvidence(evidence: FeatureEvidence): boolean {
+  return (evidence.fields?.length ?? 0) > 0
+    || (evidence.actionEntries?.length ?? 0) > 0
+    || (evidence.tables?.length ?? 0) > 0
+    || !!evidence.structuredDesign;
+}
+
+function retainConcreteEvidence(evidence: Record<string, FeatureEvidence>): Record<string, FeatureEvidence> {
+  // Keep explicit review evidence even when no readable fields were found. It
+  // must reach the case stage so the feature is reported as needs_review with
+  // the concrete unsupported-surface reason, rather than being flattened into
+  // an unexplained evidence_missing result.
+  return Object.fromEntries(Object.entries(evidence).filter(([, value]) =>
+    hasConcreteFeatureEvidence(value) || (value.needsReview === true && !!value.reviewReason),
+  ));
+}
 
 /** 登录页 URL 判定（token 级匹配，避免误伤 /authority/ 等含 auth 的业务路径） */
 function isLoginPageUrl(u: string): boolean {
@@ -61,6 +178,15 @@ function isLoginPageUrl(u: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isUsableAIProvider(config: AIProviderConfig | undefined): config is AIProviderConfig {
+  return Boolean(
+    config?.enabled
+      && config.baseUrl?.trim()
+      && config.apiKeyRef?.trim()
+      && config.model?.trim(),
+  );
 }
 
 /** 编排器配置 */
@@ -144,142 +270,68 @@ export class PipelineOrchestrator {
     }
   }
 
+  private async persistCaseProduct(systemId: string, sheets: CaseSheet[], generation: CaseGenerationContext): Promise<void> {
+    const atomicStore = this.store as ProjectStore & {
+      saveCaseProduct?: (id: string, workbook: CaseSheet[], batch: CaseGenerationContext) => Promise<void>;
+    };
+    if (atomicStore.saveCaseProduct) {
+      await atomicStore.saveCaseProduct(systemId, sheets, generation);
+      return;
+    }
+    // Compatibility for injected stores created before the atomic API existed.
+    await this.store.saveCaseTable(systemId, sheets);
+    await this.store.saveCaseGeneration(systemId, generation);
+  }
+
   /**
-   * 按功能点 featurePaths（来自功能点阶段，根因解法）做 Playwright MCP 二次探索。
-   * 仅导航「生成范围内」的功能点对应页面，提取真实元素供用例步骤生成。
-   * - 相对路径（以 / 开头）若提供 baseUrl 则拼接为绝对地址；
-   * - 任一 URL 探索失败仅告警跳过，不中断整体。
+   * T4：按 featureId 隔离的页面证据采集（替代旧 exploreByFeaturePaths 的全局合并）。
+   * 委托给 featureEvidenceExplorer.exploreFeatureEvidenceMap，保持编排器方法层薄、可单测。
+   * - 逐功能点独立抽取 → Record<featureId, FeatureEvidence>（隔离，杜绝跨功能点串用）；
+   * - 保留 click: SPA 定位符路径；外链跳过；任一功能点失败仅告警跳过。
    */
-  private async exploreByFeaturePaths(
+  private async exploreFeatureEvidenceMap(
     engine: McpEngine,
     featurePaths: Record<string, string> | undefined,
     featureTable: FeatureRow[][],
+    featureProfiles: FeatureProfile[] | undefined,
     selectedModuleIds: string[] | undefined,
     scope: 'all' | 'selected_modules',
     baseUrl?: string,
-  ): Promise<ExploredElement[]> {
-    if (!featurePaths) return [];
-    const FC = DEFAULT_FEATURE_COLUMNS;
-    const scopeAll = scope === 'all' || !selectedModuleIds || selectedModuleIds.length === 0;
-
-    // 计算生成范围内的测试点标识集合
-    const inScopeIds = new Set<string>();
-    for (const r of featureTable.flat()) {
-      const id = r[FC.testPointId] ?? '';
-      if (!id) continue;
-      if (scopeAll) {
-        inScopeIds.add(id);
-        continue;
-      }
-      const sub = r[FC.subModule];
-      const main = r[FC.mainModule];
-      if (selectedModuleIds!.includes(sub) || selectedModuleIds!.includes(main)) inScopeIds.add(id);
-    }
-
-    const norm = (u: string): string => {
-      if (/^https?:\/\//i.test(u)) return u;
-      if (u.startsWith('/') && baseUrl) return baseUrl.replace(/\/$/, '') + u;
-      return u;
-    };
-
-    const hostOf = (u: string): string | null => {
-      try {
-        return new URL(u).host;
-      } catch {
-        return null;
-      }
-    };
-
-    // 分离真实 URL 与「点击定位符」（SPA 未换 URL 的兜底；探索阶段编码为 click:<selector>）
-    const raw = [
-      ...new Set([...inScopeIds].map((id) => featurePaths[id]).filter((u): u is string => !!u)),
-    ];
-    const clickLocators = raw.filter((u) => u.startsWith('click:')).map((u) => u.slice('click:'.length));
-    const candidateUrls = raw
-      .filter((u) => !u.startsWith('click:'))
-      .map(norm)
-      .filter((u) => /^https?:\/\//i.test(u));
-
-    // 系统域名判定：优先 baseUrl 的 host；否则取候选 URL 中出现最多的 host。
-    // 目的：剔除「若依官网」这类外链（如 http://ruoyi.vip），避免 case 二次探索导航到 bogus 地址挂死（M6）。
-    // 注意：点击定位符（click:）同源 SPA 菜单常驻，不走域名过滤，直接计入。
-    let systemHost = baseUrl ? hostOf(baseUrl) : null;
-    if (!systemHost) {
-      const hostCounts = new Map<string, number>();
-      for (const u of candidateUrls) {
-        const h = hostOf(u);
-        if (h) hostCounts.set(h, (hostCounts.get(h) ?? 0) + 1);
-      }
-      let best: string | null = null;
-      let bestN = 0;
-      for (const [h, n] of hostCounts) {
-        if (n > bestN) {
-          bestN = n;
-          best = h;
-        }
-      }
-      systemHost = best;
-    }
-
-    const urls = [
-      ...new Set(
-        candidateUrls.filter((u) => {
-          if (!systemHost) return true; // 无法判定域名时不过滤，保持旧行为
-          return hostOf(u) === systemHost;
-        }),
-      ),
-    ].slice(0, 10);
-
-    const locators = clickLocators.slice(0, 10);
-
-    // 点击定位符需先回到系统首页（提供 baseUrl 时），确保菜单常驻可点
-    if (locators.length > 0 && baseUrl) {
-      try {
-        await engine.navigate(baseUrl);
-      } catch {
-        /* 导航失败忽略，交由下方点击兜底 */
-      }
-    }
-
-    if (urls.length === 0 && locators.length === 0) return [];
-    const all: ExploredElement[] = [];
-
-    // 真实 URL：导航到对应页面后抓元素
-    for (const url of urls) {
-      try {
-        // 单 URL 超时兜底：导航到慢/挂死页面（如外链）最多 15s，避免整条 case 链卡死
-        const els = await Promise.race([
-          engine.extractPageElements(url), // 内部会 navigate(url)
-          new Promise<ExploredElement[]>((_, reject) =>
-            setTimeout(() => reject(new Error(`navigation timeout after 15s`)), 15000),
-          ),
-        ]);
-        all.push(...els);
-      } catch (e) {
-        this.logger.warn('orchestrator', `case secondary exploration failed for ${url}: ${e instanceof Error ? e.message : e}`);
-      }
-    }
-
-    // 点击定位符：按功能点精确重开对应页面（SPA 未换 URL 的兜底），再抓当前页元素
-    for (const sel of locators) {
-      try {
-        const els = await Promise.race([
-          (async () => {
-            await engine.runStep({ kind: 'click', selector: sel });
-            await engine.waitForTimeout(600);
-            return engine.extractPageElements(); // 抓已打开的当前页
-          })(),
-          new Promise<ExploredElement[]>((_, reject) =>
-            setTimeout(() => reject(new Error(`click-locator timeout after 15s`)), 15000),
-          ),
-        ]);
-        all.push(...els);
-      } catch (e) {
-        this.logger.warn('orchestrator', `case secondary exploration (click locator) failed for ${sel}: ${e instanceof Error ? e.message : e}`);
-      }
-    }
-    this.logger.info('orchestrator', `case secondary exploration: ${all.length} elements from ${urls.length} urls + ${locators.length} click-locators`);
-    return all;
+    featureIds?: Set<string>,
+    systemId?: string,
+    featureRevision?: string,
+    extra?: { crossPathNavigation?: 'entry_only' | 'allow' },
+  ): Promise<{ evidence: Record<string, FeatureEvidence>; elements: ExploredElement[] }> {
+    const isWebProfile = (profile: FeatureProfile): boolean => (
+      (!profile.source || profile.source === 'web')
+      && !(!profile.source && profile.sourceSelector?.startsWith('design:'))
+    );
+    const profilesById = new Map((featureProfiles ?? []).map((profile) => [profile.featureId, profile]));
+    const webProfiles = (featureProfiles ?? []).filter(isWebProfile);
+    const webTable = featureTable.map((rows) => rows.filter((row) => {
+      const profile = profilesById.get(row[DEFAULT_FEATURE_COLUMNS.testPointId] ?? '');
+      return !profile || isWebProfile(profile);
+    }));
+    const webPaths = featurePaths && Object.fromEntries(
+      Object.entries(featurePaths).filter(([featureId]) => {
+        const profile = profilesById.get(featureId);
+        return !profile || isWebProfile(profile);
+      }),
+    );
+    // 委托给独立函数（featureEvidenceExplorer 模块），私有方法仅做薄适配
+    return exploreFeatureEvidenceMap(engine, {
+      featurePaths: webPaths,
+      featureTable: webTable,
+      featureProfiles: webProfiles,
+      selectedModuleIds,
+      scope,
+      baseUrl,
+      logger: this.logger,
+      featureIds,
+      systemId,
+      featureRevision,
+      ...(extra?.crossPathNavigation ? { crossPathNavigation: extra.crossPathNavigation } : {}),
+    });
   }
 
   /** 创建项目（可选，用于绑定本次流水线） */
@@ -301,67 +353,267 @@ export class PipelineOrchestrator {
     engine: McpEngine,
     featureTable: FeatureRow[][],
     baseUrl?: string,
-  ): Promise<ExploredElement[]> {
+    featureIds?: Set<string>,
+    featureProfiles?: FeatureProfile[],
+    systemId?: string,
+    featureRevision?: string,
+  ): Promise<{ elements: ExploredElement[]; evidence: Record<string, FeatureEvidence> }> {
     const FC = DEFAULT_FEATURE_COLUMNS;
     const DANGEROUS = /退出|注销|登出|logout|sign\s?out|清空|重置|修改密码|解绑|删除/i;
-    const names: string[] = [];
-    const seen = new Set<string>();
+    const profilesById = new Map((featureProfiles ?? []).map((profile) => [profile.featureId, profile]));
+    const targets: Array<{ featureId: string; name: string; actionKind?: FeatureProfile['actionKind'] }> = [];
+    const seenTargets = new Set<string>();
     for (const r of featureTable.flat()) {
+      const featureId = r[FC.testPointId] ?? '';
+      if (featureIds && !featureIds.has(featureId)) continue;
+      if (!featureId) continue;
       for (const col of [FC.featureName, FC.testPoint]) {
         const t = (r[col] ?? '').trim();
-        if (!t || t.length < 2 || t.length > 40 || DANGEROUS.test(t) || seen.has(t)) continue;
-        seen.add(t);
-        names.push(t);
+        const targetKey = `${featureId}\u0000${t}`;
+        if (!t || t.length < 2 || t.length > 40 || DANGEROUS.test(t) || seenTargets.has(targetKey)) continue;
+        seenTargets.add(targetKey);
+        targets.push({ featureId, name: t, actionKind: profilesById.get(featureId)?.actionKind });
       }
     }
-    if (names.length === 0) return [];
+    if (targets.length === 0) return { elements: [], evidence: {} };
 
-    // 名称越长越精确，优先点击；避免同名重复点击（matched 已点 selector 去重）
-    const sorted = names.slice().sort((a, b) => b.length - a.length);
-    const matchedSelectors = new Set<string>();
+    // 每个功能点单独定位、点击和采证，禁止把名称兜底结果合并成公共证据。
+    const targetsByFeature = new Map<string, typeof targets>();
+    for (const target of targets) {
+      const list = targetsByFeature.get(target.featureId) ?? [];
+      list.push(target);
+      targetsByFeature.set(target.featureId, list);
+    }
     const all: ExploredElement[] = [];
+    const evidence: Record<string, FeatureEvidence> = {};
 
-    for (const name of sorted) {
-      try {
-        // 回到系统首页确保菜单常驻可点
-        if (baseUrl) {
-          try {
-            await engine.navigate(baseUrl);
-          } catch {
-            /* 忽略导航失败 */
+    // 子模块名索引：供「先进入子模块页再找页面内按钮」的二级定位（从入口按路径进入，不直接打开 URL）
+    const subModuleNameById = new Map<string, string>();
+    for (const r of featureTable.flat()) {
+      const id = r[FC.testPointId] ?? '';
+      const sub = (r[FC.subModule] ?? '').trim();
+      if (id && sub) subModuleNameById.set(id, sub);
+    }
+    // 从功能名/测试点提取核心名词（如「新增用户」→「用户」、「查询角色列表」→「角色」），
+    // 供多级菜单进入：父菜单展开后按名词点击匹配的子页面菜单（RuoYi 等「父菜单→子页面→按钮」层级）。
+    const extractNoun = (text: string): string | undefined => {
+      const cleaned = (text || '')
+        .replace(/查询|新增|添加|创建|新建|修改|编辑|删除|批量|导出|导入|重置|刷新|查看|详情|分配|生成|下载|复制|同步|清理|清空|获取|列表|记录|保存|提交|立即执行|预览|监控/gi, '')
+        .replace(/[()（）\[\]\s]/g, '');
+      if (cleaned.length < 2) return undefined;
+      // 优先 2 字核心词，避免过长串匹配不到子菜单
+      return cleaned.slice(0, 2);
+    };
+    const findTargetInDom = (dom: SemanticNode[], query: string): SemanticNode | undefined => {
+      let found: SemanticNode | undefined;
+      const walk = (nodes: SemanticNode[]): void => {
+        for (const n of nodes) {
+          if (found) return;
+          const text = (n.text || n.name || '').trim();
+          const tag = n.tag.toLowerCase();
+          const safeNativeLink = tag === 'a' && !!n.href && isSafeNavigationUrl(n.href);
+          const safeDialogOpener = ['a', 'button'].includes(tag) && (n.ariaHasPopup === 'dialog' || n.safeReadOnlyOpener === true);
+          if (n.interactive && !n.isDataControl && text && !DANGEROUS.test(text) && (safeNativeLink || safeDialogOpener)) {
+            if (text === query || text.includes(query) || query.includes(text)) {
+              found = n;
+              return;
+            }
           }
-          await engine.waitForTimeout(500);
+          if (n.children.length > 0) walk(n.children);
         }
-        const dom = await engine.extractSemanticDom().catch(() => [] as SemanticNode[]);
-        // 找与名称匹配的可交互节点（文本相等 > 包含；跳过已点击 selector）
-        let target: SemanticNode | undefined;
-        const walk = (nodes: SemanticNode[]): void => {
-          for (const n of nodes) {
-            if (target) return;
-            const text = (n.text || n.name || '').trim();
-            if (n.interactive && text && !DANGEROUS.test(text) && !matchedSelectors.has(n.selector)) {
-              if (text === name || text.includes(name) || name.includes(text)) {
-                target = n;
-                return;
+      };
+      walk(dom);
+      return found;
+    };
+    // 在浏览器内给「文本最匹配的可点击元素」打唯一标记后精确点击：
+    // 解决真实系统（RuoYi 等）语义 selector 匹配多个 DOM 节点导致的「selector 精确匹配」blocked。
+    // 参考 D:\Test：用 XPath contains(text()) 定位可见可交互元素 + el.click() 直接点击（安全动作），
+    // 不依赖语义 selector 的精确匹配，解决真实系统（RuoYi 等）「selector 精确匹配一个 DOM 节点」blocked。
+    // 危险写操作文本（提交/保存/删除/导入/导出/发布/审核/重置等）一律不点击（只读红线）。
+    const markAndClick = async (query: string): Promise<{ performed: boolean; reason?: string }> => {
+      if (typeof engine.evaluate !== 'function') {
+        return { performed: false, reason: '引擎缺少 evaluate 能力' };
+      }
+      try {
+        const result = await engine.evaluate<{ clicked: boolean; reason?: string; tag?: string }>(`(args) => {
+          const { name } = args;
+          const norm = (v) => (v || '').replace(/\\s+/g, ' ').trim();
+          const DANGEROUS = /提交|保存|删除|移除|导入|导出|发布|审核|重置|清空|注销|退出|approve|reject|submit|save|delete|remove|import|export|publish|reset/i;
+          const queryName = norm(name);
+          if (!queryName) return { clicked: false, reason: '空文本' };
+          if (DANGEROUS.test(queryName)) return { clicked: false, reason: '危险动作文本，只读探索不点击: ' + queryName.slice(0, 20) };
+          const iter = document.evaluate("//*[contains(text(), '" + queryName + "')]", document.body, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+          let best = null;
+          let bestScore = 0;
+          for (let i = 0; i < iter.snapshotLength; i++) {
+            const el = iter.snapshotItem(i);
+            if (!el || el.offsetParent === null) continue;
+            const t = norm(el.textContent);
+            if (!t || t.length < 1 || t.length > 60) continue;
+            const tag = (el.tagName || '').toLowerCase();
+            // 只选最可能是真实可点击入口的标签，避免误点容器/文本节点
+            if (!['a', 'button', 'li'].includes(tag)) continue;
+            let sc = 0;
+            // 外链（a[href] 指向非当前域名）不点击：避免 el.click() 打开新标签导致浏览器上下文混乱
+            if (tag === 'a' && el.getAttribute && el.getAttribute('href')) {
+              try {
+                const target = new URL(el.getAttribute('href'), location.href);
+                if (target.origin !== location.origin) continue;
+              } catch { continue; }
+            }
+            if (t === queryName) sc = 3;
+            else if (t.includes(queryName)) sc = 2;
+            else if (queryName.includes(t) && t.length >= 2) sc = 1;
+            if (sc === 0) continue;
+            const nestedInteractive = el.querySelectorAll('a, button').length;
+            if (sc > bestScore || (sc === bestScore && best && nestedInteractive < (best.querySelectorAll('a, button').length || 0))) {
+              best = el;
+              bestScore = sc;
+            }
+          }
+          if (!best) return { clicked: false, reason: '未找到匹配的可点击元素' };
+          best.click();
+          return { clicked: true, tag: best.tagName };
+        }`, { name: query });
+        return { performed: result?.clicked === true, reason: result?.reason ?? 'clicked' };
+      } catch (e) {
+        return { performed: false, reason: e instanceof Error ? e.message : String(e) };
+      }
+    };
+    const clickNodeByName = async (query: string): Promise<boolean> => (await markAndClick(query)).performed;
+
+    for (const [featureId, featureTargets] of targetsByFeature) {
+      const sorted = featureTargets.slice().sort((a, b) => b.name.length - a.name.length);
+      const subModuleName = subModuleNameById.get(featureId);
+      // 只在离开入口时回入口一次；同文档（SPA hash 路由）不 reload，避免首页无限刷新
+      try {
+        if (baseUrl && isSafeNavigationUrl(baseUrl)) {
+          const cur = await engine.getCurrentUrl().catch(() => '');
+          let sameDoc = false;
+          if (cur) {
+            try {
+              const a = new URL(cur);
+              const b = new URL(baseUrl);
+              sameDoc = a.origin === b.origin && a.pathname === b.pathname && a.search === b.search;
+            } catch { sameDoc = false; }
+          }
+          if (!sameDoc) {
+            await engine.navigate(baseUrl);
+            await engine.waitForTimeout(500);
+          }
+        }
+      } catch { /* 忽略导航失败 */ }
+      for (const targetInfo of sorted) {
+        const name = targetInfo.name;
+        try {
+        let target = findTargetInDom(await engine.extractSemanticDom().catch(() => [] as SemanticNode[]), name);
+        // 二级：入口页找不到功能名时，先按子模块名进入页面，再找页面内按钮（支持 RuoYi 等「页面内新增/查询」，
+        // 从入口按路径进入而非直接打开目标 URL，避免落在登录页/首页）。
+        if (!target && subModuleName) {
+          const entered = await clickNodeByName(subModuleName);
+          if (entered) {
+            await engine.waitForTimeout(700);
+            target = findTargetInDom(await engine.extractSemanticDom().catch(() => [] as SemanticNode[]), name);
+            if (!target) {
+              // 三级：父菜单展开后，按功能名核心名词点击匹配的子页面菜单，再找页面内按钮
+              const noun = extractNoun(name);
+              if (noun) {
+                const subEntered = await clickNodeByName(noun);
+                if (subEntered) {
+                  await engine.waitForTimeout(700);
+                  target = findTargetInDom(await engine.extractSemanticDom().catch(() => [] as SemanticNode[]), name);
+                }
               }
             }
-            if (n.children.length > 0) walk(n.children);
           }
-        };
-        walk(dom);
+        }
         if (!target) continue;
-        matchedSelectors.add(target.selector);
-        await engine.runStep({ kind: 'click', selector: target.selector });
+        const matchedTarget = target;
+        if (!engine.runReadOnlyClick) {
+          this.logger.warn('orchestrator', `case: click-by-name skipped for "${name}"; engine lacks read-only click capability`);
+          continue;
+        }
+        // 用浏览器内精确打标点击（解决真实系统 selector 匹配多个 DOM 节点被 blocked）；
+        // 找不到精确目标时回退到语义 selector + has-text 重试。
+        const mark = await markAndClick(name);
+        let click: { status: string; reason?: string } = mark.performed
+          ? { status: 'performed' }
+          : { status: 'blocked', reason: mark.reason ?? 'markAndClick 未命中' };
+        if (click.status !== 'performed' && matchedTarget.tag && name) {
+          const escapeText = (t: string): string => t.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          const sel = await engine.runReadOnlyClick(matchedTarget.selector, 'action');
+          if (sel.status === 'performed') { click = sel; }
+          else {
+            click = sel; // 保留真实失败原因（如 unsupported: MCP unavailable）
+            const ht = await engine.runReadOnlyClick(`${matchedTarget.tag.toLowerCase()}:has-text("${escapeText(name)}")`, 'action');
+            if (ht.status === 'performed') { click = ht; }
+          }
+        }
+        if (click.status !== 'performed') {
+          const reason = `${click.status}: ${click.reason ?? 'unknown reason'}`;
+          this.logger.warn('orchestrator', `case: click-by-name skipped for "${name}"; ${reason}`);
+          evidence[featureId] = {
+            featureId,
+            ...(systemId ? { systemId } : {}),
+            ...(featureRevision ? { featureRevision } : {}),
+            pageEntry: baseUrl,
+            actionKind: targetInfo.actionKind ?? 'other',
+            states: [],
+            fields: [],
+            tables: [],
+            actionEntries: [],
+            containers: [],
+            evidenceLevel: 'needs_review',
+            coverageKeys: [],
+            needsReview: true,
+            reviewReason: `无法执行功能点级只读探索：${reason}`,
+            uncovered: [{ kind: 'no_safe_sample', reason }],
+          };
+          continue;
+        }
         await engine.waitForTimeout(700);
         const els = await engine.extractPageElements();
         all.push(...els);
+        const pageUrl = typeof engine.getCurrentUrl === 'function'
+          ? await engine.getCurrentUrl().catch(() => undefined)
+          : undefined;
+          const explored = await exploreFeatureEvidence(engine, {
+            featureId,
+            systemId,
+            featureRevision,
+            actionKind: targetInfo.actionKind,
+          initialState: targetInfo.actionKind === 'create' || targetInfo.actionKind === 'update' || targetInfo.actionKind === 'detail'
+            ? targetInfo.actionKind
+            : undefined,
+            pageUrl,
+            pageEntry: pageUrl ?? baseUrl,
+          });
+        // The name fallback has already clicked the menu entry, so it is no
+        // longer present in the target page DOM. Record that clicked entry
+        // explicitly instead of asking the collector to click it a second time.
+        if (matchedTarget.selector && !explored.evidence.actionEntries.some((entry) =>
+          entry.selector === matchedTarget.selector || entry.ref === matchedTarget.selector,
+        )) {
+          explored.evidence.actionEntries.push({
+            actionKind: targetInfo.actionKind ?? 'other',
+            ref: matchedTarget.selector,
+            selector: matchedTarget.selector,
+            text: name,
+            triggerable: true,
+            observed: true,
+          });
+        }
+        all.push(...explored.raw);
+        evidence[featureId] = explored.evidence;
         this.logger.info('orchestrator', `case: click-by-name "${name}" -> ${els.length} elements`);
+        break;
       } catch (e) {
         this.logger.warn('orchestrator', `case: click-by-name failed for "${name}": ${e instanceof Error ? e.message : e}`);
       }
+      }
     }
-    this.logger.info('orchestrator', `case fallback by feature names: ${all.length} elements from ${names.length} names`);
-    return all;
+    this.logger.info('orchestrator', `case fallback by feature names: ${all.length} elements from ${targets.length} feature-bound names`);
+    return { elements: all, evidence };
   }
 
   /** 运行整条流水线 */
@@ -490,35 +742,108 @@ export class PipelineOrchestrator {
         moduleTree: exploreOutput.moduleTree,
         systemName: input.feature?.systemName ?? input.login.systemId,
         confirmedOnly: input.feature?.confirmedOnly ?? false,
+        designSources: input.feature?.designSources,
       };
       const featureOutput = await stageFeature.run(featureInput);
       this.logger.info('orchestrator', `[3/6] feature finished: rows=${featureOutput.featureTable.length}`);
+      const storedArtifact = await this.store.getFeatureArtifact(input.login.systemId).catch(() => null);
+      const existingFeatureArtifact = storedArtifact && !Array.isArray(storedArtifact) && storedArtifact.version === 2 ? storedArtifact : undefined;
+      const mergedFeatureArtifact = mergeFeatureArtifact(existingFeatureArtifact, {
+        table: featureOutput.featureTable,
+        featurePaths: featureOutput.featurePaths,
+        featureProfiles: featureOutput.featureProfiles,
+        featureEvidence: featureOutput.featureEvidence,
+        provenance: featureOutput.provenance,
+        designSources: input.feature?.designSources?.map((source) => source.name ?? source.kind),
+      });
+      const caseFeatureArtifact = alignArtifactToFeatureTable(mergedFeatureArtifact, featureOutput.featureTable);
 
       // 4. Case
       this.logger.info('orchestrator', '[4/6] case started');
 
-      // === 二次探索：按功能点 featurePaths（来自功能点阶段，根因解法）提取真实页面元素 ===
-      let exploredElements: ExploredElement[] = [];
+      // === 二次探索：按功能点 featurePaths（来自功能点阶段，根因解法）隔离采集真实页面证据 ===
+      // T4：改为按 featureId 隔离的 Record<featureId, FeatureEvidence>，杜绝跨功能点串用
+      let featureEvidence: Record<string, FeatureEvidence> = {};
       try {
         const scope = input.case?.scope ?? 'all';
         const selectedModuleIds = input.case?.selectedModuleIds;
-        exploredElements = await this.exploreByFeaturePaths(
-          engine,
-          featureOutput.featurePaths,
-          featureOutput.featureTable,
-          selectedModuleIds,
+        const missingFeatureIds = collectMissingFeatureIds(
+          caseFeatureArtifact.table,
           scope,
-          input.login.systemUrl,
+          selectedModuleIds,
+          caseFeatureArtifact.featurePaths,
+          caseFeatureArtifact.featureProfiles,
+          caseFeatureArtifact.featureEvidence,
+          input.login.systemId,
+          input.case?.featureRevision,
         );
+        if (missingFeatureIds.size > 0) {
+          const coll = await this.exploreFeatureEvidenceMap(
+            engine,
+            caseFeatureArtifact.featurePaths,
+            caseFeatureArtifact.table,
+            caseFeatureArtifact.featureProfiles,
+            selectedModuleIds,
+            scope,
+            input.login.systemUrl,
+            missingFeatureIds,
+            input.login.systemId,
+            input.case?.featureRevision,
+          );
+          featureEvidence = mergeFeatureEvidence(
+            caseFeatureArtifact.featureEvidence,
+            retainConcreteEvidence(coll.evidence),
+            existingFeatureArtifact?.featureProfiles,
+            caseFeatureArtifact.featureProfiles,
+          );
+          const remainingMissingFeatureIds = collectMissingFeatureIds(
+            caseFeatureArtifact.table,
+            scope,
+            selectedModuleIds,
+            caseFeatureArtifact.featurePaths,
+            caseFeatureArtifact.featureProfiles,
+            featureEvidence,
+            input.login.systemId,
+            input.case?.featureRevision,
+          );
+          if (remainingMissingFeatureIds.size > 0) {
+            const fallback = await this.exploreByFeatureNames(
+              engine,
+              caseFeatureArtifact.table,
+              input.login.systemUrl,
+              remainingMissingFeatureIds,
+              caseFeatureArtifact.featureProfiles,
+              input.login.systemId,
+              input.case?.featureRevision,
+            );
+            featureEvidence = mergeFeatureEvidence(
+              featureEvidence,
+              retainConcreteEvidence(fallback.evidence),
+              existingFeatureArtifact?.featureProfiles,
+              caseFeatureArtifact.featureProfiles,
+            );
+          }
+        }
       } catch (e) {
         this.logger.warn('orchestrator', `case secondary exploration failed: ${e instanceof Error ? e.message : e}`);
       }
+      const mergedFeatureEvidence = mergeFeatureEvidence(
+        caseFeatureArtifact.featureEvidence,
+        featureEvidence,
+        existingFeatureArtifact?.featureProfiles,
+        mergedFeatureArtifact.featureProfiles,
+      );
 
       const caseInput: CaseInput = {
-        featureTable: featureOutput.featureTable,
+        featureTable: caseFeatureArtifact.table,
+        systemId: input.login.systemId,
+        featureRevision: input.case?.featureRevision,
         scope: input.case?.scope ?? 'all',
         selectedModuleIds: input.case?.selectedModuleIds,
-        featurePaths: featureOutput.featurePaths,
+        regenerateSelected: input.case?.regenerateSelected ?? false,
+        currentCaseWorkbook: input.case?.currentCaseWorkbook,
+        featurePaths: caseFeatureArtifact.featurePaths,
+        featureProfiles: caseFeatureArtifact.featureProfiles,
         metaConfig: input.case?.metaConfig ?? {
           systemName: input.login.systemId,
           testPointId: '',
@@ -532,20 +857,27 @@ export class PipelineOrchestrator {
           precondition: '系统已登录并可访问',
         },
         aiConfig: input.case?.aiConfig,
-        exploredElements: exploredElements.length > 0 ? exploredElements : undefined,
+        featureEvidence: Object.keys(mergedFeatureEvidence).length > 0
+          ? mergedFeatureEvidence
+          : undefined,
       };
-      // AI 双模：enabled 时注入默认 AI 客户端；否则模板生成
+      // AI 双模：任务级依赖注入（spec §6.5 / §10）。启用但无有效配置 → 生成前阻断，不静默回退无 AI。
       const caseAiEnabled = input.case?.aiConfig?.enabled === true;
+      let caseAiClient: AIClient | undefined;
       if (caseAiEnabled) {
+        const cfg = input.case?.aiConfig?.configId ? getProvider(input.case.aiConfig.configId) : getDefault();
+        if (!isUsableAIProvider(cfg)) {
+          throw new stageCase.CaseGenerationBlockedError(
+            `测试用例 AI 已开启但未配置有效模型${input.case?.aiConfig?.configId ? `（${input.case.aiConfig.configId}）` : '（无默认配置）'}，请在生成前配置后再试`,
+          );
+        }
         try {
-          const cfg = getDefault();
-          if (cfg) stageCase.setAIClient(createAIClient(cfg));
-        } catch {
-          /* 无默认 provider → 模板兜底 */
+          caseAiClient = createAIClient(cfg);
+        } catch (e) {
+          throw new stageCase.CaseGenerationBlockedError(`测试用例 AI 客户端构建失败: ${e instanceof Error ? e.message : e}`);
         }
       }
-      const caseOutput = await stageCase.run(caseInput);
-      stageCase.setAIClient(null); // 复位，避免跨调用泄漏
+      const caseOutput = await stageCase.run(caseInput, { aiClient: caseAiClient });
       this.logger.info('orchestrator', `[4/6] case finished: sheets=${caseOutput.caseWorkbook.length}`);
 
       // 5. Execute
@@ -600,8 +932,15 @@ export class PipelineOrchestrator {
       this.logger.info('orchestrator', `[6/6] defect finished: groups=${defectOutput.defectTable.length}`);
 
       // 持久化结果
-      await this.store.saveFeatureTable(input.login.systemId, featureOutput.featureTable);
-      await this.store.saveCaseTable(input.login.systemId, caseOutput.caseWorkbook);
+      await this.store.saveFeatureArtifact(input.login.systemId, {
+        ...mergedFeatureArtifact,
+        featureEvidence: Object.keys(mergedFeatureEvidence).length > 0 ? mergedFeatureEvidence : undefined,
+      });
+      if (caseOutput.generation) {
+        await this.persistCaseProduct(input.login.systemId, caseOutput.caseWorkbook, caseOutput.generation);
+      } else {
+        await this.store.saveCaseTable(input.login.systemId, caseOutput.caseWorkbook);
+      }
       await this.store.saveExecution(input.login.systemId, execOutput.executionReport);
 
       this.logger.info('orchestrator', 'pipeline completed successfully');
@@ -631,6 +970,117 @@ export class PipelineOrchestrator {
 
     switch (stageName) {
       case 'login': {
+        // 已登录复用短路：避免反复登录（反复 launch 新浏览器撞验证码）。
+        // 若本系统已有活跃登录浏览器且当前已离开登录页（即已登录态），
+        // 直接复用，不再重新 launch 浏览器、不再触发验证码。
+        // 注意：仅做 orchestrator 层会话复用判断，不改动 stage-login 业务代码（计划 §15 禁止范围）。
+        const loginInputForShortcut = input as LoginInput;
+        const shortcutSystemId = loginInputForShortcut.systemId;
+        // 子系统登录（parentPortalUrl 存在）不做「已登录即复用」短路：
+        // 既有浏览器可能停在门户工作台（门户已登录但尚未进入子系统），DOM 关键词
+        // （工作台/控制台）会把它误判为登录成功，短路直接返回 ok 并把**门户 URL** 当
+        // capturedUrl —— 正是「子系统登录不跳转、点击探索一直探索门户」的直接根因。
+        // 此类请求委托 stage-login 的 confirm 流程完成「整体路径判定当前页是否在子系统 →
+        // 检测子系统登录态 → 捕获子系统会话」（见下方委托分支）。
+        const subsystemDelegation =
+          !!loginInputForShortcut.parentPortalUrl &&
+          (loginInputForShortcut.mode === 'credential' || loginInputForShortcut.mode === 'manual-takeover');
+        // 已登录/已接管复用短路：避免反复登录（反复 launch 新浏览器撞验证码）。
+        // 判定依据：本系统是否已有活跃接管浏览器（无论当前停在登录页还是应用页）。
+        // 只要存在，就复用该浏览器检测登录态——绝不再开新浏览器（否则验证码站点会
+        // 每次都重撞验证码，正是用户报告的"反复登录"根因）。
+        // 注意：仅做 orchestrator 层会话复用判断，不改动 stage-login 业务代码（计划 §15 禁止范围）。
+        if (shortcutSystemId && !subsystemDelegation) {
+          const existingEngine = getTakeoverEngine(shortcutSystemId);
+          if (existingEngine) {
+            try {
+              const curUrl = await existingEngine.getCurrentUrl();
+              const onLoginPage = !!curUrl && isLoginPageUrl(curUrl);
+              this.logger.info('orchestrator', `runStage: login reuse existing browser for ${shortcutSystemId} (url=${curUrl}, onLoginPage=${onLoginPage}), skip relaunch`);
+              // 免登录模式：本就无登录概念，只要浏览器在即视为已登录，直接复用（不重新检测）。
+              if (loginInputForShortcut.mode === 'no-login') {
+                const stored = await this.tryReuseSession(shortcutSystemId);
+                const reused: LoginOutput & { capturedUrl?: string } = {
+                  loginStatus: 'ok',
+                  cookies: stored?.cookies ?? [],
+                  expiresAt: stored?.expiresAt ?? Date.now() + 8 * 60 * 60 * 1000,
+                  sessionHandle: stored ?? {
+                    sessionId: 'reused',
+                    systemId: shortcutSystemId,
+                    loginStatus: 'ok',
+                    cookies: [],
+                    headers: {},
+                    tokens: [],
+                    expiresAt: Date.now() + 8 * 60 * 60 * 1000,
+                    loginAt: Date.now(),
+                    loginMode: 'no-login',
+                    detectionReason: '复用既有免登录浏览器',
+                  },
+                  capturedUrl: curUrl,
+                };
+                return reused;
+              }
+              // 复用既有引擎检测登录态：在登录页=待用户补完（barrier），已离开=已登录（ok）。
+              const dom = await extractDomWithRetry(existingEngine);
+              const det = dom ? detectLoginState({ dom }) : { status: 'barrier' as const, reason: '无法读取登录页' };
+              if (det.status === 'ok') {
+                const stored = await this.tryReuseSession(shortcutSystemId);
+                const reused: LoginOutput & { capturedUrl?: string } = {
+                  loginStatus: 'ok',
+                  cookies: stored?.cookies ?? [],
+                  expiresAt: stored?.expiresAt ?? Date.now() + 8 * 60 * 60 * 1000,
+                  sessionHandle: stored ?? {
+                    sessionId: 'reused',
+                    systemId: shortcutSystemId,
+                    loginStatus: 'ok',
+                    cookies: [],
+                    headers: {},
+                    tokens: [],
+                    expiresAt: Date.now() + 8 * 60 * 60 * 1000,
+                    loginAt: Date.now(),
+                    loginMode: loginInputForShortcut.mode,
+                  },
+                  capturedUrl: curUrl,
+                };
+                return reused;
+              }
+              // 仍在登录页：返回 barrier，提示用户在已有浏览器中完成登录后再次确认。
+              // 关键：不重新 launch，复用同一浏览器，避免验证码反复出现。
+              return {
+                loginStatus: 'barrier',
+                cookies: [],
+                expiresAt: 0,
+                sessionHandle: {
+                  sessionId: 'reuse-barrier',
+                  systemId: shortcutSystemId,
+                  loginStatus: 'barrier',
+                  cookies: [],
+                  headers: {},
+                  tokens: [],
+                  expiresAt: 0,
+                  loginMode: loginInputForShortcut.mode,
+                  detectionReason: '已有浏览器在等待登录，请在浏览器中完成登录（含验证码）后再次点击「确认登录」',
+                },
+              };
+            } catch (e) {
+              this.logger.warn('orchestrator', `runStage: login reuse check failed for ${shortcutSystemId}: ${e instanceof Error ? e.message : e}`);
+            }
+          }
+        }
+
+        // 子系统登录委托：既有活跃浏览器时，不走上方短路，改由 stage-login 的 confirm
+        // 流程处理（复用既有浏览器，不 relaunch、不撞验证码）：
+        // confirm 内部按「整体路径前缀（host+pathname+hash）」判定当前页是否已在子系统
+        // 中（D:\test 人工接管模式，全程不 navigate）：在子系统且无登录表单 → ok，此时
+        // 当前 URL 即子系统入口，capturedUrl 由下方按 getCurrentUrl 记录 → 探索阶段
+        // 随之探索子系统；仍在门户 → barrier，提示用户手动进入子系统后再次确认。
+        // launch/confirm 两种入口统一转为 confirm：launch 场景下若浏览器已停在子系统则
+        // 直接完成（「登录后自动跳转子系统」由用户手动导航完成）；否则返回 barrier 等待。
+        if (shortcutSystemId && subsystemDelegation && getTakeoverEngine(shortcutSystemId)) {
+          this.logger.info('orchestrator', `runStage: login subsystem delegation for ${shortcutSystemId} (reuse browser, delegate to stage-login confirm for subsystem navigation)`);
+          input = { ...input, takeoverAction: 'confirm' };
+        }
+
         const loginStage = createLoginStage({ engineFactory: this.engineFactory, store: this.store });
         const output = await loginStage.run(input as LoginInput);
         this.logger.info('orchestrator', `runStage: login finished: ${output.loginStatus}`);
@@ -704,6 +1154,7 @@ export class PipelineOrchestrator {
             ...this.engineConfig,
             ...(storedState ? { storageState: storedState as PlaywrightStorageState } : {}),
             ...(exploreAi ? { ai: exploreAi } : {}),
+            ...(rawInput.readOnlyClickPolicy ? { readOnlyClickPolicy: rawInput.readOnlyClickPolicy } : {}),
           };
           engine = this.engineFactory(engineConfigWithState);
           await engine.launch();
@@ -766,14 +1217,20 @@ export class PipelineOrchestrator {
         const featurePaths: Record<string, string> | undefined = rawInput.featurePaths;
         const systemUrl: string | undefined = rawInput.systemUrl;
 
-        // AI 双模：enabled 时注入默认 AI 客户端；否则模板生成
+        // AI 双模：任务级依赖注入（spec §6.5 / §10）。启用但无有效配置 → 生成前阻断，不静默回退无 AI。
         const aiEnabled = rawInput.aiConfig?.enabled === true;
+        let aiClient: AIClient | undefined;
         if (aiEnabled) {
+          const cfg = rawInput.aiConfig?.configId ? getProvider(rawInput.aiConfig.configId) : getDefault();
+          if (!isUsableAIProvider(cfg)) {
+            throw new stageCase.CaseGenerationBlockedError(
+              `测试用例 AI 已开启但未配置有效模型${rawInput.aiConfig?.configId ? `（${rawInput.aiConfig.configId}）` : '（无默认配置）'}，请在生成前配置后再试`,
+            );
+          }
           try {
-            const cfg = getDefault();
-            if (cfg) stageCase.setAIClient(createAIClient(cfg));
-          } catch {
-            /* 无默认 provider → 模板兜底 */
+            aiClient = createAIClient(cfg);
+          } catch (e) {
+            throw new stageCase.CaseGenerationBlockedError(`测试用例 AI 客户端构建失败: ${e instanceof Error ? e.message : e}`);
           }
         }
 
@@ -781,54 +1238,164 @@ export class PipelineOrchestrator {
         // featurePaths 缺失/无效时，重跑探索重建 featurePaths，仍失败则按功能点名称在页面找对应功能。
         // 绝不静默模板直出 —— 模板生成必须有明确告警（bug-fixing: 根因=探索未产 url，不能靠用例阶段掩盖）。
         const systemId: string | undefined = rawInput.systemId ?? rawInput.sessionHandle?.systemId;
-        let exploredElements: ExploredElement[] = rawInput.exploredElements ?? [];
-        const hasUsablePaths = !!featurePaths && Object.values(featurePaths).some((u) =>
+        // Public exploredElements is compatibility input only; it cannot satisfy the
+        // per-feature evidence gate or suppress precise exploration.
+        const suppliedEvidence: Record<string, FeatureEvidence> = { ...(rawInput.featureEvidence ?? {}) };
+        const existingArtifact = systemId ? await this.store.getFeatureArtifact(systemId).catch(() => null) : null;
+        const existingV2 = existingArtifact && !Array.isArray(existingArtifact) && existingArtifact.version === 2 ? existingArtifact : undefined;
+        // 本次传入的 featureTable 是生成权威输入（来自 UI 当前选中的功能点表）。
+        // 历史 artifact 可能残留其他系统的脏功能点表，必须按本次功能点 ID 对齐过滤，
+        // 否则会产生"82 条垃圾功能点 + 0 个有效用例组"的污染（bug-fixing: 脏数据合并）。
+        // 仅复用与本次功能点 ID 匹配的 paths/evidence/profiles/provenance/designSources。
+        const incomingFeatureIds = new Set(featureTable.flat().map((row) => row[8]).filter(Boolean));
+        const alignedExisting = existingV2 && incomingFeatureIds.size > 0 ? {
+          ...existingV2,
+          table: existingV2.table.filter((group) => group.some((r) => incomingFeatureIds.has(r[8] ?? ''))),
+          featurePaths: Object.fromEntries(Object.entries(existingV2.featurePaths ?? {}).filter(([id]) => incomingFeatureIds.has(id))),
+          featureProfiles: existingV2.featureProfiles?.filter((p) => incomingFeatureIds.has(p.featureId)),
+          featureEvidence: Object.fromEntries(Object.entries(existingV2.featureEvidence ?? {}).filter(([id]) => incomingFeatureIds.has(id))),
+        } : existingV2;
+        const mergedArtifact = mergeFeatureArtifact(alignedExisting, {
+          table: featureTable,
+          featurePaths,
+          featureProfiles: rawInput.featureProfiles as FeatureProfile[] | undefined,
+          featureEvidence: suppliedEvidence,
+          provenance: undefined,
+          designSources: undefined,
+        });
+        // The submitted confirmed table is the only authoritative case input.
+        // Historical artifact rows may provide matching metadata, never extra features.
+        const resolvedTable = featureTable;
+        const resolvedPaths = mergedArtifact.featurePaths;
+        const resolvedProfiles = mergedArtifact.featureProfiles;
+        let evidenceMap = mergeFeatureEvidence(
+          mergedArtifact.featureEvidence,
+          undefined,
+          existingV2?.featureProfiles,
+          rawInput.featureProfiles as FeatureProfile[] | undefined,
+        );
+        const missingFeatureIds = collectMissingFeatureIds(
+          resolvedTable,
+          scope,
+          selectedModuleIds,
+          resolvedPaths,
+          resolvedProfiles,
+          evidenceMap,
+          systemId,
+          rawInput.featureRevision,
+        );
+        const hasUsablePaths = !!resolvedPaths && Object.values(resolvedPaths).some((u) =>
           /^https?:\/\//i.test(u) || u.startsWith('/') || u.startsWith('click:'),
         );
-        if (exploredElements.length === 0 && (hasUsablePaths || featureTable.flat().length > 0)) {
+        if (missingFeatureIds.size > 0 && (hasUsablePaths || featureTable.flat().length > 0)) {
           try {
-            // 优先复用登录浏览器（会话随浏览器存活），否则新建引擎并恢复持久化 storageState。
-            // 旧实现无条件新建未登录浏览器，导航到真实系统会撞登录页、抽不到真实元素。
+            // 优先复用登录浏览器；否则恢复 storageState，再回退到 SessionHandle。
+            // case 阶段也必须在已登录上下文中二次探索，不能新建匿名浏览器后扫描登录页。
             const takeoverEngine = systemId ? getTakeoverEngine(systemId) : undefined;
             const storedState = systemId && !takeoverEngine ? await this.store.getStorageState(systemId) : null;
             const engineConfig: EngineConfig = {
               ...this.engineConfig,
               ...(storedState ? { storageState: storedState as PlaywrightStorageState } : {}),
+              ...(rawInput.readOnlyClickPolicy ? { readOnlyClickPolicy: rawInput.readOnlyClickPolicy } : {}),
             };
             const engine = takeoverEngine ?? this.engineFactory(engineConfig);
             if (!takeoverEngine) await engine.launch();
-            try {
-              if (hasUsablePaths) {
-                exploredElements = await this.exploreByFeaturePaths(
-                  engine, featurePaths, featureTable, selectedModuleIds, scope, systemUrl,
-                );
-              }
-
-              // ② featurePaths 空/无效 → 重跑探索重建（降级路径现已带 url 兜底）
-              if (exploredElements.length === 0) {
-                this.logger.warn('orchestrator', `case: featurePaths 缺失或无效，重跑探索重建（systemId=${systemId ?? '?'}）`);
-                const freshTree = await engine.exploreModules().catch((e) => {
-                  this.logger.warn('orchestrator', `case: re-explore failed: ${e instanceof Error ? e.message : e}`);
-                  return [];
+            if (!takeoverEngine && !storedState) {
+              const session = rawInput.sessionHandle?.expiresAt > Date.now()
+                ? rawInput.sessionHandle as SessionHandle
+                : systemId ? await this.tryReuseSession(systemId) : null;
+              if (session) {
+                // Browser session rule: navigate to http(s) before injecting cookies/headers/tokens.
+                if (systemUrl) await engine.navigate(systemUrl);
+                await engine.applySession({
+                  cookies: session.cookies,
+                  headers: session.headers,
+                  tokens: session.tokens,
                 });
-                if (freshTree.length > 0) {
-                  const systemName = (rawInput.metaConfig as { systemName?: string } | undefined)?.systemName ?? systemId ?? 'system';
-                  const fresh = await stageFeature.run({ moduleTree: freshTree, systemName, confirmedOnly: false });
-                  const freshPaths = fresh.featurePaths ?? {};
-                  const freshUsable = Object.values(freshPaths).some((u) =>
-                    /^https?:\/\//i.test(u) || u.startsWith('/') || u.startsWith('click:'),
-                  );
-                  if (freshUsable) {
-                    exploredElements = await this.exploreByFeaturePaths(
-                      engine, freshPaths, fresh.featureTable.length ? fresh.featureTable : featureTable, selectedModuleIds, scope, systemUrl,
-                    );
-                  }
+                this.logger.info('orchestrator', `case: restored SessionHandle for ${systemId}`);
+              }
+            } else if (!takeoverEngine && storedState && systemUrl) {
+              // storageState is applied by the browser context; navigate before extraction.
+              await engine.navigate(systemUrl);
+            }
+            // 复用登录会话并按路径进入：入口取登录后应用页（capturedUrl 优先，避免直接打开目标 URL 落在登录页），
+            // 导航入口并验证登录态；若落在登录页则标记会话失效并跳过二次探索（不反复重新登录）。
+            const entryUrl = systemId
+              ? ((await this.resolveCaseEntryUrl(systemId)) ?? systemUrl)
+              : systemUrl;
+            let sessionValid = true;
+            // 入口本身是登录页（capturedUrl 未保存 = 登录未完成/未记录）：无有效会话，直接标记需要登录/人工接管，不在登录页空跑。
+            if (entryUrl && isLoginPageUrl(entryUrl)) {
+              this.logger.warn('orchestrator', `case: 入口 ${entryUrl} 为登录页（无 capturedUrl），需登录/人工接管后重试`);
+              sessionValid = false;
+            }
+            try {
+              if (engine && entryUrl && isSafeNavigationUrl(entryUrl)) {
+                await engine.navigate(entryUrl);
+                await engine.waitForTimeout(800);
+                const after = await engine.getCurrentUrl().catch(() => '');
+                if (after && isLoginPageUrl(after) && !isLoginPageUrl(entryUrl)) {
+                  this.logger.warn('orchestrator', `case: 登录会话失效（${after} 为登录页），跳过二次探索避免反复重新登录`);
+                  sessionValid = false;
                 }
               }
+            } catch (e) {
+              this.logger.warn('orchestrator', `case: 入口导航失败: ${e instanceof Error ? e.message : e}`);
+            }
+            try {
+              if (sessionValid) {
+                if (hasUsablePaths) {
+                  const coll = await this.exploreFeatureEvidenceMap(
+                    engine, resolvedPaths, resolvedTable, resolvedProfiles, selectedModuleIds, scope, entryUrl, missingFeatureIds,
+                    systemId, rawInput.featureRevision,
+                    );
+                  evidenceMap = mergeFeatureEvidence(evidenceMap, retainConcreteEvidence(coll.evidence), existingV2?.featureProfiles, resolvedProfiles);
+                }
 
-              // ③ 仍无有效定位 → 按功能点/测试点名称在页面找对应功能（用户明确要求）
-              if (exploredElements.length === 0) {
-                exploredElements = await this.exploreByFeatureNames(engine, featureTable, systemUrl);
+                // ③ 路径探索可能只覆盖部分功能点；名称兜底必须继续处理剩余缺失项（从入口按名称/菜单进入）。
+                const remainingMissingFeatureIds = collectMissingFeatureIds(
+                  resolvedTable,
+                  scope,
+                  selectedModuleIds,
+                  resolvedPaths,
+                  resolvedProfiles,
+                  evidenceMap,
+                  systemId,
+                  rawInput.featureRevision,
+                );
+                if (remainingMissingFeatureIds.size > 0) {
+                  const fallback = await this.exploreByFeatureNames(
+                    engine,
+                    resolvedTable,
+                    entryUrl,
+                    remainingMissingFeatureIds,
+                    resolvedProfiles,
+                    systemId,
+                    rawInput.featureRevision,
+                  );
+                  evidenceMap = mergeFeatureEvidence(evidenceMap, retainConcreteEvidence(fallback.evidence), existingV2?.featureProfiles, resolvedProfiles);
+                }
+              } else {
+                // 会话失效：缺失功能点明确 needs_review（不伪造证据、不反复自动登录）
+                for (const id of missingFeatureIds) {
+                  evidenceMap[id] = {
+                    featureId: id,
+                    ...(systemId ? { systemId } : {}),
+                    ...(rawInput.featureRevision ? { featureRevision: rawInput.featureRevision } : {}),
+                    pageEntry: entryUrl,
+                    actionKind: (resolvedProfiles ?? []).find((p) => p.featureId === id)?.actionKind ?? 'other',
+                    states: [],
+                    fields: [],
+                    tables: [],
+                    actionEntries: [],
+                    containers: [],
+                    evidenceLevel: 'needs_review',
+                    coverageKeys: [],
+                    needsReview: true,
+                    reviewReason: '登录会话失效（入口为登录页），请重新登录或人工接管后重试；未反复自动登录',
+                    uncovered: [{ kind: 'no_safe_sample', reason: '登录会话失效' }],
+                  };
+                }
               }
             } finally {
               // 复用登录浏览器不关闭（保持会话），新建引擎才关闭
@@ -838,20 +1405,52 @@ export class PipelineOrchestrator {
             this.logger.warn('orchestrator', `case engine launch failed: ${e instanceof Error ? e.message : e}`);
           }
         }
-        if (exploredElements.length === 0) {
-          this.logger.warn('orchestrator', 'case: 无任何探索证据（url 缺失且按名称兜底失败），退化为模板生成，请检查探索阶段菜单识别');
-        }
-
-        const caseInput: CaseInput = {
-          ...(input as CaseInput),
-          featureTable,
+        const unresolvedFeatureIds = collectMissingFeatureIds(
+          resolvedTable,
           scope,
           selectedModuleIds,
-          featurePaths,
-          exploredElements: exploredElements.length > 0 ? exploredElements : undefined,
-        };
-        const output = await stageCase.run(caseInput);
-        stageCase.setAIClient(null); // 复位，避免跨调用泄漏
+          resolvedPaths,
+          resolvedProfiles,
+          evidenceMap,
+          systemId,
+          rawInput.featureRevision,
+        );
+        if (unresolvedFeatureIds.size > 0) {
+          this.logger.warn('orchestrator', `case: ${unresolvedFeatureIds.size} 个功能点仍无专属探索证据，阻断对应功能点并保留当前产物`);
+        }
+
+        const caseInput = {
+          ...(input as CaseInput),
+          featureTable: resolvedTable,
+          scope,
+          selectedModuleIds,
+          featurePaths: resolvedPaths,
+          featureProfiles: resolvedProfiles,
+          featureEvidence: Object.keys(evidenceMap).length > 0 ? evidenceMap : undefined,
+        } as CaseInput;
+        const output = await stageCase.run(caseInput, { aiClient });
+        if (systemId && (existingV2 || Object.keys(evidenceMap).length > 0)) {
+          await this.store.saveFeatureArtifact(systemId, {
+            version: 2,
+            table: resolvedTable,
+            featurePaths: resolvedPaths,
+            featureProfiles: resolvedProfiles,
+            // The persisted artifact is the base, while current per-feature evidence wins only for IDs just collected.
+            featureEvidence: mergeFeatureEvidence(existingV2?.featureEvidence, evidenceMap, existingV2?.featureProfiles, resolvedProfiles),
+            provenance: mergedArtifact.provenance,
+            designSources: mergedArtifact.designSources,
+          }).catch((error) => this.logger.warn('orchestrator', `case: 保存 feature evidence 失败: ${error instanceof Error ? error.message : error}`));
+        }
+        // 用例产物落盘（spec §12 / §17.8）：单阶段路径必须持久化合并后的 workbook 与批次元数据，
+        // 否则生成的用例组仅停留在内存、刷新即丢失。
+        if (systemId) {
+          if (output.generation) {
+            await this.persistCaseProduct(systemId, output.caseWorkbook, output.generation);
+          } else {
+            await this.store.saveCaseTable(systemId, output.caseWorkbook);
+          }
+        }
+        // 任务级 AI 客户端随本次 run 注入，无进程级全局状态，无需复位
         this.logger.info('orchestrator', `runStage: case finished: sheets=${output.caseWorkbook.length}`);
         return output;
       }
@@ -955,6 +1554,19 @@ export class PipelineOrchestrator {
         if (proj?.systems?.some((s) => s.id === systemId)) return p.id;
       }
       return undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** 解析用例阶段二次探索的登录后入口 URL：capturedUrl 优先（登录后应用页），避免落在登录页 */
+  private async resolveCaseEntryUrl(systemId: string): Promise<string | undefined> {
+    try {
+      const pid = await this.findProjectIdBySystemId(systemId);
+      if (!pid) return undefined;
+      const project = await this.store.getProject(pid);
+      const sys = project?.systems?.find((item) => item.id === systemId) as (System & { capturedUrl?: string }) | undefined;
+      return sys?.capturedUrl;
     } catch {
       return undefined;
     }

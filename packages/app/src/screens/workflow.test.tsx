@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { AppProvider, useApp, initialState, loginModeLabel, loginStatusLabel, systemTypeLabel } from '../context';
+import {
+  useApp,
+  initialState,
+  loginModeLabel,
+  loginStatusLabel,
+  systemTypeLabel,
+} from '../context';
 import { Workbench } from '../screens/Workbench';
 import { Explore } from '../screens/Explore';
 import { Feature } from '../screens/Feature';
@@ -12,9 +18,10 @@ import { AIConfig } from '../screens/AIConfig';
 import { ProjectMgmt } from '../screens/ProjectMgmt';
 import { Knowledge } from '../screens/Knowledge';
 import type { AppState } from '../context';
+import type { CaseSheet } from '@test-platform/contracts';
 
 vi.mock('../context', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../context')>();
+  const actual = (await importOriginal()) as Record<string, unknown>;
   return {
     ...actual,
     useApp: vi.fn(),
@@ -26,17 +33,74 @@ const mockUseApp = vi.mocked(useApp);
 const createMockState = (overrides: Partial<AppState> = {}) => {
   const baseState = {
     ...initialState,
-    project: { id: 'p1', name: 'Test Project', type: 'standalone' as const, description: '测试项目', systemCount: 2, createdAt: '2024-01-01', lastActive: '今天', status: '活跃' as const },
-    system: { id: 's1', name: 'Test System', type: 'standalone' as const, url: 'http://test.com', captured: true, parent: 'Test Project', loginMode: 'no-login' as const, loginStatus: 'logged_in' as const },
-    projects: [{ id: 'p1', name: 'Test Project', type: 'standalone' as const, description: '', systemCount: 2, createdAt: '2024-01-01', lastActive: '今天', status: '活跃' as const }],
+    project: {
+      id: 'p1',
+      name: 'Test Project',
+      type: 'standalone' as const,
+      description: '测试项目',
+      systemCount: 2,
+      createdAt: '2024-01-01',
+      lastActive: '今天',
+      status: '活跃' as const,
+    },
+    system: {
+      id: 's1',
+      name: 'Test System',
+      type: 'standalone' as const,
+      url: 'http://test.com',
+      captured: true,
+      parent: 'Test Project',
+      loginMode: 'no-login' as const,
+      loginStatus: 'logged_in' as const,
+    },
+    projects: [
+      {
+        id: 'p1',
+        name: 'Test Project',
+        type: 'standalone' as const,
+        description: '',
+        systemCount: 2,
+        createdAt: '2024-01-01',
+        lastActive: '今天',
+        status: '活跃' as const,
+      },
+    ],
     systems: [
-      { id: 's1', name: 'Test System', type: 'standalone' as const, url: 'http://test.com', captured: true, parent: 'Test Project', loginMode: 'no-login' as const, loginStatus: 'logged_in' as const },
-      { id: 's2', name: 'Sub System', type: 'subsystem' as const, url: 'http://sub.test.com', captured: true, parent: 'Test System', loginMode: 'credential' as const, loginStatus: 'logged_out' as const, parentPortalId: 's1', parentPortalPath: { name: 'Test System', url: 'http://test.com' } },
+      {
+        id: 's1',
+        name: 'Test System',
+        type: 'standalone' as const,
+        url: 'http://test.com',
+        captured: true,
+        parent: 'Test Project',
+        loginMode: 'no-login' as const,
+        loginStatus: 'logged_in' as const,
+      },
+      {
+        id: 's2',
+        name: 'Sub System',
+        type: 'subsystem' as const,
+        url: 'http://sub.test.com',
+        captured: true,
+        parent: 'Test System',
+        loginMode: 'credential' as const,
+        loginStatus: 'logged_out' as const,
+        parentPortalId: 's1',
+        parentPortalPath: { name: 'Test System', url: 'http://test.com' },
+      },
     ],
     featureRows: [],
     featureConfirmed: false,
     caseRows: [],
-    metaHeader: { system: 'Test System', testPointId: 'TP-001', testPoint: '登录功能', testers: '张三', clientStaff: '李四', times: '2024-01-01', rules: '通过/失败' },
+    metaHeader: {
+      system: 'Test System',
+      testPointId: 'TP-001',
+      testPoint: '登录功能',
+      testers: '张三',
+      clientStaff: '李四',
+      times: '2024-01-01',
+      rules: '通过/失败',
+    },
     execMatrix: [],
     execModules: [],
     execBrowsers: ['Win11·Chrome', 'Win11·Edge', 'macOS·Safari'],
@@ -78,6 +142,7 @@ const setupDefaultMock = (overrides: Partial<AppState> = {}) => {
     runPipelineExplore: vi.fn().mockResolvedValue({ moduleTree: [] }),
     runPipelineFeature: vi.fn().mockResolvedValue({ featureTable: [] }),
     runPipelineCase: vi.fn().mockResolvedValue({ caseWorkbook: [] }),
+    getFeatureModules: vi.fn(() => ({ subModules: [], mainModules: [] })),
     runPipelineExecute: vi.fn().mockResolvedValue({ executionReport: [] }),
     runPipelineDefect: vi.fn().mockResolvedValue({ defectTable: [] }),
     featureAddRow: vi.fn(),
@@ -90,8 +155,12 @@ const setupDefaultMock = (overrides: Partial<AppState> = {}) => {
     featureConfirmAll: vi.fn(),
     featureUnconfirmAll: vi.fn(),
     saveFeatureTable: vi.fn(),
-    reloadFeatureTable: vi.fn(async () => { toastSpy('暂无数据可加载'); }),
-    loadFeatureTemplate: vi.fn(() => { toastSpy('已加载固定模板'); }),
+    reloadFeatureTable: vi.fn(async () => {
+      toastSpy('暂无数据可加载');
+    }),
+    loadFeatureTemplate: vi.fn(() => {
+      toastSpy('已加载固定模板');
+    }),
     caseAddRow: vi.fn(),
     caseRemoveRow: vi.fn(),
     caseUpdateRow: vi.fn(),
@@ -233,7 +302,19 @@ describe('Workbench 工作台', () => {
     mockUseApp.mockReturnValue({
       ...mock,
       system: { ...createMockState().system, loginStatus: 'logged_in' },
-      featureRows: [{ seq: 'F1', type: '功能', chapter: 'C1', system: 'S', mainModule: 'M', subModule: 'SM', feature: 'F', testPoint: 'TP', testPointId: 'TP-1' }],
+      featureRows: [
+        {
+          seq: 'F1',
+          type: '功能',
+          chapter: 'C1',
+          system: 'S',
+          mainModule: 'M',
+          subModule: 'SM',
+          feature: 'F',
+          testPoint: 'TP',
+          testPointId: 'TP-1',
+        },
+      ],
     });
     render(<Workbench />);
     await fireEvent.click(screen.getByText('🧪 用例'));
@@ -245,7 +326,18 @@ describe('Workbench 工作台', () => {
     mockUseApp.mockReturnValue({
       ...mock,
       system: { ...createMockState().system, loginStatus: 'logged_in' },
-      caseRows: [{ caseNo: 'C1', content: 'Test', step: '1', operation: 'Click', expected: 'OK', firstResult: '\\', regressionResult: '\\', conclusion: '\\' }],
+      caseRows: [
+        {
+          caseNo: 'C1',
+          content: 'Test',
+          step: '1',
+          operation: 'Click',
+          expected: 'OK',
+          firstResult: '\\',
+          regressionResult: '\\',
+          conclusion: '\\',
+        },
+      ],
     });
     render(<Workbench />);
     await fireEvent.click(screen.getByText('▶ 执行'));
@@ -289,7 +381,12 @@ describe('Workbench 工作台', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      system: { ...createMockState().system, type: 'subsystem', parent: 'Parent System', loginStatus: 'logged_in' },
+      system: {
+        ...createMockState().system,
+        type: 'subsystem',
+        parent: 'Parent System',
+        loginStatus: 'logged_in',
+      },
     });
     render(<Workbench />);
     expect(screen.getByText(/Parent System/)).toBeInTheDocument();
@@ -346,9 +443,14 @@ describe('Explore 系统探索', () => {
     });
     render(<Explore />);
     fireEvent.click(screen.getByRole('button', { name: '+ 新增模块' }));
-    fireEvent.change(document.querySelector('.modal .text-input')!, { target: { value: 'New Module' } });
+    fireEvent.change(document.querySelector('.modal .text-input')!, {
+      target: { value: 'New Module' },
+    });
     fireEvent.click(screen.getByRole('button', { name: '确认添加' }));
-    expect(mock.exploreAddModule).toHaveBeenCalledWith('m1', expect.objectContaining({ name: 'New Module' }));
+    expect(mock.exploreAddModule).toHaveBeenCalledWith(
+      'm1',
+      expect.objectContaining({ name: 'New Module' }),
+    );
   });
 
   it('新增模块名称为空时应提示', () => {
@@ -401,7 +503,10 @@ describe('Explore 系统探索', () => {
     const mockCreateObjectURL = vi.fn(() => 'blob:mock');
     const mockRevokeObjectURL = vi.fn();
     vi.stubGlobal('Blob', mockBlob);
-    vi.stubGlobal('URL', { createObjectURL: mockCreateObjectURL, revokeObjectURL: mockRevokeObjectURL });
+    vi.stubGlobal('URL', {
+      createObjectURL: mockCreateObjectURL,
+      revokeObjectURL: mockRevokeObjectURL,
+    });
 
     render(<Explore />);
     fireEvent.click(screen.getByText('导出模块树'));
@@ -430,7 +535,9 @@ describe('Explore 系统探索', () => {
       ...mock,
       system: { ...createMockState().system, url: 'http://test.com/explore' },
       moduleTree: [],
-      pendingTree: [{ seq: 1, path: '/check/search', module: 'Search', confidence: '0.95', status: '待入树' }],
+      pendingTree: [
+        { seq: 1, path: '/check/search', module: 'Search', confidence: '0.95', status: '待入树' },
+      ],
     });
     render(<Explore />);
     expect(screen.getAllByText(/\/check\/search/).length).toBeGreaterThan(0);
@@ -444,7 +551,17 @@ describe('Feature 功能点审核', () => {
     mockUseApp.mockReturnValue({
       ...mock,
       featureRows: [
-        { seq: 'F1', type: '功能', chapter: 'C1', system: 'S', mainModule: 'M', subModule: 'SM', feature: '功能点1', testPoint: 'TP1', testPointId: 'TP-1' },
+        {
+          seq: 'F1',
+          type: '功能',
+          chapter: 'C1',
+          system: 'S',
+          mainModule: 'M',
+          subModule: 'SM',
+          feature: '功能点1',
+          testPoint: 'TP1',
+          testPointId: 'TP-1',
+        },
       ],
     });
     render(<Feature />);
@@ -455,7 +572,19 @@ describe('Feature 功能点审核', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      featureRows: [{ seq: 'F1', type: '功能', chapter: 'C1', system: 'S', mainModule: 'M', subModule: 'SM', feature: 'F1', testPoint: 'TP1', testPointId: 'TP-1' }],
+      featureRows: [
+        {
+          seq: 'F1',
+          type: '功能',
+          chapter: 'C1',
+          system: 'S',
+          mainModule: 'M',
+          subModule: 'SM',
+          feature: 'F1',
+          testPoint: 'TP1',
+          testPointId: 'TP-1',
+        },
+      ],
     });
     render(<Feature />);
     fireEvent.click(screen.getByText('+ 新增行'));
@@ -466,7 +595,19 @@ describe('Feature 功能点审核', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      featureRows: [{ seq: 'F1', type: '功能', chapter: 'C1', system: 'S', mainModule: 'M', subModule: 'SM', feature: 'F1', testPoint: 'TP1', testPointId: 'TP-1' }],
+      featureRows: [
+        {
+          seq: 'F1',
+          type: '功能',
+          chapter: 'C1',
+          system: 'S',
+          mainModule: 'M',
+          subModule: 'SM',
+          feature: 'F1',
+          testPoint: 'TP1',
+          testPointId: 'TP-1',
+        },
+      ],
     });
     render(<Feature />);
     fireEvent.click(screen.getAllByText('×')[0]);
@@ -477,7 +618,19 @@ describe('Feature 功能点审核', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      featureRows: [{ seq: 'F1', type: '功能', chapter: 'C1', system: 'S', mainModule: 'M', subModule: 'SM', feature: '可编辑内容', testPoint: 'TP1', testPointId: 'TP-1' }],
+      featureRows: [
+        {
+          seq: 'F1',
+          type: '功能',
+          chapter: 'C1',
+          system: 'S',
+          mainModule: 'M',
+          subModule: 'SM',
+          feature: '可编辑内容',
+          testPoint: 'TP1',
+          testPointId: 'TP-1',
+        },
+      ],
     });
     render(<Feature />);
     fireEvent.click(screen.getByText('可编辑内容'));
@@ -488,7 +641,19 @@ describe('Feature 功能点审核', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      featureRows: [{ seq: 'F1', type: '功能', chapter: 'C1', system: 'S', mainModule: 'M', subModule: 'SM', feature: 'F1', testPoint: 'TP1', testPointId: 'TP-1' }],
+      featureRows: [
+        {
+          seq: 'F1',
+          type: '功能',
+          chapter: 'C1',
+          system: 'S',
+          mainModule: 'M',
+          subModule: 'SM',
+          feature: 'F1',
+          testPoint: 'TP1',
+          testPointId: 'TP-1',
+        },
+      ],
     });
     const mockWriteText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { clipboard: { writeText: mockWriteText } });
@@ -506,7 +671,19 @@ describe('Feature 功能点审核', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      featureRows: [{ seq: 'F1', type: '功能', chapter: 'C1', system: 'S', mainModule: 'M', subModule: 'SM', feature: 'F1', testPoint: 'TP1', testPointId: 'TP-1' }],
+      featureRows: [
+        {
+          seq: 'F1',
+          type: '功能',
+          chapter: 'C1',
+          system: 'S',
+          mainModule: 'M',
+          subModule: 'SM',
+          feature: 'F1',
+          testPoint: 'TP1',
+          testPointId: 'TP-1',
+        },
+      ],
     });
     const mockBlob = vi.fn();
     vi.stubGlobal('Blob', mockBlob);
@@ -523,7 +700,19 @@ describe('Feature 功能点审核', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      featureRows: [{ seq: 'F1', type: '功能', chapter: 'C1', system: 'S', mainModule: 'M', subModule: 'SM', feature: 'F1', testPoint: 'TP1', testPointId: 'TP-1' }],
+      featureRows: [
+        {
+          seq: 'F1',
+          type: '功能',
+          chapter: 'C1',
+          system: 'S',
+          mainModule: 'M',
+          subModule: 'SM',
+          feature: 'F1',
+          testPoint: 'TP1',
+          testPointId: 'TP-1',
+        },
+      ],
       featureConfirmed: false,
     });
     render(<Feature />);
@@ -535,7 +724,19 @@ describe('Feature 功能点审核', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      featureRows: [{ seq: 'F1', type: '功能', chapter: 'C1', system: 'S', mainModule: 'M', subModule: 'SM', feature: 'F1', testPoint: 'TP1', testPointId: 'TP-1' }],
+      featureRows: [
+        {
+          seq: 'F1',
+          type: '功能',
+          chapter: 'C1',
+          system: 'S',
+          mainModule: 'M',
+          subModule: 'SM',
+          feature: 'F1',
+          testPoint: 'TP1',
+          testPointId: 'TP-1',
+        },
+      ],
       featureConfirmed: true,
     });
     render(<Feature />);
@@ -563,11 +764,50 @@ describe('Feature 功能点审核', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      featureRows: [{ seq: 'F1', type: '功能', chapter: 'C1', system: 'S', mainModule: 'M', subModule: 'SM', feature: 'F1', testPoint: 'TP1', testPointId: 'TP-1', needsReview: true }],
+      featureRows: [
+        {
+          seq: 'F1',
+          type: '功能',
+          chapter: 'C1',
+          system: 'S',
+          mainModule: 'M',
+          subModule: 'SM',
+          feature: 'F1',
+          testPoint: 'TP1',
+          testPointId: 'TP-1',
+          needsReview: true,
+        },
+      ],
     });
     render(<Feature />);
     fireEvent.click(screen.getByText('needs_review'));
     expect(mock.featureToggleReview).toHaveBeenCalledWith(0);
+  });
+
+  it('导入 OpenAPI 文本后将结构化证据传给功能点阶段', async () => {
+    const mock = setupDefaultMock();
+    mockUseApp.mockReturnValue({ ...mock, featureRows: [], moduleTree: [] });
+    render(<Feature />);
+
+    fireEvent.click(screen.getByText('导入设计证据'));
+    const textboxes = screen.getAllByRole('textbox');
+    fireEvent.change(textboxes[textboxes.length - 1], {
+      target: { value: '{"openapi":"3.0.0","paths":{}}' },
+    });
+    fireEvent.click(screen.getByText('加入本次生成'));
+    expect(screen.getByText('生成功能点')).not.toBeDisabled();
+    fireEvent.click(screen.getByText('生成功能点'));
+
+    await waitFor(() =>
+      expect(mock.runPipelineFeature).toHaveBeenCalledWith(
+        expect.objectContaining({
+          moduleTree: [],
+          designSources: [
+            expect.objectContaining({ kind: 'openapi', content: '{"openapi":"3.0.0","paths":{}}' }),
+          ],
+        }),
+      ),
+    );
   });
 });
 
@@ -578,7 +818,16 @@ describe('Case 测试用例', () => {
     mockUseApp.mockReturnValue({
       ...mock,
       caseRows: [
-        { caseNo: 'C001', content: '登录测试', step: '1', operation: '点击登录', expected: '登录成功', firstResult: '\\', regressionResult: '\\', conclusion: '\\' },
+        {
+          caseNo: 'C001',
+          content: '登录测试',
+          step: '1',
+          operation: '点击登录',
+          expected: '登录成功',
+          firstResult: '\\',
+          regressionResult: '\\',
+          conclusion: '\\',
+        },
       ],
       execModules: [{ name: '模块A', cases: 10, pending: false }],
     });
@@ -591,7 +840,16 @@ describe('Case 测试用例', () => {
     mockUseApp.mockReturnValue({
       ...mock,
       caseRows: [
-        { caseNo: 'C001', content: '可编辑内容', step: '1', operation: '点击', expected: 'OK', firstResult: '\\', regressionResult: '\\', conclusion: '\\' },
+        {
+          caseNo: 'C001',
+          content: '可编辑内容',
+          step: '1',
+          operation: '点击',
+          expected: 'OK',
+          firstResult: '\\',
+          regressionResult: '\\',
+          conclusion: '\\',
+        },
       ],
       execModules: [],
     });
@@ -605,7 +863,16 @@ describe('Case 测试用例', () => {
     mockUseApp.mockReturnValue({
       ...mock,
       caseRows: [
-        { caseNo: 'C001', content: 'Test', step: '1', operation: 'Click', expected: 'OK', firstResult: '\\', regressionResult: '\\', conclusion: '\\' },
+        {
+          caseNo: 'C001',
+          content: 'Test',
+          step: '1',
+          operation: 'Click',
+          expected: 'OK',
+          firstResult: '\\',
+          regressionResult: '\\',
+          conclusion: '\\',
+        },
       ],
       execModules: [],
     });
@@ -619,7 +886,16 @@ describe('Case 测试用例', () => {
     mockUseApp.mockReturnValue({
       ...mock,
       caseRows: [
-        { caseNo: 'C001', content: 'Test', step: '1', operation: 'Click', expected: 'OK', firstResult: '\\', regressionResult: '\\', conclusion: '\\' },
+        {
+          caseNo: 'C001',
+          content: 'Test',
+          step: '1',
+          operation: 'Click',
+          expected: 'OK',
+          firstResult: '\\',
+          regressionResult: '\\',
+          conclusion: '\\',
+        },
       ],
       execModules: [],
     });
@@ -641,7 +917,9 @@ describe('Case 测试用例', () => {
     mockUseApp.mockReturnValue({ ...mock, caseRows: [], execModules: [] });
     render(<Case />);
     fireEvent.click(screen.getByText('⚙ 配置'));
-    fireEvent.change(document.querySelector('.modal .text-input')!, { target: { value: 'New System' } });
+    fireEvent.change(document.querySelector('.modal .text-input')!, {
+      target: { value: 'New System' },
+    });
     fireEvent.click(screen.getByRole('button', { name: '应用配置到 Excel' }));
     expect(mock.caseUpdateMeta).toHaveBeenCalled();
   });
@@ -655,25 +933,172 @@ describe('Case 测试用例', () => {
     expect(mock.caseToggleAi).toHaveBeenCalled();
   });
 
-  it('生成选中应调用 caseRegenerate', () => {
-    const mock = setupDefaultMock();
-    mockUseApp.mockReturnValue({ ...mock, caseRows: [], execModules: [] });
-    render(<Case />);
-    fireEvent.click(screen.getByText('生成选中'));
-    expect(mock.caseRegenerate).toHaveBeenCalled();
-  });
+  const currentCaseWorkbook: CaseSheet[] = [
+    {
+      sheetName: '模块A',
+      meta: {
+        systemName: '系统',
+        testPointId: 'USER_01',
+        testPoint: '查询',
+        testers: '测试员',
+        clientStaff: '',
+        developerStaff: '',
+        firstTestDate: '',
+        regressionDate: '',
+        conclusionRule: '',
+        precondition: '已登录',
+      },
+      rows: [
+        {
+          caseNo: 'USER_01',
+          content: '查询',
+          step: 'Step 1',
+          operation: '输入手工条件',
+          expected: '保留编辑',
+          firstResult: '\\',
+          regressionResult: '\\',
+          conclusion: '\\',
+          id: 'manual-row',
+          featureId: 'USER_01',
+          batchId: 'workflow-manual-batch',
+          targetTestPoint: '查询',
+          manualEdited: true,
+        },
+      ],
+      colWidths: [18, 16, 8, 34, 34, 14, 14, 12],
+      screenshotRef: 'workflow-manual.png',
+      remarkRow: '保留模块A人工查询用例',
+    },
+  ];
 
-  it('全部生成应调用 caseRegenerate', () => {
+  const caseGenerationEntries = [
+    {
+      entry: '生成选中',
+      regenerateSelected: undefined,
+      selectedModules: ['模块A'],
+      successActivity: '生成选中模块用例: 模块A',
+      successToast: '选中模块用例已生成',
+    },
+    {
+      entry: '重新生成选中模块',
+      regenerateSelected: true,
+      selectedModules: ['模块A'],
+      successActivity: '重新生成选中模块用例: 模块A',
+      successToast: '选中模块用例已重新生成',
+    },
+    {
+      entry: '全部生成',
+      regenerateSelected: undefined,
+      selectedModules: [],
+      successActivity: '全部用例已生成',
+      successToast: '全部用例已生成',
+    },
+  ];
+
+  function renderCaseGeneration(
+    entry: string,
+    selectedModules: string[],
+    caseAiOn = true,
+    caseResult: { caseWorkbook: CaseSheet[] } | null = null,
+  ) {
     const mock = setupDefaultMock();
-    mockUseApp.mockReturnValue({ ...mock, caseRows: [], execModules: [] });
+    mock.runPipelineCase.mockResolvedValue(caseResult);
+    mockUseApp.mockReturnValue({
+      ...mock,
+      currentCaseWorkbook,
+      featureConfirmed: true,
+      featureRows: [
+        {
+          seq: '1',
+          type: '功能性测试',
+          chapter: '',
+          system: '系统',
+          mainModule: '主',
+          subModule: '模块A',
+          feature: '用户',
+          testPoint: '查询',
+          testPointId: 'USER_01',
+        },
+      ],
+      caseSelectedModules: selectedModules,
+      caseAiOn,
+      aiCurrentDefault: 'case-ai-42',
+      execModules: [],
+    });
     render(<Case />);
-    fireEvent.click(screen.getByText('全部生成'));
-    expect(mock.caseRegenerate).toHaveBeenCalled();
-  });
+    fireEvent.click(screen.getByText(entry));
+    return mock;
+  }
+
+  it.each(caseGenerationEntries)(
+    'Given the active Case AI configuration, When $entry is clicked, Then the request freezes its config',
+    async ({ entry, regenerateSelected, selectedModules }) => {
+      const mock = renderCaseGeneration(entry, selectedModules);
+      await waitFor(() => expect(mock.runPipelineCase).toHaveBeenCalled());
+      const submitted = mock.runPipelineCase.mock.calls.at(0)?.[0];
+      expect(submitted?.regenerateSelected).toBe(regenerateSelected);
+      expect(submitted?.aiConfig).toEqual({ configId: 'case-ai-42', enabled: true });
+    },
+  );
+
+  it.each(caseGenerationEntries)(
+    'Given Case AI is disabled, When $entry is clicked, Then the request carries no effective AI configuration',
+    async ({ entry, selectedModules }) => {
+      const mock = renderCaseGeneration(entry, selectedModules, false);
+      await waitFor(() => expect(mock.runPipelineCase).toHaveBeenCalled());
+      const submitted = mock.runPipelineCase.mock.calls.at(0)?.[0];
+      expect(submitted?.aiConfig?.enabled).toBe(false);
+      expect(submitted?.aiConfig?.configId).toBeUndefined();
+    },
+  );
+
+  it.each(caseGenerationEntries)(
+    'Given the canonical current workbook, When $entry is clicked, Then the request preserves it',
+    async ({ entry, selectedModules }) => {
+      const mock = renderCaseGeneration(entry, selectedModules);
+      await waitFor(() => expect(mock.runPipelineCase).toHaveBeenCalled());
+      const submitted = mock.runPipelineCase.mock.calls.at(0)?.[0];
+      expect(submitted?.currentCaseWorkbook).toEqual(currentCaseWorkbook);
+      expect(submitted?.currentCaseWorkbook?.[0]).toMatchObject({
+        colWidths: [18, 16, 8, 34, 34, 14, 14, 12],
+        screenshotRef: 'workflow-manual.png',
+        remarkRow: '保留模块A人工查询用例',
+      });
+      expect(submitted?.currentCaseWorkbook?.[0]?.rows[0]?.batchId).toBe('workflow-manual-batch');
+    },
+  );
+
+  it.each(caseGenerationEntries)(
+    'Given Case generation returns null, When $entry is clicked, Then no success activity or toast is emitted',
+    async ({ entry, selectedModules }) => {
+      const mock = renderCaseGeneration(entry, selectedModules);
+      await waitFor(() => expect(mock.runPipelineCase).toHaveBeenCalled());
+      expect(mock.addActivity).not.toHaveBeenCalled();
+      expect(mock.toast).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(caseGenerationEntries)(
+    'Given Case generation returns a result, When $entry is clicked, Then it emits the matching success activity and toast',
+    async ({ entry, selectedModules, successActivity, successToast }) => {
+      const mock = renderCaseGeneration(entry, selectedModules, true, {
+        caseWorkbook: currentCaseWorkbook,
+      });
+      await waitFor(() => expect(mock.runPipelineCase).toHaveBeenCalled());
+      expect(mock.addActivity).toHaveBeenCalledWith(
+        expect.objectContaining({ text: successActivity }),
+      );
+      expect(mock.toast).toHaveBeenCalledWith(successToast);
+    },
+  );
 
   it('选择模块Modal应可打开', () => {
     const mock = setupDefaultMock();
-    mockUseApp.mockReturnValue({ ...mock, caseRows: [], execModules: [{ name: '模块A', cases: 5, pending: false }] });
+    mockUseApp.mockReturnValue({
+      ...mock,
+      caseRows: [],
+      execModules: [{ name: '模块A', cases: 5, pending: false }],
+    });
     render(<Case />);
     fireEvent.click(screen.getByText(/选择模块/));
     expect(screen.getByText(/确认选择/)).toBeInTheDocument();
@@ -683,7 +1108,18 @@ describe('Case 测试用例', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      caseRows: [{ caseNo: 'C1', content: 'Test', step: '1', operation: 'Op', expected: 'Exp', firstResult: '\\', regressionResult: '\\', conclusion: '\\' }],
+      caseRows: [
+        {
+          caseNo: 'C1',
+          content: 'Test',
+          step: '1',
+          operation: 'Op',
+          expected: 'Exp',
+          firstResult: '\\',
+          regressionResult: '\\',
+          conclusion: '\\',
+        },
+      ],
       execModules: [],
     });
     const mockBlob = vi.fn();
@@ -847,7 +1283,15 @@ describe('Defect 缺陷', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      defectRows: [{ seq: 1, description: 'Bug 1', level: '高', qualityAttribute: '功能正确性', environment: 'Win11·Chrome' }],
+      defectRows: [
+        {
+          seq: 1,
+          description: 'Bug 1',
+          level: '高',
+          qualityAttribute: '功能正确性',
+          environment: 'Win11·Chrome',
+        },
+      ],
     });
     render(<Defect />);
     expect(screen.getByText('Bug 1')).toBeInTheDocument();
@@ -873,7 +1317,9 @@ describe('Defect 缺陷', () => {
     mockUseApp.mockReturnValue({ ...mock, defectRows: [] });
     render(<Defect />);
     fireEvent.click(screen.getByRole('button', { name: '+ 新建缺陷' }));
-    fireEvent.change(document.querySelector('.modal .text-area')!, { target: { value: '新缺陷描述' } });
+    fireEvent.change(document.querySelector('.modal .text-area')!, {
+      target: { value: '新缺陷描述' },
+    });
     fireEvent.click(screen.getByRole('button', { name: '创建' }));
     expect(mock.defectAdd).toHaveBeenCalled();
   });
@@ -882,7 +1328,15 @@ describe('Defect 缺陷', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      defectRows: [{ seq: 1, description: 'Bug 1', level: '高', qualityAttribute: '功能正确性', environment: 'Win11·Chrome' }],
+      defectRows: [
+        {
+          seq: 1,
+          description: 'Bug 1',
+          level: '高',
+          qualityAttribute: '功能正确性',
+          environment: 'Win11·Chrome',
+        },
+      ],
       execModules: [{ name: '模块A', cases: 5, pending: false }],
     });
     render(<Defect />);
@@ -894,7 +1348,15 @@ describe('Defect 缺陷', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      defectRows: [{ seq: 1, description: 'Bug 1', level: '高', qualityAttribute: '功能正确性', environment: 'Win11·Chrome' }],
+      defectRows: [
+        {
+          seq: 1,
+          description: 'Bug 1',
+          level: '高',
+          qualityAttribute: '功能正确性',
+          environment: 'Win11·Chrome',
+        },
+      ],
     });
     const mockBlob = vi.fn();
     vi.stubGlobal('Blob', mockBlob);
@@ -911,7 +1373,15 @@ describe('Defect 缺陷', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      defectRows: [{ seq: 1, description: 'Bug 1', level: '高', qualityAttribute: '功能正确性', environment: 'Win11·Chrome' }],
+      defectRows: [
+        {
+          seq: 1,
+          description: 'Bug 1',
+          level: '高',
+          qualityAttribute: '功能正确性',
+          environment: 'Win11·Chrome',
+        },
+      ],
     });
     render(<Defect />);
     expect(screen.getByText('高')).toBeInTheDocument();
@@ -924,7 +1394,19 @@ describe('ProjectMgmt 项目管理', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      projects: [{ id: 'p1', name: 'Project 1', type: 'standalone' as const, description: 'desc', systemCount: 2, caseCount: 10, createdAt: '2024-01-01', lastActive: '今天', status: '活跃' as const }],
+      projects: [
+        {
+          id: 'p1',
+          name: 'Project 1',
+          type: 'standalone' as const,
+          description: 'desc',
+          systemCount: 2,
+          caseCount: 10,
+          createdAt: '2024-01-01',
+          lastActive: '今天',
+          status: '活跃' as const,
+        },
+      ],
     });
     render(<ProjectMgmt />);
     expect(screen.getByText('Project 1')).toBeInTheDocument();
@@ -951,7 +1433,16 @@ describe('ProjectMgmt 项目管理', () => {
     mockUseApp.mockReturnValue({
       ...mock,
       systems: [
-        { id: 'portal1', name: 'Portal System', type: 'portal' as const, url: 'http://portal.com', captured: true, parent: '', loginMode: 'no-login' as const, loginStatus: 'logged_in' as const },
+        {
+          id: 'portal1',
+          name: 'Portal System',
+          type: 'portal' as const,
+          url: 'http://portal.com',
+          captured: true,
+          parent: '',
+          loginMode: 'no-login' as const,
+          loginStatus: 'logged_in' as const,
+        },
       ],
     });
     render(<ProjectMgmt />);
@@ -975,7 +1466,19 @@ describe('ProjectMgmt 项目管理', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      systems: [{ id: 's1', name: 'System 1', type: 'standalone' as const, url: 'http://test.com', captured: true, parent: '', loginMode: 'no-login' as const, loginStatus: 'logged_in' as const, projectId: 'p1' }],
+      systems: [
+        {
+          id: 's1',
+          name: 'System 1',
+          type: 'standalone' as const,
+          url: 'http://test.com',
+          captured: true,
+          parent: '',
+          loginMode: 'no-login' as const,
+          loginStatus: 'logged_in' as const,
+          projectId: 'p1',
+        },
+      ],
     });
     render(<ProjectMgmt />);
     fireEvent.click(screen.getByText('▶'));
@@ -989,7 +1492,19 @@ describe('ProjectMgmt 项目管理', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      projects: [{ id: 'p1', name: 'Project 1', type: 'standalone' as const, description: '', systemCount: 0, caseCount: 0, createdAt: '', lastActive: '', status: '活跃' as const }],
+      projects: [
+        {
+          id: 'p1',
+          name: 'Project 1',
+          type: 'standalone' as const,
+          description: '',
+          systemCount: 0,
+          caseCount: 0,
+          createdAt: '',
+          lastActive: '',
+          status: '活跃' as const,
+        },
+      ],
     });
     render(<ProjectMgmt />);
     fireEvent.click(screen.getAllByRole('button', { name: '删除' })[0]);
@@ -1004,7 +1519,15 @@ describe('AIConfig AI配置', () => {
     mockUseApp.mockReturnValue({
       ...mock,
       aiConfigs: [
-        { id: 'ai-1', enabled: true, name: 'GPT-4', vendor: 'OpenAI', baseUrl: 'https://api.openai.com', model: 'gpt-4', isDefault: true },
+        {
+          id: 'ai-1',
+          enabled: true,
+          name: 'GPT-4',
+          vendor: 'OpenAI',
+          baseUrl: 'https://api.openai.com',
+          model: 'gpt-4',
+          isDefault: true,
+        },
       ],
     });
     render(<AIConfig />);
@@ -1023,7 +1546,17 @@ describe('AIConfig AI配置', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      aiConfigs: [{ id: 'ai-1', enabled: true, name: 'GPT-4', vendor: 'OpenAI', baseUrl: 'https://api.com', model: 'gpt-4', isDefault: false }],
+      aiConfigs: [
+        {
+          id: 'ai-1',
+          enabled: true,
+          name: 'GPT-4',
+          vendor: 'OpenAI',
+          baseUrl: 'https://api.com',
+          model: 'gpt-4',
+          isDefault: false,
+        },
+      ],
     });
     render(<AIConfig />);
     fireEvent.click(screen.getByRole('button', { name: '✓' }));
@@ -1034,7 +1567,17 @@ describe('AIConfig AI配置', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      aiConfigs: [{ id: 'ai-1', enabled: true, name: 'GPT-4', vendor: 'OpenAI', baseUrl: 'https://api.com', model: 'gpt-4', isDefault: false }],
+      aiConfigs: [
+        {
+          id: 'ai-1',
+          enabled: true,
+          name: 'GPT-4',
+          vendor: 'OpenAI',
+          baseUrl: 'https://api.com',
+          model: 'gpt-4',
+          isDefault: false,
+        },
+      ],
     });
     render(<AIConfig />);
     fireEvent.click(screen.getByText('设为默认'));
@@ -1045,7 +1588,17 @@ describe('AIConfig AI配置', () => {
     const mock = setupDefaultMock();
     mockUseApp.mockReturnValue({
       ...mock,
-      aiConfigs: [{ id: 'ai-1', enabled: true, name: 'GPT-4', vendor: 'OpenAI', baseUrl: 'https://api.com', model: 'gpt-4', isDefault: false }],
+      aiConfigs: [
+        {
+          id: 'ai-1',
+          enabled: true,
+          name: 'GPT-4',
+          vendor: 'OpenAI',
+          baseUrl: 'https://api.com',
+          model: 'gpt-4',
+          isDefault: false,
+        },
+      ],
     });
     render(<AIConfig />);
     fireEvent.click(screen.getAllByText('删除')[0]);
@@ -1083,7 +1636,11 @@ describe('Logs 日志管理', () => {
     render(<Logs />);
     fireEvent.click(screen.getByRole('button', { name: '7 天' }));
     fireEvent.click(screen.getByRole('button', { name: '保存策略' }));
-    expect(mock.logUpdatePolicy).toHaveBeenCalledWith({ retentionDays: 7, maxFileSizeMB: 10, maxFiles: 30 });
+    expect(mock.logUpdatePolicy).toHaveBeenCalledWith({
+      retentionDays: 7,
+      maxFileSizeMB: 10,
+      maxFiles: 30,
+    });
   });
 
   it('保存策略应调用 logUpdatePolicy', () => {
@@ -1103,7 +1660,15 @@ describe('Logs 日志管理', () => {
     mockUseApp.mockReturnValue({
       ...mock,
       logPolicy: { retentionDays: 30, maxFileSizeMB: 10, maxFiles: 30 },
-      logFiles: [{ subsystem: 'sys', task: 'task', filename: 'log.txt', size: '1KB', lastWrite: '2024-01-01' }],
+      logFiles: [
+        {
+          subsystem: 'sys',
+          task: 'task',
+          filename: 'log.txt',
+          size: '1KB',
+          lastWrite: '2024-01-01',
+        },
+      ],
     });
     render(<Logs />);
     fireEvent.click(screen.getByText('🧹 清理过期'));
@@ -1115,7 +1680,15 @@ describe('Logs 日志管理', () => {
     mockUseApp.mockReturnValue({
       ...mock,
       logPolicy: { retentionDays: 30, maxFileSizeMB: 10, maxFiles: 30 },
-      logFiles: [{ subsystem: 'sys', task: 'task', filename: 'log.txt', size: '1KB', lastWrite: '2024-01-01' }],
+      logFiles: [
+        {
+          subsystem: 'sys',
+          task: 'task',
+          filename: 'log.txt',
+          size: '1KB',
+          lastWrite: '2024-01-01',
+        },
+      ],
     });
     render(<Logs />);
     fireEvent.click(screen.getByText('💥 一键清空'));
@@ -1127,7 +1700,15 @@ describe('Logs 日志管理', () => {
     mockUseApp.mockReturnValue({
       ...mock,
       logPolicy: { retentionDays: 30, maxFileSizeMB: 10, maxFiles: 30 },
-      logFiles: [{ subsystem: 'sys1', task: 'task1', filename: 'test.log', size: '10KB', lastWrite: '2024-01-01' }],
+      logFiles: [
+        {
+          subsystem: 'sys1',
+          task: 'task1',
+          filename: 'test.log',
+          size: '10KB',
+          lastWrite: '2024-01-01',
+        },
+      ],
     });
     render(<Logs />);
     expect(screen.getByText('test.log')).toBeInTheDocument();
@@ -1142,7 +1723,13 @@ describe('Knowledge 知识库', () => {
       ...mock,
       knowledge: [
         { id: 'k1', name: '通用规则', scope: 'global' as const, content: '通用提示词内容' },
-        { id: 'k2', name: '系统规则', scope: 'system' as const, systemId: 's1', content: '系统提示词' },
+        {
+          id: 'k2',
+          name: '系统规则',
+          scope: 'system' as const,
+          systemId: 's1',
+          content: '系统提示词',
+        },
       ],
     });
     render(<Knowledge />);

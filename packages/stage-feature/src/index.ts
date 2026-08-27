@@ -4,9 +4,10 @@
  * @input FeatureInput @output FeatureOutput
  * @frozen v1.0
  */
-import type { FeatureInput, FeatureOutput } from '@test-platform/contracts';
+import type { FeatureEvidence, FeatureInput, FeatureOutput } from '@test-platform/contracts';
 import { validateFeatureInput } from '@test-platform/contracts';
 import { buildFeatureTable } from './featureTable';
+import { adaptDesignSources } from './designSourceAdapter';
 
 /**
  * 功能点审核入口（冻结签名）。
@@ -15,14 +16,24 @@ import { buildFeatureTable } from './featureTable';
  */
 export async function run(input: FeatureInput): Promise<FeatureOutput> {
   const validated = validateFeatureInput(input);
-  const { featureTable, featureIds, provenance, featurePaths } = buildFeatureTable(
-    validated.moduleTree,
+  const adapted = await adaptDesignSources(validated.designSources);
+  const { featureTable, featureIds, provenance, featurePaths, featureProfiles } = buildFeatureTable(
+    [...validated.moduleTree, ...adapted.nodes],
     validated.systemName,
     validated.confirmedOnly,
   );
-  return { featureTable, featureIds, provenance, featurePaths };
+  const featureEvidence: Record<string, FeatureEvidence> = {};
+  for (const profile of featureProfiles) {
+    const evidence = profile.sourceSelector ? adapted.evidenceBySelector[profile.sourceSelector] : undefined;
+    if (evidence) featureEvidence[profile.featureId] = { ...evidence, featureId: profile.featureId };
+  }
+  return {
+    featureTable, featureIds, provenance, featurePaths, featureProfiles,
+    ...(Object.keys(featureEvidence).length ? { featureEvidence } : {}),
+  };
 }
 
 export { buildFeatureTable } from './featureTable';
-export { toAbbrToken, systemAbbrFromSubsystemId, shortHash } from './abbreviation';
+export { toAbbrToken, toAbbrTokenWithLabel, systemAbbrFromSubsystemId, shortHash } from './abbreviation';
 export { deriveProvenance, makeProvenanceId } from './provenance';
+export { adaptDesignSources } from './designSourceAdapter';

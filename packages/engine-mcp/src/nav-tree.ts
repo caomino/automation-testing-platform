@@ -9,7 +9,7 @@
  * @rationale 解决「乱点/漏覆盖/父子混乱/重复」：结构化抽取 + 每步定位 + 全局去重，
  *   而非「见啥点啥、兄弟互嵌、parentId 全空」。
  */
-import type { ModuleNode } from '@test-platform/contracts';
+import type { ModuleNode, ActionKind } from '@test-platform/contracts';
 import type { AIClient } from '@test-platform/infra-ai';
 import { z } from 'zod';
 
@@ -46,24 +46,27 @@ export interface PageControl {
   placeholder?: string;
 }
 
-/** 枚举出的功能点（action 节点源） */
+/** 枚举出的功能点（action 节点源）。kind 统一为 contracts.ActionKind（单一分类来源）。
+ *  审核/审批 → permission；启用禁用/提交保存等 UI 控件 → other（非业务动作，禁止在探索阶段触发）。 */
 export interface ActionSpec {
   label: string;
-  kind: 'query' | 'list' | 'create' | 'update' | 'delete' | 'export' | 'import' | 'audit' | 'toggle' | 'submit' | 'other';
+  kind: ActionKind;
   selector: string;
+  /** 原始控件文本（透传给 ModuleNode.actionText，避免下游重新猜测） */
+  text?: string;
   url?: string;
 }
 
-const OPERATION_KEYWORDS: Array<{ re: RegExp; kind: ActionSpec['kind']; label: string }> = [
+const OPERATION_KEYWORDS: Array<{ re: RegExp; kind: ActionKind; label: string }> = [
   { re: /(新增|新建|添加|创建|录入)/, kind: 'create', label: '新增' },
   { re: /(修改|编辑|更新)/, kind: 'update', label: '修改' },
   { re: /(删除|移除|作废)/, kind: 'delete', label: '删除' },
   { re: /(查询|搜索|筛选|查找|检索)/, kind: 'query', label: '查询' },
   { re: /(导出|下载报表|导出报表)/, kind: 'export', label: '导出' },
   { re: /(导入)/, kind: 'import', label: '导入' },
-  { re: /(审核|审批|复核)/, kind: 'audit', label: '审核' },
-  { re: /(启用|禁用|激活|停用|上架|下架)/, kind: 'toggle', label: '启用/禁用' },
-  { re: /(提交|保存|确定|确认|发布)/, kind: 'submit', label: '提交' },
+  { re: /(审核|审批|复核|授权|权限)/, kind: 'permission', label: '审核' },
+  { re: /(启用|禁用|激活|停用|上架|下架)/, kind: 'other', label: '启用/禁用' },
+  { re: /(提交|保存|确定|确认|发布)/, kind: 'other', label: '提交' },
 ];
 
 /** 文本清洗：去多余空白、截断、去首尾标点 */
@@ -175,7 +178,7 @@ export function extractPageActions(
 
   // 列表功能点：页面存在数据表格/列表区域时，补充「列表」作为核心功能点
   if (opts.hasDataGrid) {
-    out.push({ label: '列表', kind: 'list', selector: 'main, .content, table, [class*="table"], [class*="list"]' });
+    out.push({ label: '列表', kind: 'list', selector: 'main, .content, table, [class*="table"], [class*="list"]', text: '列表' });
     seenLabels.add('列表');
   }
 
@@ -189,7 +192,7 @@ export function extractPageActions(
     if (c.type === 'tab') {
       if (!seenLabels.has(text)) {
         seenLabels.add(text);
-        out.push({ label: text, kind: 'other', selector: c.selector, url: c.href });
+        out.push({ label: text, kind: 'other', selector: c.selector, text, url: c.href });
       }
       continue;
     }
@@ -198,7 +201,7 @@ export function extractPageActions(
     if (matched) {
       if (seenLabels.has(matched.label)) continue;
       seenLabels.add(matched.label);
-      out.push({ label: matched.label, kind: matched.kind, selector: c.selector, url: c.href });
+      out.push({ label: matched.label, kind: matched.kind, selector: c.selector, text, url: c.href });
       continue;
     }
     // 其余有意义的可交互控件（按钮/链接/提交类）也列为功能点，避免遗漏
@@ -209,13 +212,13 @@ export function extractPageActions(
       /(提交|确定|保存|办理|处理|查看|详情|预览|打印|上传|生成)/.test(text);
     if (isActionish && !seenLabels.has(text)) {
       seenLabels.add(text);
-      out.push({ label: text, kind: 'other', selector: c.selector, url: c.href });
+      out.push({ label: text, kind: 'other', selector: c.selector, text, url: c.href });
     }
   }
   return out;
 }
 
-/** ActionSpec → ModuleNode（action 子节点） */
+/** ActionSpec → ModuleNode（action 子节点）。@T2 透传动作语义到 ModuleNode，避免下游重新猜测。 */
 export function actionToModule(spec: ActionSpec, parentId: string, subsystemId: string, depth: number): ModuleNode {
   return {
     id: `act_${parentId}_${spec.label}`,
@@ -228,6 +231,10 @@ export function actionToModule(spec: ActionSpec, parentId: string, subsystemId: 
     depth,
     url: spec.url,
     evidenceId: 'ev_action',
+    // @T2 透传动作语义
+    actionKind: spec.kind,
+    actionSelector: spec.selector,
+    actionText: spec.text ?? spec.label,
   };
 }
 

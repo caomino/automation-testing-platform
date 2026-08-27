@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { ExploreInput, ExploreOutput } from '../stages/ExploreContract';
 import type { ModuleNode } from '../types/ModuleNode';
 import { SessionHandleSchema } from './LoginSchema';
+import { ActionKindSchema } from './TestDesignSchema';
 
 export const ModuleNodeSchema: z.ZodType<ModuleNode> = z.lazy(() =>
   z.object({
@@ -23,6 +24,9 @@ export const ModuleNodeSchema: z.ZodType<ModuleNode> = z.lazy(() =>
     depth: z.number(),
     manuallyAdded: z.boolean().optional(),
     reviewReason: z.string().optional(),
+    actionKind: ActionKindSchema.optional(),
+    actionSelector: z.string().optional(),
+    actionText: z.string().optional(),
   }),
 );
 
@@ -58,6 +62,7 @@ export const ExploreInputSchema = z.object({
   systemUrl: z.string().optional(),
   resumeFrom: z.string().optional(),
   manualSupplement: ManualSupplementSchema.optional(),
+  readOnlyClickPolicy: z.enum(['strict', 'allow_all']).optional(),
 });
 
 export const ExploreOutputSchema = z.object({

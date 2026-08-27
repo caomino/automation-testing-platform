@@ -1,9 +1,11 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useMemo } from "react";
 import { Button, Modal, Tag, ConfirmDialog } from "../components";
 import { useApp } from "../context";
 import type { FeatureRowView } from "../context";
 import { fromModuleView } from "../services/pipeline";
+import { deriveDisplayRows } from "../services/abbr";
 import { useDebounce } from "../hooks/useDebounce";
+import type { DesignSource } from '@test-platform/contracts';
 
 /** 判断值是否可合并（空值不合并，每行独立；chapter 列除外） */
 function canMerge(v: unknown): boolean {
@@ -15,10 +17,34 @@ function canMerge(v: unknown): boolean {
 /** 计算每一列每个单元格的合并信息（纵向合并） */
 type MergeInfo = { rowSpan: number; isTop: boolean };
 
-/** 判断某列的值是否允许合并 —— chapter 列强制合并，其余列按 canMerge 规则 */
-function canMergeColumn(col: keyof FeatureRowView, v: unknown): boolean {
-  if (col === "chapter") return true;
-  return canMerge(v);
+/** 判断某列的值是否允许合并：
+ *  - testPointId 列不合并（行级唯一主键，必须每格独立）
+ *  - 其余列按真实值判断是否同值合并（含空值：主模块有数据、子模块为空时，空子模块也整列合并）
+ *    对齐金标准纵向合并语义（空单元格同样参与 rowSpan，视觉上合并为一片空白）
+ */
+function canMergeColumn(col: keyof FeatureRowView, _v: unknown): boolean {
+  if (col === "testPointId") return false;
+  return true;
+}
+
+/** 是否属于同一合并单元：值相同 且 若值为空（归属更高层级）则更高层级也必须相同，
+ *  避免"首页组子模块空"与"AI对话组子模块空"被错误合并成一片。
+ *  层级边界规则（对应九列顺序）：
+ *    chapter 空 → 跟随 system/mainModule/subModule 是否相同
+ *    subModule 空 → 跟随 system/mainModule 是否相同
+ *    feature 空 → 跟随 system/mainModule/subModule 是否相同
+ *    testPoint 空 → 跟随 system/mainModule/subModule/feature 是否相同
+ */
+function sameMergeGroup(rows: FeatureRowView[], i: number, j: number, col: keyof FeatureRowView): boolean {
+  if (rows[i][col] !== rows[j][col]) return false;
+  const bounds: Partial<Record<keyof FeatureRowView, (keyof FeatureRowView)[]>> = {
+    chapter: ["system", "mainModule", "subModule"],
+    subModule: ["system", "mainModule"],
+    feature: ["system", "mainModule", "subModule"],
+    testPoint: ["system", "mainModule", "subModule", "feature"],
+  };
+  const deps = bounds[col] ?? [];
+  return deps.every((d) => rows[i][d] === rows[j][d]);
 }
 
 /** 计算每一列每个单元格的合并信息（纵向合并） */
@@ -28,7 +54,10 @@ function buildMergeInfo(rows: FeatureRowView[]) {
 
   if (n === 0) return { infoMap };
 
-  const allCols: (keyof FeatureRowView)[] = ["type", "chapter", "system", "mainModule", "subModule", "feature"];
+  // 九列中除了 seq/操作列(非数据)其余均参与合并：
+  //   type, chapter, system, mainModule, subModule, feature, testPoint 按值合并；
+  //   testPointId 不合并（行级唯一）——在 canMergeColumn 中拦截。
+  const allCols: (keyof FeatureRowView)[] = ["type", "chapter", "system", "mainModule", "subModule", "feature", "testPoint", "testPointId"];
 
   for (const col of allCols) {
     let i = 0;
@@ -39,9 +68,9 @@ function buildMergeInfo(rows: FeatureRowView[]) {
         i++;
         continue;
       }
-      const compareVal = col === "chapter" ? "__chapter__" : val;
+      const compareVal = val;
       let j = i + 1;
-      while (j < n && canMergeColumn(col, rows[j][col]) && (col === "chapter" ? true : rows[j][col] === compareVal)) {
+      while (j < n && canMergeColumn(col, rows[j][col]) && sameMergeGroup(rows, i, j, col) && rows[j][col] === compareVal) {
         j++;
       }
       const size = j - i;
@@ -62,14 +91,26 @@ export function Feature() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmDialog, setConfirmDialog] = useState<{ open: boolean; index: number } | null>(null);
   const [featureDirty, setFeatureDirty] = useState(false);
-  // Compute merge info directly (no memoization to avoid stale cache issues)
-  const { infoMap } = buildMergeInfo(featureRows);
+  const [designImportOpen, setDesignImportOpen] = useState(false);
+  const [designKind, setDesignKind] = useState<DesignSource['kind']>('openapi');
+  const [designName, setDesignName] = useState('');
+  const [designContent, setDesignContent] = useState('');
+  const [designSources, setDesignSources] = useState<DesignSource[]>([]);
+  // 显示态派生：
+  //   state.featureRows 保留"用户真实原文"（用于 fromFeatureViewToTable 序列化回 contracts 9 列，不丢失括号别名），
+  //   UI 渲染/纵向合并/HTML 导出一律基于显示态 displayRows：
+  //     ① normalizeDisplayLabel 去掉 (英文名/别名) 括号内容；
+  //     ② main==sub 主模块列隐藏、sub==feature 功能列隐藏（父子去重展示）。
+  const displayRows = useMemo(() => deriveDisplayRows(featureRows), [featureRows]);
+  const { infoMap } = buildMergeInfo(displayRows);
 
   const debouncedSave = useDebounce(async () => {
     try {
       await saveFeatureTable();
       setFeatureDirty(false);
-    } catch {}
+    } catch {
+      // Explicit save reports errors; autosave failure leaves the draft marker visible.
+    }
   }, 800);
 
   const autoSave = useCallback(() => {
@@ -78,15 +119,16 @@ export function Feature() {
   }, [debouncedSave]);
 
   const handleGenerateFeature = async () => {
-    if (!moduleTree || moduleTree.length === 0) {
-      toast("请先运行探索流程以生成模块树");
+    if ((!moduleTree || moduleTree.length === 0) && designSources.length === 0) {
+      toast("请先运行探索流程，或导入 OpenAPI/工作流设计证据");
       return;
     }
     try {
       const contractInput = {
         moduleTree: fromModuleView(moduleTree),
         systemName: system?.name ?? 'default',
-        confirmedOnly: false
+        confirmedOnly: false,
+        designSources,
       };
       await runPipelineFeature(contractInput);
       toast("功能点生成成功");
@@ -94,6 +136,26 @@ export function Feature() {
     } catch (e) {
       toast(`生成失败: ${e instanceof Error ? e.message : String(e)}`);
     }
+  };
+
+  const addDesignSource = () => {
+    if (!designContent.trim()) {
+      toast('请粘贴或选择设计证据文件');
+      return;
+    }
+    const name = designName.trim() || (designKind === 'openapi' ? 'openapi.json' : 'workflow.json');
+    setDesignSources((current) => [...current, { kind: designKind, name, content: designContent }]);
+    setDesignContent('');
+    setDesignName('');
+    setDesignImportOpen(false);
+    toast(`已添加设计证据：${name}`);
+  };
+
+  const importDesignFile = async (file: File | undefined) => {
+    if (!file) return;
+    setDesignContent(await file.text());
+    setDesignName(file.name);
+    if (/\.ya?ml$/i.test(file.name)) setDesignKind('openapi');
   };
 
   const handleAddRow = (index?: number) => {
@@ -257,10 +319,10 @@ export function Feature() {
         html += `<td style="border:1px solid #000;text-align:center;" rowSpan="${typeInfo.rowSpan}">${r.type}</td>`;
       }
 
-      // 需求章节 (chapter) - 合并，显示为空
+      // 需求章节 (chapter) - 按真实值合并；空值时展示为占位
       const chapterInfo = mergeInfo[`chapter-${i}`];
       if (chapterInfo?.isTop) {
-        html += `<td style="border:1px solid #000;text-align:center;" rowSpan="${chapterInfo.rowSpan}">&nbsp;</td>`;
+        html += `<td style="border:1px solid #000;text-align:center;" rowSpan="${chapterInfo.rowSpan}">${r.chapter || '&nbsp;'}</td>`;
       }
 
       // 系统名称 (system) - 合并
@@ -287,11 +349,17 @@ export function Feature() {
         html += `<td style="border:1px solid #000;text-align:center;background:#f9fafb;" rowSpan="${featureInfo.rowSpan}">${r.feature}</td>`;
       }
 
-      // 测试点 (testPoint)
-      html += `<td style="border:1px solid #000;text-align:center;">${r.testPoint}</td>`;
+      // 测试点 (testPoint) - 允许同值合并
+      const testPointInfo = mergeInfo[`testPoint-${i}`];
+      if (testPointInfo?.isTop) {
+        html += `<td style="border:1px solid #000;text-align:center;" rowSpan="${testPointInfo.rowSpan}">${r.testPoint}</td>`;
+      }
 
-      // 测试点标识 (testPointId)
-      html += `<td style="border:1px solid #000;text-align:center;font-family:ui-monospace,monospace;">${r.testPointId}</td>`;
+      // 测试点标识 (testPointId) - 不合并（行级唯一主键）
+      const testPointIdInfo = mergeInfo[`testPointId-${i}`];
+      if (testPointIdInfo?.isTop) {
+        html += `<td style="border:1px solid #000;text-align:center;font-family:ui-monospace,monospace;" rowSpan="${testPointIdInfo.rowSpan}">${r.testPointId}</td>`;
+      }
 
       html += '</tr>';
     });
@@ -306,7 +374,7 @@ export function Feature() {
       return;
     }
 
-    const html = buildStyledHtmlTable(featureRows);
+    const html = buildStyledHtmlTable(displayRows);
     const blob = new Blob(["\ufeff" + html], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -330,7 +398,8 @@ export function Feature() {
         <div className="row">
           <Button onClick={() => { loadFeatureTemplate(); addActivity({ id: `act-${Date.now()}`, time: new Date().toLocaleTimeString().slice(0, 5), text: "加载固定模板" }); }}>加载固定模板</Button>
           <Button onClick={() => { reloadFeatureTable(); addActivity({ id: `act-${Date.now()}`, time: new Date().toLocaleTimeString().slice(0, 5), text: "加载本轮版本" }); }}>加载本轮版本</Button>
-          <Button variant="pri" onClick={handleGenerateFeature} disabled={!moduleTree || moduleTree.length === 0}>
+          <Button onClick={() => setDesignImportOpen(true)}>导入设计证据</Button>
+          <Button variant="pri" onClick={handleGenerateFeature} disabled={(!moduleTree || moduleTree.length === 0) && designSources.length === 0}>
             {pipelineLoading && pipelineStage === 'feature' ? '生成中...' : '生成功能点'}
           </Button>
           <Button variant="pri" onClick={() => { saveFeatureTable(); addActivity({ id: `act-${Date.now()}`, time: new Date().toLocaleTimeString().slice(0, 5), text: "保存功能点草稿" }); }}>保存草稿</Button>
@@ -400,13 +469,15 @@ export function Feature() {
             </tr>
           </thead>
           <tbody>
-            {featureRows.map((r, i) => {
+            {displayRows.map((r, i) => {
               const typeInfo = infoMap[`type-${i}`];
               const chapterInfo = infoMap[`chapter-${i}`];
               const systemInfo = infoMap[`system-${i}`];
               const mainInfo = infoMap[`mainModule-${i}`];
               const subInfo = infoMap[`subModule-${i}`];
               const featureInfo = infoMap[`feature-${i}`];
+              const testPointInfo = infoMap[`testPoint-${i}`];
+              const testPointIdInfo = infoMap[`testPointId-${i}`];
 
               const showType = typeInfo?.isTop ?? true;
               const showChapter = chapterInfo?.isTop ?? true;
@@ -414,6 +485,8 @@ export function Feature() {
               const showMain = mainInfo?.isTop ?? true;
               const showSub = subInfo?.isTop ?? true;
               const showFeature = featureInfo?.isTop ?? true;
+              const showTestPoint = testPointInfo?.isTop ?? true;
+              const showTestPointId = testPointIdInfo?.isTop ?? true;
 
               const typeSpan = typeInfo?.rowSpan ?? 1;
               const chapterSpan = chapterInfo?.rowSpan ?? 1;
@@ -421,6 +494,8 @@ export function Feature() {
               const mainSpan = mainInfo?.rowSpan ?? 1;
               const subSpan = subInfo?.rowSpan ?? 1;
               const featureSpan = featureInfo?.rowSpan ?? 1;
+              const testPointSpan = testPointInfo?.rowSpan ?? 1;
+              const testPointIdSpan = testPointIdInfo?.rowSpan ?? 1;
 
               return (
                 <tr key={i}>
@@ -445,7 +520,7 @@ export function Feature() {
                       {editingCell?.row === i && editingCell?.col === "chapter" ? (
                         <input className="cell-edit" value={cellValue} onChange={(e) => setCellValue(e.target.value)} onBlur={commitEditCell} autoFocus />
                       ) : (
-                        ""
+                        r.chapter
                       )}
                     </td>
                   )}
@@ -485,25 +560,31 @@ export function Feature() {
                       )}
                     </td>
                   )}
-                  <td onClick={(e) => startEditCell(i, "testPoint", String(r.testPoint), e)} style={{ cursor: "text" }}>
-                    {editingCell?.row === i && editingCell?.col === "testPoint" ? (
-                      <input className="cell-edit" value={cellValue} onChange={(e) => setCellValue(e.target.value)} onBlur={commitEditCell} autoFocus />
-                    ) : (
-                      r.testPoint
-                    )}
-                    {!editingCell && r.needsReview && (
-                      <span onClick={(e) => { e.stopPropagation(); featureToggleReview(i); }} style={{ cursor: "pointer" }}><Tag tone="warn">
-                        needs_review
-                      </Tag></span>
-                    )}
-                  </td>
-                  <td className="mono" onClick={(e) => startEditCell(i, "testPointId", String(r.testPointId), e)} style={{ cursor: "text" }}>
-                    {editingCell?.row === i && editingCell?.col === "testPointId" ? (
-                      <input className="cell-edit" value={cellValue} onChange={(e) => setCellValue(e.target.value)} onBlur={commitEditCell} autoFocus />
-                    ) : (
-                      r.testPointId
-                    )}
-                  </td>
+                  {showTestPoint && (
+                    <td className="merge" rowSpan={testPointSpan} onClick={(e) => startEditCell(i, "testPoint", String(r.testPoint), e)} style={{ cursor: "text" }}>
+                      {editingCell?.row === i && editingCell?.col === "testPoint" ? (
+                        <input className="cell-edit" value={cellValue} onChange={(e) => setCellValue(e.target.value)} onBlur={commitEditCell} autoFocus />
+                      ) : (
+                        <>
+                          {r.testPoint}
+                          {!editingCell && r.needsReview && (
+                            <span onClick={(e) => { e.stopPropagation(); featureToggleReview(i); }} style={{ cursor: "pointer" }}><Tag tone="warn">
+                              needs_review
+                            </Tag></span>
+                          )}
+                        </>
+                      )}
+                    </td>
+                  )}
+                  {showTestPointId && (
+                    <td className="mono merge" rowSpan={testPointIdSpan} onClick={(e) => startEditCell(i, "testPointId", String(r.testPointId), e)} style={{ cursor: "text" }}>
+                      {editingCell?.row === i && editingCell?.col === "testPointId" ? (
+                        <input className="cell-edit" value={cellValue} onChange={(e) => setCellValue(e.target.value)} onBlur={commitEditCell} autoFocus />
+                      ) : (
+                        r.testPointId
+                      )}
+                    </td>
+                  )}
                   <td onClick={(e) => e.stopPropagation()}>
                     <div className="op">
                       <Button size="sm" onClick={(e) => { e?.stopPropagation(); handleAddRow(i); }} title="在当前行下方插入新行">
@@ -558,6 +639,49 @@ export function Feature() {
         message="确定要删除此行功能点吗？此操作不可恢复。"
         danger
       />
+
+      <Modal
+        open={designImportOpen}
+        onClose={() => setDesignImportOpen(false)}
+        title="导入设计证据"
+        footer={
+          <>
+            <Button onClick={() => setDesignImportOpen(false)}>取消</Button>
+            <Button variant="pri" onClick={addDesignSource}>加入本次生成</Button>
+          </>
+        }
+      >
+        <div className="field">
+          <label>证据类型</label>
+          <select className="text-input" value={designKind} onChange={(event) => setDesignKind(event.target.value as DesignSource['kind'])}>
+            <option value="openapi">OpenAPI / Swagger</option>
+            <option value="workflow">业务工作流 JSON</option>
+          </select>
+        </div>
+        <div className="field">
+          <label>文件</label>
+          <input type="file" accept={designKind === 'openapi' ? '.json,.yaml,.yml,application/json,application/yaml,text/yaml' : '.json,application/json'} onChange={(event) => void importDesignFile(event.target.files?.[0])} />
+        </div>
+        <div className="field">
+          <label>来源名称</label>
+          <input className="text-input" value={designName} onChange={(event) => setDesignName(event.target.value)} placeholder={designKind === 'openapi' ? 'openapi.yaml' : 'workflow.json'} />
+        </div>
+        <div className="field">
+          <label>结构化内容</label>
+          <textarea className="text-input" value={designContent} onChange={(event) => setDesignContent(event.target.value)} rows={10} style={{ width: '100%' }} />
+        </div>
+      </Modal>
+
+      {designSources.length > 0 && (
+        <div className="row" style={{ marginTop: 8 }}>
+          <Tag tone="info">设计证据 {designSources.length}</Tag>
+          {designSources.map((source, index) => (
+            <Button key={`${source.kind}-${source.name}-${index}`} size="sm" onClick={() => setDesignSources((current) => current.filter((_, currentIndex) => currentIndex !== index))} title="移除设计证据">
+              {source.name ?? source.kind} ×
+            </Button>
+          ))}
+        </div>
+      )}
     </>
   );
 }

@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   initialState,
   reducer,
+} from './context';
+import type {
   AppState,
   ProjectInfo,
   SystemInfo,
@@ -28,7 +30,7 @@ describe('context.tsx - Reducer 逻辑', () => {
   });
 
   it('SET_PROJECT: should set active project', () => {
-    const project: ProjectInfo = { id: 'p1', name: 'Test Project', type: 'standalone', description: '', systemCount: 0, createdAt: '', lastActive: '', status: 'active' };
+    const project: ProjectInfo = { id: 'p1', name: 'Test Project', type: 'standalone', description: '', systemCount: 0, caseCount: 0, createdAt: '', lastActive: '', status: '活跃' };
     const state = { ...initialState, projects: [project] };
     const newState = reducer(state, { type: 'SET_PROJECT', id: 'p1' });
     expect(newState.project.id).toBe('p1');
@@ -43,16 +45,51 @@ describe('context.tsx - Reducer 逻辑', () => {
     expect(newState.system.name).toBe('Test System');
   });
 
+  it('A→B→A 切换时立即清空系统专属功能点、证据和用例状态', () => {
+    const project: ProjectInfo = { id: 'p1', name: 'Project', type: 'standalone', description: '', systemCount: 2, caseCount: 0, createdAt: '', lastActive: '', status: '活跃', activeSystemId: 'A' };
+    const systemA: SystemInfo = { id: 'A', name: 'System A', type: 'standalone', url: '', captured: false, parent: '', projectId: 'p1', loginMode: 'no-login', loginStatus: 'logged_out' };
+    const systemB: SystemInfo = { ...systemA, id: 'B', name: 'System B' };
+    const populated: AppState = {
+      ...initialState,
+      project,
+      projects: [project],
+      system: systemA,
+      systems: [systemA, systemB],
+      featureRows: [{ seq: '1', type: '功能', chapter: '', system: 'A', mainModule: '', subModule: '', feature: '功能', testPoint: '新增', testPointId: 'A_01' }],
+      featureConfirmed: true,
+      featurePaths: { A_01: '/a' },
+      featureProfiles: [{ featureId: 'A_01', testPoint: '新增', actionKind: 'create' }],
+      featureEvidence: { A_01: { featureId: 'A_01', actionKind: 'create', states: [], fields: [], tables: [], actionEntries: [], containers: [], evidenceLevel: 'needs_review', coverageKeys: [], needsReview: true, reviewReason: '缺少证据', uncovered: [] } },
+      featureProvenance: [{ provenanceId: 'a', featureRowIndex: 0, source: 'exploration', confirmed: true }],
+      featureDesignSources: ['a.json'],
+      caseRows: [{ caseNo: 'A_01_A01', content: '新增', step: 'Step_1', operation: '操作', expected: '预期', firstResult: '\\', regressionResult: '\\', conclusion: '\\' }],
+      caseGroups: [{ groupId: 'a', caseNo: 'A_01_A01', content: '新增', moduleName: '', precondition: '', steps: [] }],
+      caseQualityGateIssues: [{ caseRowId: 'a', type: '泛化', message: '旧问题', blocking: true }],
+    };
+    const onB = reducer(populated, { type: 'SET_SYSTEM', id: 'B' });
+    const backOnA = reducer(onB, { type: 'SET_SYSTEM', id: 'A' });
+    for (const state of [onB, backOnA]) {
+      expect(state.featureRows).toEqual([]);
+      expect(state.featureConfirmed).toBe(false);
+      expect(state.featureProfiles).toEqual([]);
+      expect(state.featureEvidence).toEqual({});
+      expect(state.featureDesignSources).toEqual([]);
+      expect(state.caseRows).toEqual([]);
+      expect(state.caseGroups).toEqual([]);
+      expect(state.caseQualityGateIssues).toEqual([]);
+    }
+  });
+
   it('ADD_PROJECT: should add a new project', () => {
     const state = createInitialState();
-    const project: ProjectInfo = { id: 'p1', name: 'New Project', type: 'standalone', description: '', systemCount: 0, createdAt: '', lastActive: '', status: 'active' };
+    const project: ProjectInfo = { id: 'p1', name: 'New Project', type: 'standalone', description: '', systemCount: 0, caseCount: 0, createdAt: '', lastActive: '', status: '活跃' };
     const newState = reducer(state, { type: 'ADD_PROJECT', project });
     expect(newState.projects).toHaveLength(1);
     expect(newState.projects[0].name).toBe('New Project');
   });
 
   it('UPDATE_PROJECT: should update an existing project', () => {
-    const project: ProjectInfo = { id: 'p1', name: 'Old Name', type: 'standalone', description: '', systemCount: 0, createdAt: '', lastActive: '', status: 'active' };
+    const project: ProjectInfo = { id: 'p1', name: 'Old Name', type: 'standalone', description: '', systemCount: 0, caseCount: 0, createdAt: '', lastActive: '', status: '活跃' };
     const state = { ...initialState, projects: [project] };
     const newState = reducer(state, { type: 'UPDATE_PROJECT', id: 'p1', patch: { name: 'New Name' } });
     expect(newState.projects[0].name).toBe('New Name');
@@ -114,15 +151,15 @@ describe('context.tsx - Reducer 逻辑', () => {
 
   it('FEATURE_CONFIRM: should confirm features', () => {
     const state = createInitialState();
-    const newState = reducer(state, { type: 'FEATURE_CONFIRM', confirmed: true });
+    const newState = reducer(state, { type: 'FEATURE_CONFIRM' });
     expect(newState.featureConfirmed).toBe(true);
   });
 
   it('PIPELINE_UPDATE_CASE: should update case rows and meta', () => {
     const state = createInitialState();
     const rows: CaseRowView[] = [{ caseNo: 'C1', content: 'Content', step: 'Step', operation: 'Op', expected: 'Exp', firstResult: '', regressionResult: '', conclusion: '\\' }];
-    const meta: MetaHeader = { system: 'S', testPointId: 'TP-1', testPoint: 'TP', testers: 'T', clientStaff: 'C', times: '', rules: '' };
-    const newState = reducer(state, { type: 'PIPELINE_UPDATE_CASE', rows, meta });
+    const meta: MetaHeader = { ...initialState.metaHeader, system: 'S', testPointId: 'TP-1', testPoint: 'TP', testers: 'T', clientStaff: 'C' };
+    const newState = reducer(state, { type: 'PIPELINE_UPDATE_CASE', rows, groups: [], meta });
     expect(newState.caseRows).toHaveLength(1);
     expect(newState.metaHeader.system).toBe('S');
   });

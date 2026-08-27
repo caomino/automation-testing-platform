@@ -21,6 +21,8 @@ export interface ExploreInput {
   resumeFrom?: string;
   /** 人工补充数据 */
   manualSupplement?: ManualSupplement;
+  /** @新增 只读点击安全策略：strict=仅放行 a[href]/dialog/safe-opener（默认）；allow_all=放行所有非写操作按钮（新增/详情/查询等），仍拦截提交/保存/删除/导出/导入/审核等写操作与危险导航 */
+  readOnlyClickPolicy?: 'strict' | 'allow_all';
 }
 
 /** 输出（冻结） */

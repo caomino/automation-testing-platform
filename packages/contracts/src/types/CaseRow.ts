@@ -7,7 +7,7 @@
 
 /** 用例列索引（八列固定顺序） */
 export interface CaseColumnIndexes {
-  /** 列 0: 用例编号（= 测试点标识_NN） */
+  /** 列 0: 用例编号（= 测试点标识） */
   caseNo: number;
   /** 列 1: 测试内容（= 功能点.测试点） */
   content: number;
@@ -47,7 +47,7 @@ export const CASE_COLUMN_WIDTHS: number[] = [18, 16, 8, 34, 34, 14, 14, 12];
 /** 测试用例行 */
 export interface CaseRow {
   // === 八列可见数据 ===
-  /** 用例编号（= 测试点标识_NN，如 QYYX_PZ_JCX_01） */
+  /** 用例编号（= 测试点标识，如 QYYX_PZ_JCX_01） */
   caseNo: string;
   /** 测试内容（= 功能点.测试点，如"查询"） */
   content: string;
@@ -67,14 +67,25 @@ export interface CaseRow {
   // === 绑定元数据（隐藏，不写入 Excel） ===
   /** 行唯一 ID */
   id: string;
-  /** 绑定的功能点 ID（= 功能点表"测试点标识"列完整值 base_NN，如 QYYX_PZ_JCX_01） */
+  /** 绑定的功能点 ID（= 功能点表"测试点标识"列完整值，且 caseNo === testPointId） */
   featureId: string;
+  /** @新增 生成批次 ID（spec §6.5 / §17.8：每组可追溯其生成来源 batchId/mode/aiConfigId） */
+  batchId?: string;
+  featureFingerprint?: string;
+  generationMode?: 'no_ai' | 'ai';
+  aiConfigId?: string;
   /** 绑定的测试点（功能点.测试点，如"查询"） */
   targetTestPoint: string;
-  /** 场景 ID（模板场景标识） */
+  /** 场景 ID（模板场景标识 / 动作矩阵确定性 scenarioId） */
   scenarioId?: string;
   /** 探索证据 ID */
   evidenceId?: string;
+  /** @新增 场景名称（如"新增-必填校验"） */
+  scenarioName?: string;
+  /** @新增 优先级 P0/P1/P2 */
+  priority?: 'P0' | 'P1' | 'P2';
+  /** @新增 覆盖键（本用例覆盖的 coverageKey 列表） */
+  coverageKeys?: string[];
   /** 证据级别 */
   evidenceLevel?: 'observed' | 'derived' | 'needs_review';
   /** 来源 */

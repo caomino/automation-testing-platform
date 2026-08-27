@@ -4,7 +4,8 @@
  *   SQLite 数据库实现。数据外部化落库至 D:\test-platform-data\store\projects.db。
  *   接口冻结，实现可替换。
  */
-import type { Project, System, FeatureRow, CaseSheet, ExecutionResult, SystemType, SessionHandle } from '@test-platform/contracts';
+import type { Project, System, FeatureArtifact, FeatureRow, CaseSheet, ExecutionResult, SystemType, SessionHandle, CaseGenerationContext } from '@test-platform/contracts';
+import { FeatureArtifactSchema } from '@test-platform/contracts';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -47,6 +48,12 @@ export interface SystemInput {
   credentials?: { username: string; credentialRef: string };
   sessionState?: System['sessionState'];
   navigationPath?: string[];
+  /**
+   * 登录成功后浏览器所在的应用页 URL（子系统探索目标）。
+   * 非冻结契约字段（contracts 不含），但 store 以 JSON 整存 systems，运行时可达；
+   * 与 orchestrator `updateSystem({ capturedUrl })` 的写入约定一致。
+   */
+  capturedUrl?: string;
 }
 
 /** 知识库条目 */
@@ -90,11 +97,20 @@ export interface ProjectStore {
   removeSystem(projectId: string, systemId: string): Promise<void>;
   setActiveSystem(projectId: string, systemId: string): Promise<void>;
   saveFeatureTable(systemId: string, table: FeatureRow[][]): Promise<void>;
+  saveFeatureArtifact(systemId: string, artifact: FeatureArtifact): Promise<void>;
   saveCaseTable(systemId: string, sheets: CaseSheet[]): Promise<void>;
+  /** 原子保存当前用例工作簿及其生成批次元数据。 */
+  saveCaseProduct(systemId: string, sheets: CaseSheet[], generation: CaseGenerationContext): Promise<void>;
   saveExecution(systemId: string, report: ExecutionResult[]): Promise<void>;
   getFeatureTable(systemId: string): Promise<FeatureRow[][] | null>;
+  getFeatureArtifact(systemId: string): Promise<FeatureArtifact | null>;
   getCaseTable(systemId: string): Promise<CaseSheet[] | null>;
   getExecution(systemId: string): Promise<ExecutionResult[] | null>;
+
+  /** 保存某系统某次用例生成批次元数据（spec §6.5 / §17.8 批次追溯：batchId / mode / aiConfigId） */
+  saveCaseGeneration(systemId: string, generation: CaseGenerationContext): Promise<void>;
+  /** 读取某系统的用例生成批次元数据（按时间倒序，最近在前） */
+  getCaseGenerations(systemId: string): Promise<CaseGenerationContext[]>;
   saveSession(systemId: string, session: SessionHandle): Promise<void>;
   getSession(systemId: string): Promise<SessionHandle | null>;
   invalidateSession(systemId: string): Promise<void>;
@@ -194,6 +210,13 @@ class SqliteProjectStore implements ProjectStore {
     )`);
     db.run(`CREATE TABLE IF NOT EXISTS case_tables (
       system_id TEXT PRIMARY KEY, data TEXT NOT NULL
+    )`);
+    db.run(`CREATE TABLE IF NOT EXISTS case_generations (
+      system_id TEXT NOT NULL,
+      batch_id TEXT NOT NULL,
+      data TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (system_id, batch_id)
     )`);
     db.run(`CREATE TABLE IF NOT EXISTS executions (
       system_id TEXT PRIMARY KEY, data TEXT NOT NULL
@@ -344,6 +367,7 @@ class SqliteProjectStore implements ProjectStore {
     for (const sys of cur.systems) {
       this.ready().run('DELETE FROM feature_tables WHERE system_id = ?', [sys.id]);
       this.ready().run('DELETE FROM case_tables WHERE system_id = ?', [sys.id]);
+      this.ready().run('DELETE FROM case_generations WHERE system_id = ?', [sys.id]);
       this.ready().run('DELETE FROM executions WHERE system_id = ?', [sys.id]);
     }
     this.flush();
@@ -356,7 +380,7 @@ class SqliteProjectStore implements ProjectStore {
     const cur = await this.getProject(projectId);
     if (!cur) throw new Error(`project not found: ${projectId}`);
     const now = Date.now();
-    const system: System = {
+    const base: System = {
       id: input.id ?? randomUUID(),
       name: input.name,
       url: input.url,
@@ -373,6 +397,11 @@ class SqliteProjectStore implements ProjectStore {
       createdAt: now,
       updatedAt: now,
     };
+    // capturedUrl 非冻结契约字段（登录后应用页 URL = 子系统探索目标）：JSON 整存透传，
+    // 与 orchestrator updateSystem 写入 capturedUrl 的约定一致（contracts 不改）。
+    const system = input.capturedUrl
+      ? ({ ...base, capturedUrl: input.capturedUrl } as System)
+      : base;
     cur.systems.push(system);
     await this.updateProject(projectId, { systems: cur.systems });
     return system;
@@ -401,6 +430,7 @@ class SqliteProjectStore implements ProjectStore {
     cur.systems.splice(idx, 1);
     this.ready().run('DELETE FROM feature_tables WHERE system_id = ?', [systemId]);
     this.ready().run('DELETE FROM case_tables WHERE system_id = ?', [systemId]);
+    this.ready().run('DELETE FROM case_generations WHERE system_id = ?', [systemId]);
     this.ready().run('DELETE FROM executions WHERE system_id = ?', [systemId]);
     await this.updateProject(projectId, { systems: cur.systems });
   }
@@ -419,10 +449,26 @@ class SqliteProjectStore implements ProjectStore {
 
   async saveFeatureTable(systemId: string, table: FeatureRow[][]): Promise<void> {
     await this.initPromise;
+    // Legacy callers (including the editable nine-column grid) must not erase v2 evidence.
+    const existing = await this.getFeatureArtifact(systemId);
+    const data = existing && !Array.isArray(existing)
+      ? FeatureArtifactSchema.parse({ ...existing, table })
+      : table;
     this.ready().run(
       `INSERT INTO feature_tables (system_id, data) VALUES (?, ?)
        ON CONFLICT(system_id) DO UPDATE SET data = excluded.data`,
-      [systemId, JSON.stringify(table)]
+      [systemId, JSON.stringify(data)]
+    );
+    this.flush();
+  }
+
+  async saveFeatureArtifact(systemId: string, artifact: FeatureArtifact): Promise<void> {
+    await this.initPromise;
+    const validated = FeatureArtifactSchema.parse(artifact);
+    this.ready().run(
+      `INSERT INTO feature_tables (system_id, data) VALUES (?, ?)
+       ON CONFLICT(system_id) DO UPDATE SET data = excluded.data`,
+      [systemId, JSON.stringify(validated)]
     );
     this.flush();
   }
@@ -437,6 +483,33 @@ class SqliteProjectStore implements ProjectStore {
     this.flush();
   }
 
+  async saveCaseProduct(systemId: string, sheets: CaseSheet[], generation: CaseGenerationContext): Promise<void> {
+    await this.initPromise;
+    const db = this.ready();
+    db.run('BEGIN');
+    try {
+      db.run(
+        `INSERT INTO case_tables (system_id, data) VALUES (?, ?)
+         ON CONFLICT(system_id) DO UPDATE SET data = excluded.data`,
+        [systemId, JSON.stringify(sheets)],
+      );
+      db.run(
+        `INSERT INTO case_generations (system_id, batch_id, data, created_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(system_id, batch_id) DO UPDATE SET data = excluded.data, created_at = excluded.created_at`,
+        [systemId, generation.batchId, JSON.stringify(generation), Date.now()],
+      );
+      db.run('COMMIT');
+      this.flush();
+    } catch (error) {
+      try {
+        db.run('ROLLBACK');
+      } catch {
+        // Preserve the original write error if rollback itself fails.
+      }
+      throw error;
+    }
+  }
+
   async saveExecution(systemId: string, report: ExecutionResult[]): Promise<void> {
     await this.initPromise;
     this.ready().run(
@@ -448,11 +521,20 @@ class SqliteProjectStore implements ProjectStore {
   }
 
   async getFeatureTable(systemId: string): Promise<FeatureRow[][] | null> {
+    const artifact = await this.getFeatureArtifact(systemId);
+    return artifact ? (Array.isArray(artifact) ? artifact : artifact.table) : null;
+  }
+
+  async getFeatureArtifact(systemId: string): Promise<FeatureArtifact | null> {
     await this.initPromise;
     const stmt = this.ready().prepare('SELECT data FROM feature_tables WHERE system_id = ?');
     stmt.bind([systemId]);
     const row = this.one(stmt);
-    return row ? JSON.parse(row.data) : null;
+    if (!row) return null;
+    const parsed: unknown = JSON.parse(row.data);
+    // 早期 store 曾直接写入二维行数组；保留原样读取，避免历史 artifact 被校验拒绝。
+    if (Array.isArray(parsed)) return parsed as FeatureArtifact;
+    return FeatureArtifactSchema.parse(parsed);
   }
 
   async getCaseTable(systemId: string): Promise<CaseSheet[] | null> {
@@ -469,6 +551,24 @@ class SqliteProjectStore implements ProjectStore {
     stmt.bind([systemId]);
     const row = this.one(stmt);
     return row ? JSON.parse(row.data) : null;
+  }
+
+  async saveCaseGeneration(systemId: string, generation: CaseGenerationContext): Promise<void> {
+    await this.initPromise;
+    this.ready().run(
+      `INSERT INTO case_generations (system_id, batch_id, data, created_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(system_id, batch_id) DO UPDATE SET data = excluded.data, created_at = excluded.created_at`,
+      [systemId, generation.batchId, JSON.stringify(generation), Date.now()]
+    );
+    this.flush();
+  }
+
+  async getCaseGenerations(systemId: string): Promise<CaseGenerationContext[]> {
+    await this.initPromise;
+    const stmt = this.ready().prepare('SELECT data FROM case_generations WHERE system_id = ? ORDER BY created_at DESC');
+    stmt.bind([systemId]);
+    const rows = this.all(stmt);
+    return rows.map((r) => JSON.parse(r.data) as CaseGenerationContext);
   }
 
   // --- Session ---

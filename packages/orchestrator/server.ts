@@ -92,13 +92,25 @@ function jsonResponse(res: http.ServerResponse, code: number, ok: boolean, data?
 /**
  * 凭证预处理：若 login input 包含 username/password（无 credentialRef），
  * 自动存入凭证存储并注入 credentialRef，实现"输入参数即执行"的通用模式。
+ *
+ * 补充：冻结契约 LoginInputSchema 要求 mode=credential 时 credentialRef 必填，
+ * 但业务允许「未配置凭证的账号密码模式」——stage-login 会先打开浏览器由用户手动登录。
+ * 此处为该场景注入占位 credentialRef 以通过契约校验；stage-login 查不到对应凭证时
+ * 自动降级为人工接管（barrier），不会因占位引用被阻断。
  */
 async function preprocessLoginInput(input: any): Promise<any> {
-  if ((input?.mode === 'credential' || input?.mode === 'manual-takeover') && !input.credentialRef && input.username && input.password) {
-    const credRef = await credStore.save(input.username, input.password);
-    console.log(`[server] auto-stored credential: ${credRef} for system ${input.systemId}`);
-    const { username, password, ...rest } = input;
-    return { ...rest, credentialRef: credRef };
+  if ((input?.mode === 'credential' || input?.mode === 'manual-takeover') && !input.credentialRef) {
+    if (input.username && input.password) {
+      const credRef = await credStore.save(input.username, input.password);
+      console.log(`[server] auto-stored credential: ${credRef} for system ${input.systemId}`);
+      const { username, password, ...rest } = input;
+      return { ...rest, credentialRef: credRef };
+    }
+    if (input.mode === 'credential') {
+      const placeholderRef = `manual-${input.systemId ?? 'system'}-${Date.now()}`;
+      console.log(`[server] credential mode without credentials for ${input.systemId}, inject placeholder credentialRef: ${placeholderRef}`);
+      return { ...input, credentialRef: placeholderRef };
+    }
   }
   return input;
 }
@@ -196,6 +208,17 @@ async function handleStore(
       return jsonResponse(res, 200, true, table);
     }
 
+    // PUT/GET /api/store/projects/:id/feature-artifact → v2 feature artifact（旧 table 路由保持兼容）
+    m = pathname.match(/^\/api\/store\/projects\/([^/]+)\/feature-artifact$/);
+    if (method === 'PUT' && m) {
+      await store.saveFeatureArtifact(body.systemId, body.artifact);
+      return jsonResponse(res, 200, true);
+    }
+    if (method === 'GET' && m) {
+      const systemId = query.get('systemId') ?? m[1];
+      return jsonResponse(res, 200, true, await store.getFeatureArtifact(systemId));
+    }
+
     // PUT /api/store/projects/:id/case-table → saveCaseTable
     m = pathname.match(/^\/api\/store\/projects\/([^/]+)\/case-table$/);
     if (method === 'PUT' && m) {
@@ -209,6 +232,14 @@ async function handleStore(
       const systemId = query.get('systemId') ?? m[1];
       const sheets = await store.getCaseTable(systemId);
       return jsonResponse(res, 200, true, sheets);
+    }
+
+    // GET /api/store/projects/:id/case-generation?systemId=xxx → getCaseGenerations（批次元数据，§6.5 / §17.7）
+    m = pathname.match(/^\/api\/store\/projects\/([^/]+)\/case-generation$/);
+    if (method === 'GET' && m) {
+      const systemId = query.get('systemId') ?? m[1];
+      const gens = await store.getCaseGenerations(systemId);
+      return jsonResponse(res, 200, true, gens);
     }
 
     // PUT /api/store/projects/:id/execution → saveExecution
@@ -260,20 +291,22 @@ async function handleStore(
     if (method === 'GET' && pathname === '/api/store/bootstrap') {
       const projects = await store.listProjects();
       const fullProjects = [];
-      const systemData: Record<string, { featureTable?: any; caseTable?: any; execution?: any }> = {};
+      const systemData: Record<string, { featureTable?: any; featureArtifact?: any; caseTable?: any; execution?: any }> = {};
 
       for (const s of projects) {
         const p = await store.getProject(s.id);
         if (p) {
           fullProjects.push(p);
           for (const sys of p.systems) {
-            const [ft, ct, ex] = await Promise.all([
+            const [ft, fa, ct, ex] = await Promise.all([
               store.getFeatureTable(sys.id),
+              store.getFeatureArtifact(sys.id),
               store.getCaseTable(sys.id),
               store.getExecution(sys.id),
             ]);
             systemData[sys.id] = {
               featureTable: ft ?? undefined,
+              featureArtifact: fa ?? undefined,
               caseTable: ct ?? undefined,
               execution: ex ?? undefined,
             };

@@ -1,9 +1,11 @@
 
-import { createContext, useCallback, useContext, useEffect, useReducer } from "react";
+import { createContext, useCallback, useContext, useEffect, useReducer, useRef } from "react";
 import type { ReactNode } from "react";
-import { createPipelineService, toFeatureView, fromFeatureView, toCaseView, toDefectView, toModuleView, toExecView, fromFeatureViewToTable } from "./services/pipeline";
+import { createPipelineService, toFeatureView, toCaseView, toDefectView, toModuleView, toExecView, fromFeatureViewToTable, moduleTreeToFeatureTable } from "./services/pipeline";
 import type { PipelineService } from "./services/pipeline";
+import { nextTestPointIdFor, toAbbrToken } from "./services/abbr";
 import * as dataApi from "./services/dataApi";
+import type { CaseRow, CaseSheet, DesignSource, FeatureEvidence, FeatureProfile, FeatureProvenance, FeatureRow, QualityGateIssue, CaseGenerationContext } from '@test-platform/contracts';
 
 // ===== 类型定义 =====
 
@@ -81,6 +83,8 @@ export interface FeatureRowView {
 }
 
 export interface CaseRowView {
+  id?: CaseRow['id'];
+  targetTestPoint?: CaseRow['targetTestPoint'];
   caseNo: string;
   content: string;
   step: string;
@@ -89,9 +93,27 @@ export interface CaseRowView {
   firstResult: string;
   regressionResult: string;
   conclusion: string;
+  scenarioId?: string;
+  scenarioName?: string;
+  priority?: 'P0' | 'P1' | 'P2';
+  coverageKeys?: string[];
+  evidenceLevel?: 'observed' | 'derived' | 'needs_review';
+  needsReview?: boolean;
+  reviewReason?: string;
+  featureId?: string;
+  evidenceId?: CaseRow['evidenceId'];
+  origin?: CaseRow['origin'];
+  confidence?: CaseRow['confidence'];
+  manualEdited?: CaseRow['manualEdited'];
+  quality?: CaseRow['quality'];
+  qualityGateStatus?: CaseRow['qualityGateStatus'];
+  /** @新增 生成批次 ID（spec §6.5 / §17.8：每组可追溯生成来源） */
+  batchId?: string;
 }
 
 export interface CaseStepView {
+  id?: CaseRow['id'];
+  targetTestPoint?: CaseRow['targetTestPoint'];
   stepId: string;
   stepNumber: string;
   operation: string;
@@ -99,14 +121,48 @@ export interface CaseStepView {
   firstResult: string;
   regressionResult: string;
   conclusion: string;
+  scenarioId?: string;
+  scenarioName?: string;
+  priority?: 'P0' | 'P1' | 'P2';
+  coverageKeys?: string[];
+  evidenceLevel?: 'observed' | 'derived' | 'needs_review';
+  needsReview?: boolean;
+  reviewReason?: string;
+  featureId?: string;
+  evidenceId?: CaseRow['evidenceId'];
+  origin?: CaseRow['origin'];
+  confidence?: CaseRow['confidence'];
+  manualEdited?: CaseRow['manualEdited'];
+  quality?: CaseRow['quality'];
+  qualityGateStatus?: CaseRow['qualityGateStatus'];
+  /** @新增 生成批次 ID（spec §6.5 / §17.8：每组可追溯生成来源） */
+  batchId?: string;
 }
 
 export interface CaseGroupView {
+  id?: CaseRow['id'];
+  targetTestPoint?: CaseRow['targetTestPoint'];
   groupId: string;
   caseNo: string;
   content: string;
   moduleName: string;
   precondition: string;
+  scenarioId?: string;
+  scenarioName?: string;
+  priority?: 'P0' | 'P1' | 'P2';
+  coverageKeys?: string[];
+  evidenceLevel?: 'observed' | 'derived' | 'needs_review';
+  needsReview?: boolean;
+  reviewReason?: string;
+  featureId?: string;
+  evidenceId?: CaseRow['evidenceId'];
+  origin?: CaseRow['origin'];
+  confidence?: CaseRow['confidence'];
+  manualEdited?: CaseRow['manualEdited'];
+  quality?: CaseRow['quality'];
+  qualityGateStatus?: CaseRow['qualityGateStatus'];
+  /** 生成批次来源（用于区分不同 scope/mode 的追加结果） */
+  batchId?: CaseRow['batchId'];
   steps: CaseStepView[];
 }
 
@@ -240,11 +296,15 @@ export interface AppState {
   featureConfirmed: boolean;
   caseRows: CaseRowView[];
   caseGroups: CaseGroupView[];
+  /** 当前持久化用例工作簿，保留人工编辑及表级元数据供下一次生成合并。 */
+  currentCaseWorkbook: CaseSheet[];
   metaHeader: MetaHeader;
   caseSelectedModules: string[];
   caseAiOn: boolean;
   /** 探索阶段是否启用 AI 辅助（独立开关，默认关闭，与用例页 AI 解耦） */
   exploreAiOn: boolean;
+  /** 只读点击安全策略（页面可配置）：strict=严格（默认放行面窄）；allow_all=放行所有非写操作按钮，仍拦截删除/提交/导出等写操作 */
+  readOnlyClickPolicy: "strict" | "allow_all";
   execModules: ExecModuleState[];
   execBrowsers: string[];
   execMatrix: ExecMatrixRow[];
@@ -270,6 +330,13 @@ export interface AppState {
   exploredElements: any[];
   /** 功能点测试点标识 → 来源页面 URL（来自功能点阶段产物，供用例阶段按所选模块探索） */
   featurePaths: Record<string, string>;
+  featureProfiles: FeatureProfile[];
+  featureEvidence: Record<string, FeatureEvidence>;
+  featureProvenance: FeatureProvenance[];
+  featureDesignSources: string[];
+  caseQualityGateIssues: QualityGateIssue[];
+  /** 生成批次元数据列表（spec §6.5 / §17.7：每组用例可追溯其生成来源 batchId/mode/aiConfigId） */
+  caseGenerations: CaseGenerationContext[];
 }
 
 // ===== Actions =====
@@ -302,6 +369,7 @@ export type Action =
   | { type: "CASE_SET_SELECTION"; modules: string[] }
   | { type: "CASE_TOGGLE_AI"; on: boolean }
   | { type: "EXPLORE_TOGGLE_AI"; on: boolean }
+  | { type: "SET_READONLY_CLICK_POLICY"; policy: "strict" | "allow_all" }
   | { type: "CASE_REGENERATE" }
   | { type: "CASE_GROUP_ADD"; group?: Partial<CaseGroupView> }
   | { type: "CASE_GROUP_REMOVE"; groupId: string }
@@ -341,6 +409,7 @@ export type Action =
   | { type: "LOG_CLEANUP_EXPIRED" }
   | { type: "LOG_CLEAR_ALL" }
   | { type: "LOG_REMOVE_FILE"; filename: string }
+  | { type: "LOG_LIST_FILES"; files: LogFileView[] }
   | { type: "KNOWLEDGE_UPDATE"; id: string; content: string }
   | { type: "KNOWLEDGE_ADD"; entry: KnowledgeEntry }
   | { type: "KNOWLEDGE_REMOVE"; id: string }
@@ -350,7 +419,11 @@ export type Action =
   | { type: "PIPELINE_SET_MODE"; mode: "mock" | "real" }
   | { type: "PIPELINE_UPDATE_FEATURE"; rows: FeatureRowView[] }
   | { type: "PIPELINE_SET_FEATURE_PATHS"; paths: Record<string, string> }
-  | { type: "PIPELINE_UPDATE_CASE"; rows: CaseRowView[]; groups: CaseGroupView[]; meta: MetaHeader }
+  | { type: "PIPELINE_SET_FEATURE_PROFILES"; profiles: FeatureProfile[] }
+  | { type: "PIPELINE_SET_FEATURE_EVIDENCE"; evidence: Record<string, FeatureEvidence> }
+  | { type: "PIPELINE_SET_FEATURE_ARTIFACT_META"; provenance: FeatureProvenance[]; designSources: string[] }
+  | { type: "PIPELINE_UPDATE_CASE"; rows: CaseRowView[]; groups: CaseGroupView[]; meta: MetaHeader; workbook?: CaseSheet[]; issues?: QualityGateIssue[] }
+  | { type: "PIPELINE_SET_CASE_GENERATIONS"; generations: CaseGenerationContext[] }
   | { type: "PIPELINE_UPDATE_MODULE_TREE"; nodes: ModuleNodeView[] }
   | { type: "PIPELINE_UPDATE_DEFECT"; rows: DefectRowView[] }
   | { type: "PIPELINE_UPDATE_EXEC"; matrix: ExecMatrixRow[]; modules: ExecModuleState[] }
@@ -377,6 +450,37 @@ export function updateInArray<T>(arr: T[], predicate: (item: T, index: number) =
   return arr.map((item, index) => (predicate(item, index) ? { ...item, ...patch } : item));
 }
 
+function clearSystemScopedState(state: AppState, system: SystemInfo, projects: ProjectInfo[], project: ProjectInfo): AppState {
+  return {
+    ...state,
+    system,
+    projects,
+    project,
+    featureRows: [],
+    featureConfirmed: false,
+    featurePaths: {},
+    featureProfiles: [],
+    featureEvidence: {},
+    featureProvenance: [],
+    featureDesignSources: [],
+    caseRows: [],
+    caseGroups: [],
+    currentCaseWorkbook: [],
+    caseQualityGateIssues: [],
+    caseGenerations: [],
+    metaHeader: initialState.metaHeader,
+    caseSelectedModules: [],
+    exploredElements: [],
+    moduleTree: [],
+    pendingTree: [],
+    selectedModuleId: null,
+    treeChecked: [],
+    pipelineLoading: false,
+    pipelineStage: null,
+    pipelineError: null,
+  };
+}
+
 // ===== Initial State =====
 
 export const initialState: AppState = {
@@ -390,12 +494,16 @@ export const initialState: AppState = {
   featureRows: [],
   featureConfirmed: false,
 
-  caseRows: [],
-  caseGroups: [],
+    caseRows: [],
+    caseGroups: [],
+    currentCaseWorkbook: [],
+  caseQualityGateIssues: [],
+    caseGenerations: [],
   metaHeader: { system: "", testPointId: "", testPoint: "", testers: "", clientStaff: "", developerStaff: "", firstTestDate: "", regressionDate: "", conclusionRule: "", precondition: "" },
   caseSelectedModules: [],
   caseAiOn: false,
   exploreAiOn: false,
+  readOnlyClickPolicy: "allow_all",
 
   execModules: [],
   execBrowsers: ["Win11·Chrome", "Win11·Edge", "macOS·Safari", "Win10·Chrome"],
@@ -428,6 +536,10 @@ export const initialState: AppState = {
   bootstrapping: true,
   exploredElements: [],
   featurePaths: {},
+  featureProfiles: [],
+  featureEvidence: {},
+  featureProvenance: [],
+  featureDesignSources: [],
 };
 
 // ===== Reducer =====
@@ -446,7 +558,10 @@ export function reducer(state: AppState, action: Action): AppState {
       if (!p) return state;
       const projectSystems = state.systems.filter((s) => s.projectId === p.id);
       const found = (p.activeSystemId && projectSystems.find((s) => s.id === p.activeSystemId)) || projectSystems[0];
-      return { ...state, project: p, system: found ?? state.system };
+      const system = found ?? state.system;
+      return system.id === state.system.id && p.id === state.project.id
+        ? { ...state, project: p }
+        : clearSystemScopedState(state, system, state.projects, p);
     }
     case "ADD_PROJECT":
       return { ...state, projects: [...state.projects, action.project], project: action.project };
@@ -473,7 +588,9 @@ export function reducer(state: AppState, action: Action): AppState {
       // 导致后端 updateSystem 报 system not found、capturedUrl 存不上 → 探索门户）。
       const project = state.projects.find((p) => p.id === s.projectId)
         ?? (state.project.id === s.projectId ? { ...state.project, activeSystemId: s.id } : state.project);
-      return { ...state, system: s, projects, project };
+      return s.id === state.system.id && project.id === state.project.id
+        ? { ...state, system: s, projects, project }
+        : clearSystemScopedState(state, s, projects, project);
     }
     case "ADD_SYSTEM":
       return { ...state, systems: [...state.systems, action.system] };
@@ -502,21 +619,54 @@ export function reducer(state: AppState, action: Action): AppState {
       };
 
     case "FEATURE_ADD_ROW": {
+      // 新增行 testPointId 必须遵循 docs §5.3：「子系统维度 NN 递增」
+      // —— 不再用全局 nextCaseNo（会跨分组乱递增，还会把 state.metaHeader.testPointId 当前缀用）。
+      const anchor = action.afterIndex !== undefined ? action.afterIndex : state.featureRows.length - 1;
+      const anchorRow = state.featureRows[anchor];
+      const target = {
+        system: anchorRow?.system ?? state.featureRows[0]?.system ?? state.system.name ?? '',
+        mainModule: anchorRow?.mainModule ?? state.featureRows[0]?.mainModule ?? '',
+        subModule: anchorRow?.subModule ?? state.featureRows[0]?.subModule ?? '',
+      };
+      // 用户规则：点 + 后，新行测试点标识 = 锚点行同 base（系统_主_子 前 3 段）+ 组内重排后的下一号。
+      // 插入后同 base 组内统一从 01 重新编号：点 _01 的 + → 新行 _02，原 _02→_03，原 _03→_04。
+      // 绝不重新按 system/main/sub 派生（subModule 为空时重新派生会退化成主模块缩写 → RUOYI_SY_SY 错）。
+      const anchorId = anchorRow?.testPointId ?? '';
+      const anchorParts = anchorId.split('_');
+      const hasBase = anchorParts.length >= 3;
+      const base = hasBase ? anchorParts.slice(0, 3).join('_') : '';
       const newRow: FeatureRowView = {
         seq: nextSeq(),
-        type: state.featureRows[0]?.type ?? "功能性测试",
-        chapter: state.featureRows[0]?.chapter ?? "",
-        system: state.featureRows[0]?.system ?? "",
-        mainModule: state.featureRows[0]?.mainModule ?? "",
-        subModule: state.featureRows[0]?.subModule ?? "",
-        feature: state.featureRows[0]?.feature ?? "",
+        type: anchorRow?.type ?? state.featureRows[0]?.type ?? "功能性测试",
+        chapter: anchorRow?.chapter ?? state.featureRows[0]?.chapter ?? "",
+        system: target.system,
+        mainModule: target.mainModule,
+        subModule: target.subModule,
+        feature: anchorRow?.feature ?? state.featureRows[0]?.feature ?? "",
         testPoint: "新功能点",
-        testPointId: nextCaseNo(state.metaHeader.testPointId),
+        // 先占位为 base_01，随后按同 base 组内行序统一重排
+        testPointId: base ? `${base}_01` : nextTestPointIdFor(state.featureRows, target),
       };
-      if (action.afterIndex === undefined) {
-        return { ...state, featureRows: [...state.featureRows, newRow] };
+      const after = action.afterIndex !== undefined ? action.afterIndex : state.featureRows.length - 1;
+      const inserted = action.afterIndex === undefined
+        ? [...state.featureRows, newRow]
+        : insertInArray(state.featureRows, action.afterIndex, newRow);
+      // 同 base 组内重排 NN：保持行序 01..N 连续（新行紧跟锚点 = 锚点号+1）
+      if (base) {
+        let nn = 0;
+        return {
+          ...state,
+          featureRows: inserted.map((r) => {
+            const p = (r.testPointId ?? '').split('_');
+            if (p.length >= 3 && p.slice(0, 3).join('_') === base) {
+              nn += 1;
+              return { ...r, testPointId: `${base}_${String(nn).padStart(2, '0')}` };
+            }
+            return r;
+          }),
+        };
       }
-      return { ...state, featureRows: insertInArray(state.featureRows, action.afterIndex, newRow) };
+      return { ...state, featureRows: inserted };
     }
     case "FEATURE_UPDATE_ROW":
       return { ...state, featureRows: updateInArray(state.featureRows, (_, i) => i === action.index, action.patch) };
@@ -562,6 +712,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, caseAiOn: action.on };
     case "EXPLORE_TOGGLE_AI":
       return { ...state, exploreAiOn: action.on };
+    case "SET_READONLY_CLICK_POLICY":
+      return { ...state, readOnlyClickPolicy: action.policy };
     case "CASE_REGENERATE":
       return { ...state, caseRows: state.caseRows.map((r) => ({ ...r, firstResult: "\\", regressionResult: "\\", conclusion: "\\" })) };
     case "CASE_GROUP_ADD": {
@@ -705,7 +857,6 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, treeChecked: allIds.filter((id) => !state.treeChecked.includes(id)) };
     }
     case "EXPLORE_REMOVE_MODULES_BATCH": {
-      const idsToRemove = new Set(action.ids);
       const collectDescendants = (node: ModuleNodeView): string[] => [
         node.id,
         ...(node.children?.flatMap(collectDescendants) ?? []),
@@ -722,7 +873,7 @@ export function reducer(state: AppState, action: Action): AppState {
           }
           return null;
         };
-        const node = find(state.moduleTree, id);
+        const node = find(state.moduleTree);
         if (node) {
           collectDescendants(node).forEach((d) => idsWithDescendants.add(d));
         }
@@ -909,8 +1060,23 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, featureRows: action.rows };
     case "PIPELINE_SET_FEATURE_PATHS":
       return { ...state, featurePaths: action.paths };
+    case "PIPELINE_SET_FEATURE_PROFILES":
+      return { ...state, featureProfiles: action.profiles };
+    case "PIPELINE_SET_FEATURE_EVIDENCE":
+      return { ...state, featureEvidence: action.evidence };
+    case "PIPELINE_SET_FEATURE_ARTIFACT_META":
+      return { ...state, featureProvenance: action.provenance, featureDesignSources: action.designSources };
     case "PIPELINE_UPDATE_CASE":
-      return { ...state, caseRows: action.rows, caseGroups: action.groups, metaHeader: action.meta };
+      return {
+        ...state,
+        caseRows: action.rows,
+        caseGroups: action.groups,
+        currentCaseWorkbook: action.workbook ?? state.currentCaseWorkbook,
+        metaHeader: action.meta,
+        caseQualityGateIssues: action.issues ?? [],
+      };
+    case "PIPELINE_SET_CASE_GENERATIONS":
+      return { ...state, caseGenerations: action.generations };
     case "PIPELINE_UPDATE_MODULE_TREE":
       return { ...state, moduleTree: action.nodes };
     case "PIPELINE_UPDATE_DEFECT":
@@ -928,7 +1094,13 @@ export function reducer(state: AppState, action: Action): AppState {
 
 // ===== Context & Provider =====
 
-const AppContext = createContext<{ state: AppState; dispatch: React.Dispatch<Action>; showToast: (msg: string) => void; getPipelineService: () => PipelineService } | null>(null);
+interface SystemIdentity {
+  projectId: string;
+  systemId: string;
+  revision: number;
+}
+
+const AppContext = createContext<{ state: AppState; dispatch: React.Dispatch<Action>; showToast: (msg: string) => void; getPipelineService: () => PipelineService; activateSystem: (projectId: string, systemId: string) => void; captureActiveSystem: () => SystemIdentity; isActiveSystem: (identity: SystemIdentity) => boolean } | null>(null);
 
 const typeLabel: Record<SystemType, string> = { portal: "门户", standalone: "单系统", subsystem: "子系统" };
 
@@ -938,13 +1110,26 @@ export function systemTypeLabel(t: SystemType): string {
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
+  const activeSystemRef = useRef<SystemIdentity>({ projectId: initialState.project.id, systemId: initialState.system.id, revision: 0 });
+
+  const activateSystem = useCallback((projectId: string, systemId: string) => {
+    activeSystemRef.current = { projectId, systemId, revision: activeSystemRef.current.revision + 1 };
+  }, []);
+
+  const captureActiveSystem = useCallback(() => ({ ...activeSystemRef.current }), []);
+
+  const isActiveSystem = useCallback((identity: SystemIdentity) => (
+    activeSystemRef.current.projectId === identity.projectId
+    && activeSystemRef.current.systemId === identity.systemId
+    && activeSystemRef.current.revision === identity.revision
+  ), []);
 
   const showToast = useCallback((msg: string) => {
     dispatch({ type: "SHOW_TOAST", msg });
     window.setTimeout(() => dispatch({ type: "CLEAR_TOAST" }), 2200);
   }, []);
 
-  const pipelineServiceRef = { current: null as PipelineService | null };
+  const pipelineServiceRef = useRef<PipelineService | null>(null);
 
   const getPipelineService = useCallback(() => {
     if (pipelineServiceRef.current) return pipelineServiceRef.current;
@@ -1009,10 +1194,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
               parentPortalId: s.parentPortalId,
               parentPortalPath,
               sessionState: s.sessionState,
-              username: s.credentials?.username ?? s.username,
+              username: s.credentials?.username,
               passwordRef: undefined,
-              credentials: s.credentials ?? (s.passwordRef ? { credentialRef: s.passwordRef, username: s.username ?? '' } : undefined),
+              credentials: s.credentials,
               credentialMode: s.credentialMode,
+              // 登录成功后浏览器所在的应用页 URL（子系统探索目标）。非冻结契约字段，
+              // 但 store 以 JSON 整存 systems，运行时可达；重启后若丢失会回退门户 URL
+              // → 探索门户而非子系统。
+              capturedUrl: (s as typeof s & { capturedUrl?: string }).capturedUrl,
             });
           }
         }
@@ -1031,14 +1220,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
           activeSystemId: activeProjectRaw.activeSystemId,
         } : undefined;
         const savedActiveSystemId = activeProjectRaw?.activeSystemId;
-        const activeSystem = (savedActiveSystemId && allSystems.find((s) => s.id === savedActiveSystemId))
+        const activeSystem = (savedActiveSystemId ? allSystems.find((s) => s.id === savedActiveSystemId) : undefined)
           ?? allSystems.find((s) => activeProjectRaw && s.parent === activeProjectRaw.name)
           ?? allSystems[0];
 
         const systemData = bootstrap.systemData ?? {};
         let featureRows = initialState.featureRows;
+        let featureProfiles = initialState.featureProfiles;
+        let featurePaths = initialState.featurePaths;
+        let featureEvidence = initialState.featureEvidence;
+        let featureProvenance = initialState.featureProvenance;
+        let featureDesignSources = initialState.featureDesignSources;
         let caseRows = initialState.caseRows;
         let caseGroups = initialState.caseGroups;
+        let currentCaseWorkbook = initialState.currentCaseWorkbook;
         let metaHeader = initialState.metaHeader;
 
         if (activeSystem) {
@@ -1046,10 +1241,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
           if (sysData?.featureTable && Array.isArray(sysData.featureTable)) {
             featureRows = toFeatureView(sysData.featureTable as any);
           }
+          if (sysData?.featureArtifact && !Array.isArray(sysData.featureArtifact)) {
+            featureProfiles = sysData.featureArtifact.featureProfiles ?? [];
+            featurePaths = sysData.featureArtifact.featurePaths ?? {};
+            featureEvidence = sysData.featureArtifact.featureEvidence ?? {};
+            featureProvenance = sysData.featureArtifact.provenance ?? [];
+            featureDesignSources = sysData.featureArtifact.designSources ?? [];
+          }
           if (sysData?.caseTable && Array.isArray(sysData.caseTable)) {
             const conv = toCaseView(sysData.caseTable as any[]);
             caseRows = conv.rows;
             caseGroups = conv.groups;
+            currentCaseWorkbook = sysData.caseTable as CaseSheet[];
             metaHeader = conv.meta;
           }
           try {
@@ -1057,7 +1260,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
             if (savedMeta && typeof savedMeta === 'object') {
               metaHeader = { ...metaHeader, ...savedMeta };
             }
-          } catch {}
+          } catch {
+            // Meta is optional during bootstrap.
+          }
         }
 
         let aiConfigs = initialState.aiConfigs;
@@ -1108,14 +1313,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
             project: activeProject ?? initialState.project,
             system: activeSystem ?? initialState.system,
             featureRows,
+            featureProfiles,
+            featurePaths,
+            featureEvidence,
+            featureProvenance,
+            featureDesignSources,
             caseRows,
             caseGroups,
+            currentCaseWorkbook,
             metaHeader,
             aiConfigs,
             aiCurrentDefault,
             knowledge,
           },
         });
+        activateSystem(activeProject?.id ?? '', activeSystem?.id ?? '');
       } catch {
         if (!cancelled) {
           dispatch({ type: "BOOTSTRAP_DONE", state: {} });
@@ -1130,30 +1342,52 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (state.bootstrapping) return;
     if (!state.project?.id || !state.system?.id) return;
 
+    const identity = captureActiveSystem();
+    let cancelled = false;
+
     (async () => {
       try {
-        const [ft, ct, meta] = await Promise.all([
+        const [ft, artifact, ct, meta, gens] = await Promise.all([
           dataApi.getFeatureTable(state.project.id, state.system.id),
+          dataApi.getFeatureArtifact(state.project.id, state.system.id),
           dataApi.getCaseTable(state.project.id, state.system.id),
           dataApi.getMetaConfig(state.project.id, state.system.id).catch(() => null),
+          dataApi.getCaseGenerations(state.project.id, state.system.id).catch(() => null),
         ]);
+        if (cancelled || !isActiveSystem(identity)) return;
         if (ft && Array.isArray(ft)) {
           dispatch({ type: "PIPELINE_UPDATE_FEATURE", rows: toFeatureView(ft as any) });
+        }
+        if (artifact && !Array.isArray(artifact)) {
+          dispatch({ type: "PIPELINE_SET_FEATURE_PROFILES", profiles: artifact.featureProfiles ?? [] });
+          dispatch({ type: "PIPELINE_SET_FEATURE_PATHS", paths: artifact.featurePaths ?? {} });
+          dispatch({ type: "PIPELINE_SET_FEATURE_EVIDENCE", evidence: artifact.featureEvidence ?? {} });
+          dispatch({ type: "PIPELINE_SET_FEATURE_ARTIFACT_META", provenance: artifact.provenance ?? [], designSources: artifact.designSources ?? [] });
+        } else {
+          dispatch({ type: "PIPELINE_SET_FEATURE_PROFILES", profiles: [] });
+          dispatch({ type: "PIPELINE_SET_FEATURE_PATHS", paths: {} });
+          dispatch({ type: "PIPELINE_SET_FEATURE_EVIDENCE", evidence: {} });
+          dispatch({ type: "PIPELINE_SET_FEATURE_ARTIFACT_META", provenance: [], designSources: [] });
         }
         if (ct && Array.isArray(ct)) {
           const conv = toCaseView(ct as any[]);
           const mergedMeta = meta && typeof meta === 'object' ? { ...conv.meta, ...meta } : conv.meta;
-          dispatch({ type: "PIPELINE_UPDATE_CASE", rows: conv.rows, groups: conv.groups, meta: mergedMeta });
+          dispatch({ type: "PIPELINE_UPDATE_CASE", rows: conv.rows, groups: conv.groups, meta: mergedMeta, workbook: ct as CaseSheet[] });
         } else if (meta && typeof meta === 'object') {
           dispatch({ type: "CASE_UPDATE_META", patch: meta as Partial<MetaHeader> });
         }
+        if (gens && Array.isArray(gens)) {
+          dispatch({ type: "PIPELINE_SET_CASE_GENERATIONS", generations: gens as CaseGenerationContext[] });
+        }
       } catch (e) {
+        if (cancelled || !isActiveSystem(identity)) return;
         console.warn('Failed to reload system data:', e);
       }
     })();
-  }, [state.system?.id, state.bootstrapping]);
+    return () => { cancelled = true; };
+  }, [state.project?.id, state.system?.id, state.bootstrapping, captureActiveSystem, isActiveSystem]);
 
-  const value = { state, dispatch, showToast, getPipelineService };
+  const value = { state, dispatch, showToast, getPipelineService, activateSystem, captureActiveSystem, isActiveSystem };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
@@ -1161,7 +1395,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 export function useApp() {
   const ctx = useContext(AppContext);
   if (!ctx) throw new Error("useApp must be used within AppProvider");
-  const { state, dispatch, showToast, getPipelineService } = ctx;
+  const { state, dispatch, showToast, getPipelineService, activateSystem, captureActiveSystem, isActiveSystem } = ctx;
 
   return {
     // State
@@ -1173,12 +1407,21 @@ export function useApp() {
     toastMsg: state.toastMsg,
     featureRows: state.featureRows,
     featureConfirmed: state.featureConfirmed,
+    featurePaths: state.featurePaths,
+    featureProfiles: state.featureProfiles,
+    featureEvidence: state.featureEvidence,
+    featureProvenance: state.featureProvenance,
+    featureDesignSources: state.featureDesignSources,
+    caseQualityGateIssues: state.caseQualityGateIssues,
+    currentCaseWorkbook: state.currentCaseWorkbook,
     caseRows: state.caseRows,
     caseGroups: state.caseGroups,
     metaHeader: state.metaHeader,
     caseSelectedModules: state.caseSelectedModules,
+    caseGenerations: state.caseGenerations,
     caseAiOn: state.caseAiOn,
     exploreAiOn: state.exploreAiOn,
+    readOnlyClickPolicy: state.readOnlyClickPolicy,
     execModules: state.execModules,
     execBrowsers: state.execBrowsers,
     execMatrix: state.execMatrix,
@@ -1209,27 +1452,29 @@ export function useApp() {
 
     // Pipeline operations
     runPipelineLogin: async (input?: any) => {
+      const identity = captureActiveSystem();
       dispatch({ type: "PIPELINE_SET_LOADING", loading: true, stage: "login" });
       dispatch({ type: "PIPELINE_SET_ERROR", error: null });
       try {
         const svc = getPipelineService();
         const out = await svc.runStageLogin(input ?? {});
-        dispatch({ type: "SET_LOGIN_STATUS", id: state.system.id, status: out.loginStatus === 'ok' ? 'logged_in' as const : 'logged_out' as const });
+        if (!isActiveSystem(identity)) return null;
+        dispatch({ type: "SET_LOGIN_STATUS", id: identity.systemId, status: out.loginStatus === 'ok' ? 'logged_in' as const : 'logged_out' as const });
         if (out.loginStatus === 'ok' && out.cookies && out.cookies.length > 0) {
           const sessionState = { cookies: out.cookies, headers: out.sessionHandle?.headers, tokens: out.sessionHandle?.tokens };
-          dispatch({ type: "SET_SESSION_STATE", id: state.system.id, sessionState });
+          dispatch({ type: "SET_SESSION_STATE", id: identity.systemId, sessionState });
           try {
             // 登录后浏览器所在的应用页 URL 一并持久化为 capturedUrl：
             // 探索应导航到登录后的应用页，而非门户闸门根路径（裸根路径重载后跳登录页 = 探索后退登出）
             const capturedUrl = (out as any).capturedUrl;
-            await dataApi.updateSystem(state.project.id, state.system.id, {
+            await dataApi.updateSystem(identity.projectId, identity.systemId, {
               loginState: 'logged_in',
               sessionState,
               ...(capturedUrl ? { capturedUrl } : {}),
             } as any);
             // 同步更新内存中的 system，使随后的探索立即使用 capturedUrl（无需刷新页面）
-            if (capturedUrl) {
-              dispatch({ type: "UPDATE_SYSTEM", id: state.system.id, patch: { capturedUrl } });
+            if (capturedUrl && isActiveSystem(identity)) {
+              dispatch({ type: "UPDATE_SYSTEM", id: identity.systemId, patch: { capturedUrl } });
             }
           } catch (persistErr) {
             console.warn('Failed to persist session state:', persistErr);
@@ -1238,18 +1483,21 @@ export function useApp() {
           console.warn('[pipeline] Login succeeded but no valid cookies captured');
           showToast("警告：登录成功但未获取到有效会话，探索功能可能需要重新登录");
         }
-        dispatch({ type: "ADD_ACTIVITY", item: { id: "p-" + Date.now(), time: new Date().toLocaleTimeString(), text: `登录完成: ${out.loginStatus}` } });
+        if (!isActiveSystem(identity)) return null;
+        dispatch({ type: "ADD_ACTIVITY", item: { id: "p-" + Date.now(), time: new Date().toLocaleTimeString(), text: `登录完成: ${out.loginStatus}${out.sessionHandle?.detectionReason ? ` - ${out.sessionHandle.detectionReason}` : ''}` } });
         return out;
       } catch (e: any) {
+        if (!isActiveSystem(identity)) return null;
         dispatch({ type: "PIPELINE_SET_ERROR", error: e.message });
         showToast(`登录失败: ${e.message}`);
         return null;
       } finally {
-        dispatch({ type: "PIPELINE_SET_LOADING", loading: false, stage: null });
+        if (isActiveSystem(identity)) dispatch({ type: "PIPELINE_SET_LOADING", loading: false, stage: null });
       }
     },
 
     runPipelineExplore: async (input?: any) => {
+      const identity = captureActiveSystem();
       dispatch({ type: "PIPELINE_SET_LOADING", loading: true, stage: "explore" });
       dispatch({ type: "PIPELINE_SET_ERROR", error: null });
       try {
@@ -1258,48 +1506,64 @@ export function useApp() {
         const exploreInput = {
           ...(input ?? {}),
           aiConfig: { configId: state.aiCurrentDefault || 'default', enabled: !!state.exploreAiOn },
+          readOnlyClickPolicy: state.readOnlyClickPolicy,
         };
         const out = await svc.runStageExplore(exploreInput);
+        if (!isActiveSystem(identity)) return null;
         if (out.moduleTree) {
           const nodes = toModuleView(out.moduleTree);
           dispatch({ type: "PIPELINE_UPDATE_MODULE_TREE", nodes });
         }
-        if (state.project.id && state.system.id) {
+        if (identity.projectId && identity.systemId) {
           try {
-            await dataApi.saveModuleTree(state.project.id, state.system.id, out.moduleTree);
+            await dataApi.saveModuleTree(identity.projectId, identity.systemId, out.moduleTree);
           } catch (e) {
             console.warn('Failed to persist explore results:', e);
           }
         }
+        if (!isActiveSystem(identity)) return null;
         dispatch({ type: "ADD_ACTIVITY", item: { id: "p-" + Date.now(), time: new Date().toLocaleTimeString().slice(0, 5), text: `探索完成: ${out.moduleTree?.length ?? 0} 个模块` } });
         return out;
       } catch (e: any) {
+        if (!isActiveSystem(identity)) return null;
         dispatch({ type: "PIPELINE_SET_ERROR", error: e.message });
         showToast(`探索失败: ${e.message}`);
         return null;
       } finally {
-        dispatch({ type: "PIPELINE_SET_LOADING", loading: false, stage: null });
+        if (isActiveSystem(identity)) dispatch({ type: "PIPELINE_SET_LOADING", loading: false, stage: null });
       }
     },
 
     runPipelineFeature: async (input?: any) => {
+      const identity = captureActiveSystem();
       dispatch({ type: "PIPELINE_SET_LOADING", loading: true, stage: "feature" });
       dispatch({ type: "PIPELINE_SET_ERROR", error: null });
       try {
         const svc = getPipelineService();
         const out = await svc.runStageFeature(input ?? {});
+        if (!isActiveSystem(identity)) return null;
         if (out.featureTable) {
           const rows = toFeatureView(out.featureTable as unknown as string[][]);
           dispatch({ type: "PIPELINE_UPDATE_FEATURE", rows });
         }
         // 捕获功能点阶段带出的页面路径，供用例阶段按所选模块真实探索
-        if (out.featurePaths) {
-          dispatch({ type: "PIPELINE_SET_FEATURE_PATHS", paths: out.featurePaths as Record<string, string> });
-        }
+        dispatch({ type: "PIPELINE_SET_FEATURE_PATHS", paths: (out.featurePaths ?? {}) as Record<string, string> });
+        dispatch({ type: "PIPELINE_SET_FEATURE_PROFILES", profiles: (out.featureProfiles ?? []) as FeatureProfile[] });
+        dispatch({ type: "PIPELINE_SET_FEATURE_EVIDENCE", evidence: (out.featureEvidence ?? {}) as Record<string, FeatureEvidence> });
+        const designSources = (input?.designSources as DesignSource[] | undefined)?.map((source) => source.name ?? source.kind) ?? [];
+        dispatch({ type: "PIPELINE_SET_FEATURE_ARTIFACT_META", provenance: out.provenance ?? [], designSources });
         // Persist feature table to backend
-        if (state.project.id && state.system.id) {
+        if (identity.projectId && identity.systemId && isActiveSystem(identity)) {
           try {
-            await dataApi.saveFeatureTable(state.project.id, state.system.id, out.featureTable as unknown as import('@test-platform/contracts').FeatureRow[][]);
+            await dataApi.saveFeatureArtifact(identity.projectId, identity.systemId, {
+              version: 2,
+              table: out.featureTable as FeatureRow[][],
+              featurePaths: out.featurePaths,
+              featureProfiles: out.featureProfiles,
+              featureEvidence: out.featureEvidence,
+              provenance: out.provenance,
+              designSources,
+            });
           } catch (e) {
             console.warn('Failed to persist feature results:', e);
           }
@@ -1307,15 +1571,17 @@ export function useApp() {
         dispatch({ type: "ADD_ACTIVITY", item: { id: "p-" + Date.now(), time: new Date().toLocaleTimeString(), text: `功能点生成: ${out.featureIds?.length ?? 0} 个` } });
         return out;
       } catch (e: any) {
+        if (!isActiveSystem(identity)) return null;
         dispatch({ type: "PIPELINE_SET_ERROR", error: e.message });
         showToast(`功能点生成失败: ${e.message}`);
         return null;
       } finally {
-        dispatch({ type: "PIPELINE_SET_LOADING", loading: false, stage: null });
+        if (isActiveSystem(identity)) dispatch({ type: "PIPELINE_SET_LOADING", loading: false, stage: null });
       }
     },
 
     runPipelineCase: async (input?: any) => {
+      const identity = captureActiveSystem();
       dispatch({ type: "PIPELINE_SET_LOADING", loading: true, stage: "case" });
       dispatch({ type: "PIPELINE_SET_ERROR", error: null });
       try {
@@ -1337,39 +1603,82 @@ export function useApp() {
         const selectedModuleIds = input?.selectedModuleIds ?? (scope === 'selected_modules' ? state.caseSelectedModules : undefined);
         const exploredElements = input?.exploredElements ?? state.exploredElements ?? undefined;
         const featurePaths = input?.featurePaths ?? state.featurePaths ?? undefined;
+        const featureProfiles = input?.featureProfiles ?? state.featureProfiles ?? undefined;
+        const featureEvidence = input?.featureEvidence ?? state.featureEvidence ?? undefined;
         const aiEnabled = input?.aiConfig?.enabled ?? state.caseAiOn;
+        const requestedAiConfig = input?.aiConfig;
+        const regenerateSelected = input?.regenerateSelected ?? false;
 
         const contractInput = {
           featureTable,
           scope,
           selectedModuleIds,
           featurePaths,
+          featureProfiles,
+          featureEvidence,
+          currentCaseWorkbook: input?.currentCaseWorkbook ?? state.currentCaseWorkbook,
           systemId: state.system.id,
-          systemUrl: state.system.url,
-          aiConfig: { configId: state.aiCurrentDefault || 'default', enabled: !!aiEnabled },
+          // 用例阶段二次探索必须复用登录会话：入口取登录后的应用页（capturedUrl），而非可能为登录页的配置 URL
+          systemUrl: state.system.capturedUrl || state.system.url,
+          aiConfig: requestedAiConfig ?? (aiEnabled
+            ? { configId: state.aiCurrentDefault || 'default', enabled: true as const }
+            : { enabled: false as const }),
           metaConfig,
+          ...(input && Object.prototype.hasOwnProperty.call(input, 'regenerateSelected')
+            ? { regenerateSelected: input.regenerateSelected }
+            : regenerateSelected ? { regenerateSelected: true } : {}),
           ...(exploredElements ? { exploredElements } : {}),
+          readOnlyClickPolicy: state.readOnlyClickPolicy,
         };
         const out = await svc.runStageCase(contractInput);
+        if (!isActiveSystem(identity)) return null;
+        const featureResults = (out.featureResults ?? []) as Array<{ featureId?: string; status: string; reasons?: string[]; generatedCaseGroup?: boolean }>;
+        const failedFeatures = featureResults.filter((result) => !['generated', 'skipped_existing'].includes(result.status));
+        const blockingQualityIssues = (out.qualityGateIssues ?? []).filter((issue: { blocking?: boolean }) => issue.blocking);
+        // 部分功能点失败不是整体失败：成功组必须可见（spec §12/§13），失败原因必须明确展示。
+        // 只有既无任何成功产物、又存在失败项时才按整体失败处理。
+        const generatedCount = featureResults.filter((r) => r.status === 'generated').length;
+        const hasAnyProduct = (out.caseWorkbook ?? []).some((sheet: { rows?: unknown[] }) => (sheet.rows?.length ?? 0) > 0);
+        if (failedFeatures.length > 0 || blockingQualityIssues.length > 0) {
+          const featureDetails = failedFeatures.map((result) =>
+            `${result.featureId ?? 'unknown'}=${result.status}${result.reasons?.length ? `（${result.reasons.join('；')}）` : ''}`,
+          );
+          const qualityDetails = blockingQualityIssues.map((issue: { message?: string }) => issue.message ?? '质量门阻断');
+          const details = [...featureDetails, ...qualityDetails];
+          const message = generatedCount > 0 || hasAnyProduct
+            ? `用例生成完成但部分功能点未完成：成功 ${generatedCount} 个，${details.join('；')}`
+            : `用例生成未完成：${details.join('；')}`;
+          dispatch({ type: "PIPELINE_SET_ERROR", error: message });
+          showToast(message);
+          if (!hasAnyProduct && generatedCount === 0) return null;
+        }
         if (out.caseWorkbook) {
           const { rows, groups, meta } = toCaseView(out.caseWorkbook);
-          dispatch({ type: "PIPELINE_UPDATE_CASE", rows, groups, meta });
+          // 失败功能点明细转为阻断性质量门问题透传页面（spec §6.6/§13：失败按功能点记录并可见）
+          const failedIssues = failedFeatures.map((result) => ({
+            caseRowId: result.featureId ?? 'unknown',
+            type: '缺证据' as const,
+            message: `${result.featureId ?? 'unknown'} ${result.status}${result.reasons?.length ? `（${result.reasons.join('；')}）` : ''}`,
+            blocking: true,
+          }));
+          dispatch({ type: "PIPELINE_UPDATE_CASE", rows, groups, meta, workbook: out.caseWorkbook, issues: [...(out.qualityGateIssues ?? []), ...failedIssues] });
         }
-        if (state.project.id && state.system.id) {
-          try {
-            await dataApi.saveCaseTable(state.project.id, state.system.id, out.caseWorkbook);
-          } catch (e) {
-            console.warn('Failed to persist case results:', e);
+        if (identity.projectId && identity.systemId && isActiveSystem(identity)) {
+          await dataApi.saveCaseTable(identity.projectId, identity.systemId, out.caseWorkbook);
+          const gens = await dataApi.getCaseGenerations(identity.projectId, identity.systemId).catch(() => null);
+          if (gens && Array.isArray(gens) && isActiveSystem(identity)) {
+            dispatch({ type: "PIPELINE_SET_CASE_GENERATIONS", generations: gens as CaseGenerationContext[] });
           }
         }
         dispatch({ type: "ADD_ACTIVITY", item: { id: "p-" + Date.now(), time: new Date().toLocaleTimeString(), text: `用例生成` } });
         return out;
       } catch (e: any) {
+        if (!isActiveSystem(identity)) return null;
         dispatch({ type: "PIPELINE_SET_ERROR", error: e.message });
         showToast(`用例生成失败: ${e.message}`);
         return null;
       } finally {
-        dispatch({ type: "PIPELINE_SET_LOADING", loading: false, stage: null });
+        if (isActiveSystem(identity)) dispatch({ type: "PIPELINE_SET_LOADING", loading: false, stage: null });
       }
     },
 
@@ -1387,11 +1696,13 @@ export function useApp() {
     },
 
     runPipelineExecute: async (input?: any) => {
+      const identity = captureActiveSystem();
       dispatch({ type: "PIPELINE_SET_LOADING", loading: true, stage: "execute" });
       dispatch({ type: "PIPELINE_SET_ERROR", error: null });
       try {
         const svc = getPipelineService();
         const out = await svc.runStageExecute(input ?? {});
+        if (!isActiveSystem(identity)) return null;
         if (out.executionReport) {
           const matrix = toExecView(out.executionReport, state.execBrowsers);
           dispatch({ type: "PIPELINE_UPDATE_EXEC", matrix, modules: state.execModules });
@@ -1400,40 +1711,46 @@ export function useApp() {
           dispatch({ type: "EXEC_VERIFY_ISOLATION" });
         }
         // Persist execution results to backend
-        if (state.project.id && state.system.id) {
+        if (identity.projectId && identity.systemId) {
           try {
-            await dataApi.saveExecution(state.project.id, state.system.id, out.executionReport);
+            await dataApi.saveExecution(identity.projectId, identity.systemId, out.executionReport);
           } catch (e) {
             console.warn('Failed to persist execution results:', e);
           }
         }
+        if (!isActiveSystem(identity)) return null;
         dispatch({ type: "ADD_ACTIVITY", item: { id: "p-" + Date.now(), time: new Date().toLocaleTimeString(), text: `执行完成` } });
         return out;
       } catch (e: any) {
+        if (!isActiveSystem(identity)) return null;
         dispatch({ type: "PIPELINE_SET_ERROR", error: e.message });
         showToast(`执行失败: ${e.message}`);
         return null;
       } finally {
-        dispatch({ type: "PIPELINE_SET_LOADING", loading: false, stage: null });
+        if (isActiveSystem(identity)) dispatch({ type: "PIPELINE_SET_LOADING", loading: false, stage: null });
       }
     },
 
     runPipelineDefect: async (input?: any) => {
+      const identity = captureActiveSystem();
       dispatch({ type: "PIPELINE_SET_LOADING", loading: true, stage: "defect" });
       dispatch({ type: "PIPELINE_SET_ERROR", error: null });
       try {
         const svc = getPipelineService();
         const out = await svc.runStageDefect(input ?? {});
+        if (!isActiveSystem(identity)) return null;
         const rows = toDefectView(out);
         dispatch({ type: "PIPELINE_UPDATE_DEFECT", rows });
+        if (!isActiveSystem(identity)) return null;
         dispatch({ type: "ADD_ACTIVITY", item: { id: "p-" + Date.now(), time: new Date().toLocaleTimeString(), text: `缺陷分析完成: ${rows.length} 个缺陷` } });
         return out;
       } catch (e: any) {
+        if (!isActiveSystem(identity)) return null;
         dispatch({ type: "PIPELINE_SET_ERROR", error: e.message });
         showToast(`缺陷分析失败: ${e.message}`);
         return null;
       } finally {
-        dispatch({ type: "PIPELINE_SET_LOADING", loading: false, stage: null });
+        if (isActiveSystem(identity)) dispatch({ type: "PIPELINE_SET_LOADING", loading: false, stage: null });
       }
     },
 
@@ -1448,7 +1765,17 @@ export function useApp() {
     toast: showToast,
 
     // Project
-    setProject: (id: string) => dispatch({ type: "SET_PROJECT", id }),
+    setProject: (id: string) => {
+      const project = state.projects.find((item) => item.id === id);
+      const activeSystem = project
+        ? state.systems.find((item) => item.id === project.activeSystemId && item.projectId === project.id)
+        : undefined;
+      const system = activeSystem ?? state.systems.find((item) => item.projectId === project?.id);
+      if (project && system) {
+        activateSystem(project.id, system.id);
+      }
+      dispatch({ type: "SET_PROJECT", id });
+    },
     addProject: async (p: ProjectInfo) => {
       try {
         const created = await dataApi.createProject({ name: p.name, description: p.description, type: p.type });
@@ -1488,10 +1815,13 @@ export function useApp() {
 
     // System
     setSystem: async (id: string) => {
+      const next = state.systems.find((item) => item.id === id);
+      if (!next?.projectId) return;
+      activateSystem(next.projectId, next.id);
       dispatch({ type: "SET_SYSTEM", id });
       if (state.project?.id) {
         try {
-          await dataApi.setActiveSystem(state.project.id, id);
+          await dataApi.setActiveSystem(next.projectId, id);
         } catch (e) {
           console.warn('Failed to persist active system:', e);
         }
@@ -1511,6 +1841,10 @@ export function useApp() {
           credentialMode: s.loginMode,
           loginState: s.loginStatus === 'logged_in' ? 'logged_in' : 'logged_out',
           credentials: s.credentials,
+          // 登录后应用页 URL（子系统探索目标）与会话状态一并落库：
+          // 此前被丢弃 → 重启后 capturedUrl 回退门户 URL → 探索门户而非子系统。
+          capturedUrl: s.capturedUrl,
+          sessionState: s.sessionState,
         });
         const info: SystemInfo = {
           ...s,
@@ -1526,6 +1860,7 @@ export function useApp() {
         return info;
       } catch (e: any) {
         showToast(`添加系统失败: ${e.message}`);
+        return undefined;
       }
     },
     updateSystem: async (id: string, patch: Partial<SystemInfo>) => {
@@ -1541,6 +1876,10 @@ export function useApp() {
         if (patch.loginStatus !== undefined) backendPatch.loginState = patch.loginStatus === 'logged_in' ? 'logged_in' : 'logged_out';
         if (patch.parentPortalId !== undefined) backendPatch.parentPortalId = patch.parentPortalId;
         if (patch.credentials !== undefined) backendPatch.credentials = patch.credentials;
+        // capturedUrl/sessionState 此前不在白名单：项目管理编辑保存（含浏览器捕获回填）
+        // 会把它们丢掉 → 重启后 capturedUrl 回退门户 URL → 探索门户而非子系统。
+        if (patch.capturedUrl !== undefined) backendPatch.capturedUrl = patch.capturedUrl;
+        if (patch.sessionState !== undefined) backendPatch.sessionState = patch.sessionState;
         if (Object.keys(backendPatch).length > 0) {
           await dataApi.updateSystem(projectId, id, backendPatch);
         }
@@ -1627,8 +1966,15 @@ export function useApp() {
         return;
       }
       try {
-        const table = fromFeatureView(state.featureRows);
-        await dataApi.saveFeatureTable(state.project.id, state.system.id, table);
+        await dataApi.saveFeatureArtifact(state.project.id, state.system.id, {
+          version: 2,
+          table: fromFeatureViewToTable(state.featureRows),
+          featurePaths: state.featurePaths,
+          featureProfiles: state.featureProfiles,
+          featureEvidence: state.featureEvidence,
+          provenance: state.featureProvenance,
+          designSources: state.featureDesignSources,
+        });
         showToast("功能点表已保存");
       } catch (e: any) {
         showToast("保存失败: " + e.message);
@@ -1640,9 +1986,16 @@ export function useApp() {
         return;
       }
       try {
-        const ft = await dataApi.getFeatureTable(state.project.id, state.system.id);
-        if (ft && Array.isArray(ft) && ft.length > 0) {
-          dispatch({ type: "PIPELINE_UPDATE_FEATURE", rows: toFeatureView(ft as any) });
+        const artifact = await dataApi.getFeatureArtifact(state.project.id, state.system.id);
+        if (artifact) {
+          const table = Array.isArray(artifact) ? artifact : artifact.table;
+          dispatch({ type: "PIPELINE_UPDATE_FEATURE", rows: toFeatureView(table as any) });
+          if (!Array.isArray(artifact)) {
+            dispatch({ type: "PIPELINE_SET_FEATURE_PATHS", paths: artifact.featurePaths ?? {} });
+            dispatch({ type: "PIPELINE_SET_FEATURE_PROFILES", profiles: artifact.featureProfiles ?? [] });
+            dispatch({ type: "PIPELINE_SET_FEATURE_EVIDENCE", evidence: artifact.featureEvidence ?? {} });
+            dispatch({ type: "PIPELINE_SET_FEATURE_ARTIFACT_META", provenance: artifact.provenance ?? [], designSources: artifact.designSources ?? [] });
+          }
           showToast("已加载本轮版本");
         } else {
           showToast("暂无已保存的功能点数据");
@@ -1652,13 +2005,45 @@ export function useApp() {
       }
     },
     loadFeatureTemplate: () => {
-      const template: FeatureRowView[] = [
-        { seq: "1", type: "功能性测试", chapter: "", system: state.system.name, mainModule: "", subModule: "", feature: "新功能", testPoint: "测试点", testPointId: "base_01" },
-        { seq: "2", type: "边界测试", chapter: "", system: state.system.name, mainModule: "", subModule: "", feature: "边界条件", testPoint: "边界测试", testPointId: "base_02", merge: true },
-        { seq: "3", type: "异常测试", chapter: "", system: state.system.name, mainModule: "", subModule: "", feature: "异常处理", testPoint: "异常测试", testPointId: "base_03", merge: true },
+      // ⚠️ 该按钮是"金标准格式演示样例"：不会伪造虚假测试点，也绝对不会冒充真实业务数据。
+      //   仅展示"按 docs 规范 (系统_主_子_NN) 生成九列 + 合并"的长啥样，便于你肉眼对照金标准 Excel。
+      //   若要生成"你截图左侧真实模块树（如 ruoyi 首页/AI对话/系统管理…）"的功能点，
+      //   请点击右侧蓝色「生成功能点」按钮 —— 那才是调用真实 pipeline feature stage，
+      //   以左侧 moduleTree（真实 login→explore 跑出来的节点）为输入，经过后端 buildFeatureTable。
+      const sysName = (state.system.name?.trim() || '金标准示例').replace(/\s*[(（\[][^)）\]]{0,80}[)）\]]\s*/g, ' ').trim();
+      // 真实转换器，真实模块树生成；样例名字取自 docs 已知词条（检查室(JCX)/医师站(YSZ)/影像报告(YXBG)），
+      // —— 不是"冒充真实业务数据"，仅演示：缩写冻结字典如何映射到 4 段 ID。
+      const demoTree: ModuleNodeView[] = [
+        { id: 'demo-pei', type: 'module', name: '配置', status: '已覆盖', manuallyAdded: true, children: [
+          { id: 'demo-jcs', type: 'page', name: '检查室', status: '已覆盖', manuallyAdded: true, children: [
+            { id: 'a1', type: 'action', name: '查询', status: '已覆盖', manuallyAdded: true, children: [] },
+            { id: 'a2', type: 'action', name: '新增', status: '已覆盖', manuallyAdded: true, children: [] },
+            { id: 'a3', type: 'action', name: '修改', status: '已覆盖', manuallyAdded: true, children: [] },
+          ]},
+          { id: 'demo-ysz', type: 'page', name: '医师站', status: '已覆盖', manuallyAdded: true, children: [
+            { id: 'a4', type: 'action', name: '查询', status: '已覆盖', manuallyAdded: true, children: [] },
+            { id: 'a5', type: 'action', name: '新增', status: '已覆盖', manuallyAdded: true, children: [] },
+            { id: 'a6', type: 'action', name: '删除', status: '已覆盖', manuallyAdded: true, children: [] },
+          ]},
+        ]},
+        { id: 'demo-bg', type: 'module', name: '报告', status: '已覆盖', manuallyAdded: true, children: [
+          { id: 'demo-yxbg', type: 'page', name: '影像报告', status: '已覆盖', manuallyAdded: true, children: [
+            { id: 'a7', type: 'action', name: '查询', status: '已覆盖', manuallyAdded: true, children: [] },
+            { id: 'a8', type: 'action', name: '导出', status: '已覆盖', manuallyAdded: true, children: [] },
+            { id: 'a9', type: 'action', name: '超大报告导出', status: 'needs_review', manuallyAdded: true, children: [] },
+          ]},
+        ]},
       ];
-      dispatch({ type: "PIPELINE_UPDATE_FEATURE", rows: template });
-      showToast("已加载固定模板");
+      const rows = moduleTreeToFeatureTable(demoTree, sysName).map((r, i) =>
+        i === 8 ? { ...r, type: '边界测试' } : r,
+      );
+      let main = ''; let chapterMain = 0;
+      for (const r of rows) {
+        if (r.mainModule !== main) { main = r.mainModule; chapterMain += 1; }
+        r.chapter = `${chapterMain}.1`;
+      }
+      dispatch({ type: "PIPELINE_UPDATE_FEATURE", rows });
+      showToast("已载入金标准格式演示样例（非业务数据）；真实业务数据请点击「生成功能点」");
     },
 
     // Case
@@ -1671,12 +2056,15 @@ export function useApp() {
         try {
           const curMeta = { ...state.metaHeader, ...patch };
           await dataApi.saveMetaConfig(state.project.id, state.system.id, curMeta as unknown as Record<string, any>);
-        } catch {}
+        } catch {
+          // Meta is still held in memory when persistence is unavailable.
+        }
       }
     },
     caseSetSelection: (modules: string[]) => dispatch({ type: "CASE_SET_SELECTION", modules }),
     caseToggleAi: (on: boolean) => dispatch({ type: "CASE_TOGGLE_AI", on }),
     exploreToggleAi: (on: boolean) => dispatch({ type: "EXPLORE_TOGGLE_AI", on }),
+    setReadOnlyClickPolicy: (policy: "strict" | "allow_all") => dispatch({ type: "SET_READONLY_CLICK_POLICY", policy }),
     caseRegenerate: () => dispatch({ type: "CASE_REGENERATE" }),
     caseGroupAdd: (group?: Partial<CaseGroupView>) => dispatch({ type: "CASE_GROUP_ADD", group }),
     caseGroupRemove: (groupId: string) => dispatch({ type: "CASE_GROUP_REMOVE", groupId }),
@@ -1803,7 +2191,9 @@ export function useApp() {
       dispatch({ type: "LOG_UPDATE_POLICY", patch });
       try {
         await dataApi.updateLogPolicy(newPolicy);
-      } catch {}
+      } catch {
+        // Local settings remain usable when the backend is unavailable.
+      }
       showToast("策略已保存");
     },
     logCleanupExpired: async () => {

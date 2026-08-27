@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { buildCaseInput } from './pipeline';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { buildCaseInput, createPipelineService, toCaseView } from './pipeline';
 import type { FeatureRowView, MetaHeader } from '../context';
+import type { CaseInput, CaseSheet, FeatureEvidence } from '@test-platform/contracts';
 
 const featureRows: FeatureRowView[] = [
   {
@@ -39,6 +40,45 @@ const metaHeader: MetaHeader = {
   conclusionRule: '全部通过为合格',
   precondition: '已登录',
 };
+
+const currentCaseWorkbook: CaseSheet[] = [
+  {
+    sheetName: '检查室',
+    meta: {
+      systemName: '区域影像系统',
+      testPointId: 'QYYX_PZ_JCX_01',
+      testPoint: '查询',
+      testers: '张三',
+      clientStaff: '李四',
+      developerStaff: '王五',
+      firstTestDate: '2026-08-15',
+      regressionDate: '',
+      conclusionRule: '全部通过为合格',
+      precondition: '已登录',
+    },
+    rows: [
+      {
+        caseNo: 'QYYX_PZ_JCX_01',
+        content: '查询',
+        step: 'Step 1',
+        operation: '保留人工查询步骤',
+        expected: '保留人工编辑',
+        firstResult: '\\',
+        regressionResult: '\\',
+        conclusion: '\\',
+        id: 'manual-query-step',
+        featureId: 'QYYX_PZ_JCX_01',
+        batchId: 'pipeline-case-manual-batch',
+        targetTestPoint: '查询',
+        manualEdited: true,
+        origin: 'user_edited',
+      },
+    ],
+    colWidths: [18, 16, 8, 34, 34, 14, 14, 12],
+    screenshotRef: 'pipeline-case-manual.png',
+    remarkRow: '保留检查室人工查询用例',
+  },
+];
 
 describe('buildCaseInput — 生成测试用例输入契约（case 模块）', () => {
   it('featureTable 必须是 FeatureRow[][]（双层：一分组含整行；不可拍平成单层）', () => {
@@ -85,10 +125,179 @@ describe('buildCaseInput — 生成测试用例输入契约（case 模块）', (
     expect(def.featurePaths).toBeUndefined();
   });
 
+  it('透传按 featureId 隔离的结构化页面证据', () => {
+    const evidence: Record<string, FeatureEvidence> = {
+      QYYX_PZ_PB_01: {
+        featureId: 'QYYX_PZ_PB_01',
+        actionKind: 'create',
+        states: ['create'],
+        fields: [],
+        tables: [],
+        actionEntries: [],
+        containers: [],
+        evidenceLevel: 'observed',
+        coverageKeys: ['create.ready'],
+        needsReview: false,
+        uncovered: [],
+      },
+    };
+    const input = buildCaseInput(
+      featureRows,
+      [],
+      metaHeader,
+      'all',
+      undefined,
+      false,
+      undefined,
+      evidence,
+    );
+    expect(input.featureEvidence).toEqual(evidence);
+  });
+
   it('aiEnabled=true => aiConfig.enabled 为 true；缺省为 false（双模开关）', () => {
     const on = buildCaseInput(featureRows, [], metaHeader, 'all', undefined, true);
-    expect(on.aiConfig).toEqual({ configId: 'default', enabled: true });
+    expect(on.aiConfig?.enabled).toBe(true);
     const off = buildCaseInput(featureRows, [], metaHeader, 'all');
-    expect(off.aiConfig).toEqual({ configId: 'default', enabled: false });
+    expect(off.aiConfig?.enabled).toBe(false);
+  });
+
+  it('regenerateSelected=true => 透传（明确重新生成选中模块，定点替换不覆盖其他模块）', () => {
+    const regen = buildCaseInput(
+      featureRows,
+      ['排班'],
+      metaHeader,
+      'selected_modules',
+      undefined,
+      false,
+      undefined,
+      undefined,
+      true,
+    );
+    expect(regen.regenerateSelected).toBe(true);
+    expect(regen.scope).toBe('selected_modules');
+    // 缺省不携带，避免误触发定点替换
+    const normal = buildCaseInput(featureRows, ['排班'], metaHeader, 'selected_modules');
+    expect(normal.regenerateSelected).toBeUndefined();
+  });
+});
+
+describe('case generation request boundary', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    {
+      entry: 'generate selected',
+      scope: 'selected_modules' as const,
+      selectedModules: ['检查室'],
+      regenerateSelected: false,
+    },
+    {
+      entry: 'regenerate selected',
+      scope: 'selected_modules' as const,
+      selectedModules: ['检查室'],
+      regenerateSelected: true,
+    },
+    {
+      entry: 'generate all',
+      scope: 'all' as const,
+      selectedModules: [],
+      regenerateSelected: false,
+    },
+  ])(
+    'Given the canonical workbook, When $entry is sent, Then the case request freezes workbook, scope, regeneration, and AI config',
+    async ({ scope, selectedModules, regenerateSelected }) => {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          data: {
+            caseWorkbook: [],
+            caseRows: [],
+            metaHeader: {},
+            qualityGateIssues: [],
+            complexLogicDetected: false,
+          },
+        }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const baseInput = buildCaseInput(
+        featureRows,
+        selectedModules,
+        metaHeader,
+        scope,
+        undefined,
+        true,
+        undefined,
+        undefined,
+        regenerateSelected,
+      );
+      const input: CaseInput = {
+        ...baseInput,
+        currentCaseWorkbook,
+        aiConfig: { configId: 'case-ai-42', enabled: true },
+        regenerateSelected,
+      };
+      await createPipelineService().runStageCase(input);
+
+      const request = fetchMock.mock.calls[0]?.[1];
+      const submitted = JSON.parse(String(request?.body));
+      const expectedInput = {
+        currentCaseWorkbook,
+        scope,
+        regenerateSelected,
+        aiConfig: { configId: 'case-ai-42', enabled: true },
+        ...(scope === 'selected_modules' ? { selectedModuleIds: selectedModules } : {}),
+      };
+      expect(submitted).toEqual({
+        stage: 'case',
+        input: expect.objectContaining(expectedInput),
+      });
+      expect(submitted.input.currentCaseWorkbook[0]).toMatchObject({
+        colWidths: [18, 16, 8, 34, 34, 14, 14, 12],
+        screenshotRef: 'pipeline-case-manual.png',
+        remarkRow: '保留检查室人工查询用例',
+      });
+      expect(submitted.input.currentCaseWorkbook[0].rows[0].batchId).toBe(
+        'pipeline-case-manual-batch',
+      );
+    },
+  );
+});
+
+describe('toCaseView — 生成用例元数据', () => {
+  it('保留覆盖键和场景供 Case 页面展示', () => {
+    const result = toCaseView([
+      {
+        sheetName: '用户',
+        meta: currentCaseWorkbook[0].meta,
+        rows: [
+          {
+            caseNo: 'HIS_USER_01',
+            content: '新增用户',
+            step: 'Step_create_1',
+            operation: '查看表单',
+            expected: '表单可读',
+            firstResult: '\\',
+            regressionResult: '\\',
+            conclusion: '\\',
+            id: 'scenario-1',
+            featureId: 'HIS_USER_01',
+            targetTestPoint: '新增用户',
+            scenarioId: 'HIS_USER_01.create.01',
+            scenarioName: '新增表单准备',
+            priority: 'P0',
+            coverageKeys: ['create.ready'],
+            evidenceLevel: 'observed',
+            needsReview: false,
+          },
+        ],
+      },
+    ]);
+    expect(result.groups[0].coverageKeys).toEqual(['create.ready']);
+    expect(result.groups[0].scenarioId).toBe('HIS_USER_01.create.01');
+    expect(result.groups[0].needsReview).toBe(false);
   });
 });

@@ -564,7 +564,7 @@ export async function run(
               startUrl: validated.systemUrl,
             });
       }
-      console.log(`[stage-explore] 探索完成，发现 ${moduleTree.length} 个节点`);
+console.log(`[stage-explore] 探索完成，发现 ${moduleTree.length} 个节点`);
 
       if (moduleTree.length === 0) {
         console.warn('[stage-explore] 探索完成但未发现任何模块节点');

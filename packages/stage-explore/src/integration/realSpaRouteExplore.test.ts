@@ -172,7 +172,7 @@ describe('页面内功能点抽取器（pageActionExplorer 纯函数）', () => 
     expect(classifyActionType('导入数据').label).toBe('导入');
     expect(classifyActionType('查看详情').label).toBe('查看详情');
     expect(classifyActionType('查询列表').label).toBe('查询');
-    // 无匹配 → 兜底为「查看(原文)」
+    // 无匹配 → 兜底为「查看{原文切片}」（探索阶段不主动加括号）
     const other = classifyActionType('返回上一页');
     expect(other.kind).toBe('other');
     expect(other.label).toContain('查看');

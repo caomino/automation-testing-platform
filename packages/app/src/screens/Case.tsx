@@ -7,31 +7,55 @@ import type { CaseGroupView, CaseStepView } from "../context";
 
 const COL_WIDTHS = [9, 22, 5, 22, 22, 6, 6, 4, 4];
 
-const META_LABELS: Record<string, string> = {
-  system: "系统名称",
-  testPointId: "测试点标识",
-  testPoint: "测试点",
-  testers: "测试人员",
-  clientStaff: "委托单位人员",
-  developerStaff: "开发单位人员",
-  firstTestDate: "初次测试时间",
-  regressionDate: "回归测试时间",
-  conclusionRule: "测试结论判定规则",
-  precondition: "预置条件",
-};
-
 const DEFAULT_CONCLUSION_RULE =
   "初次测试结果与预期结果一致，结论为通过，否则不通过\n回归测试结果与预期结果一致，结论为复测通过，否则不通过";
+
+function coverageId(featureId: string | undefined, coverageKey: string): string {
+  return `${featureId ?? ''}:${coverageKey}`;
+}
+
+function groupFeatureId(group: CaseGroupView): string | undefined {
+  return group.featureId ?? group.steps[0]?.featureId;
+}
+
+function localCaseBlockingMessages(groups: CaseGroupView[]): string[] {
+  const messages: string[] = [];
+  for (const group of groups) {
+    const groupLabel = group.caseNo || group.groupId;
+    if (group.steps.length === 0) messages.push(`${groupLabel} 缺少测试步骤`);
+    for (const step of group.steps) {
+      const prefix = `${groupLabel}/${step.stepNumber || step.stepId}`;
+      const visibleColumns = [group.caseNo, group.content, step.stepNumber, step.operation, step.expected, step.firstResult, step.regressionResult, step.conclusion];
+      if (visibleColumns.some((value) => !String(value ?? '').trim())) messages.push(`${prefix} 存在空白的八列用例字段`);
+      const featureId = step.featureId ?? group.featureId;
+      const scenarioId = step.scenarioId ?? group.scenarioId;
+      const coverageKeys = step.coverageKeys ?? group.coverageKeys;
+      const needsReview = step.needsReview ?? group.needsReview;
+      const reviewReason = step.reviewReason ?? group.reviewReason;
+      if (!featureId) messages.push(`${prefix} 缺少功能点标识`);
+      if (!scenarioId) messages.push(`${prefix} 缺少场景标识`);
+      if (!coverageKeys?.length) messages.push(`${prefix} 缺少覆盖键`);
+      if (needsReview && !reviewReason?.trim()) messages.push(`${prefix} 待复核但缺少原因`);
+    }
+  }
+  return messages;
+}
 
 export function Case() {
   const {
     metaHeader,
     caseGroups,
+    currentCaseWorkbook,
     caseSelectedModules,
     caseAiOn,
+    aiCurrentDefault,
     featureRows,
     featureConfirmed,
     featurePaths,
+    featureProfiles,
+    featureEvidence,
+    caseQualityGateIssues,
+    caseGenerations,
     runPipelineCase,
     getFeatureModules,
     caseGroupAdd,
@@ -43,12 +67,14 @@ export function Case() {
     caseUpdateMeta,
     caseSetSelection,
     caseToggleAi,
+    readOnlyClickPolicy,
+    setReadOnlyClickPolicy,
     toast,
     addActivity,
     pipelineLoading,
   } = useApp();
 
-  const { currentModal, openModal, closeModal, isModalOpen } = useModalManager();
+  const { openModal, closeModal, isModalOpen } = useModalManager();
   const [confirmDelete, setConfirmDelete] = useState<{
     open: boolean;
     groupId: string;
@@ -61,6 +87,21 @@ export function Case() {
   } | null>(null);
   const [cellValue, setCellValue] = useState("");
   const [metaForm, setMetaForm] = useState(metaHeader);
+  const [showGenHistory, setShowGenHistory] = useState(false);
+
+  // batchId -> 生成批次元数据（spec §6.5 / §17.7：每组用例可追溯来源）
+  const genMap = useMemo(() => {
+    const m = new Map<string, typeof caseGenerations[number]>();
+    for (const g of caseGenerations) m.set(g.batchId, g);
+    return m;
+  }, [caseGenerations]);
+
+  const buildSourceTitle = (batchId?: string): string | undefined => {
+    if (!batchId) return undefined;
+    const gen = genMap.get(batchId);
+    if (!gen) return `批次: ${batchId}`;
+    return `批次: ${gen.batchId}\n模式: ${gen.mode === 'ai' ? 'AI 辅助' : '无 AI'}\nAI 配置: ${gen.aiConfigId ?? '无'}\nscope: ${gen.scope}${gen.regenerateSelected ? ' · 定点重生成' : ''}`;
+  };
 
   const moduleOptions = useMemo(() => {
     const { subModules } = getFeatureModules();
@@ -84,10 +125,31 @@ export function Case() {
       toast("请先选择要测试的模块");
       return;
     }
-    const input = buildCaseInput(featureRows, caseSelectedModules, metaHeader, 'selected_modules', featurePaths, caseAiOn);
-    await runPipelineCase(input);
+    const input = buildCaseInput(featureRows, caseSelectedModules, metaHeader, 'selected_modules', featurePaths, caseAiOn, featureProfiles, featureEvidence, undefined, currentCaseWorkbook, aiCurrentDefault);
+    const result = await runPipelineCase(input);
+    if (!result) return;
     addActivity({ id: `act-${Date.now()}`, time: new Date().toLocaleTimeString().slice(0, 5), text: `生成选中模块用例: ${caseSelectedModules.join(', ')}` });
     toast("选中模块用例已生成");
+  };
+
+  const handleRegenerateSelected = async () => {
+    if (!featureRows || featureRows.length === 0) {
+      toast("请先在功能点阶段生成功能点数据");
+      return;
+    }
+    if (!featureConfirmed) {
+      toast("请先在功能点阶段确认功能点");
+      return;
+    }
+    if (caseSelectedModules.length === 0) {
+      toast("请先选择要重新生成的模块");
+      return;
+    }
+    const input = buildCaseInput(featureRows, caseSelectedModules, metaHeader, 'selected_modules', featurePaths, caseAiOn, featureProfiles, featureEvidence, true, currentCaseWorkbook, aiCurrentDefault);
+    const result = await runPipelineCase(input);
+    if (!result) return;
+    addActivity({ id: `act-${Date.now()}`, time: new Date().toLocaleTimeString().slice(0, 5), text: `重新生成选中模块用例: ${caseSelectedModules.join(', ')}` });
+    toast("选中模块用例已重新生成");
   };
 
   const handleGenerateAll = async () => {
@@ -99,8 +161,9 @@ export function Case() {
       toast("请先在功能点阶段确认功能点");
       return;
     }
-    const input = buildCaseInput(featureRows, caseSelectedModules, metaHeader, 'all', featurePaths, caseAiOn);
-    await runPipelineCase(input);
+    const input = buildCaseInput(featureRows, caseSelectedModules, metaHeader, 'all', featurePaths, caseAiOn, featureProfiles, featureEvidence, undefined, currentCaseWorkbook, aiCurrentDefault);
+    const result = await runPipelineCase(input);
+    if (!result) return;
     addActivity({ id: `act-${Date.now()}`, time: new Date().toLocaleTimeString().slice(0, 5), text: "全部用例已生成" });
     toast("全部用例已生成");
   };
@@ -120,6 +183,23 @@ export function Case() {
     if (caseSelectedModules.length === 0) return modules;
     return modules.filter((m) => caseSelectedModules.includes(m));
   }, [groupedByModule, caseSelectedModules]);
+  const requiredCoverageKeys = useMemo(() => new Set([
+    ...Object.values(featureEvidence).flatMap((evidence) => (evidence.coverageManifest?.requiredKeys ?? evidence.coverageKeys).map((key) => coverageId(evidence.featureId, key))),
+    ...caseGroups.flatMap((group) => (group.coverageKeys ?? []).map((key) => coverageId(groupFeatureId(group), key))),
+  ]), [caseGroups, featureEvidence]);
+  const observedCoverageKeys = useMemo(() => new Set(
+    caseGroups
+      .filter((group) => !group.needsReview && group.evidenceLevel === 'observed')
+      .flatMap((group) => (group.coverageKeys ?? []).map((key) => coverageId(groupFeatureId(group), key)))
+      .filter((key) => requiredCoverageKeys.size === 0 || requiredCoverageKeys.has(key)),
+  ), [caseGroups, requiredCoverageKeys]);
+  const needsReviewCount = useMemo(() => caseGroups.filter((group) => group.needsReview).length, [caseGroups]);
+  const blockingMessages = useMemo(() => [
+    ...caseQualityGateIssues.filter((issue) => issue.blocking).map((issue) => issue.message),
+    ...Object.values(featureEvidence).flatMap((evidence) => (evidence.coverageManifest?.missingKeys ?? []).map((key) => `${evidence.featureId} 缺少已观测覆盖：${key}`)),
+    ...localCaseBlockingMessages(caseGroups),
+  ].filter((message, index, all) => all.indexOf(message) === index), [caseGroups, caseQualityGateIssues, featureEvidence]);
+  const isExecutable = caseGroups.length > 0 && needsReviewCount < caseGroups.length && blockingMessages.length === 0;
 
   const startEditCell = (groupId: string, stepId: string | undefined, field: string, value: string) => {
     setEditingCell({ groupId, stepId, field });
@@ -197,7 +277,7 @@ export function Case() {
       border: "1px solid #000",
       padding: "4px",
       fontWeight: bold ? "bold" : "normal",
-      textAlign: center ? "center" : "left",
+      textAlign: center ? ("center" as const) : ("left" as const),
       verticalAlign: "middle" as const,
     });
     const editableStyle = {
@@ -366,11 +446,14 @@ export function Case() {
                 const content = isEditing ? (
                   <input className="cell-edit" value={cellValue} onChange={(e) => setCellValue(e.target.value)} onBlur={commitEditCell} autoFocus />
                 ) : (
-                  <span onClick={() => startEditCell(group.groupId, undefined, field, value)} style={{ cursor: "text" }}>
-                    {value || ""}
-                  </span>
+                  <>
+                    <span onClick={() => startEditCell(group.groupId, undefined, field, value)} style={{ cursor: "text" }}>{value || ""}</span>
+                    {field === "content" && group.scenarioName && <div><Tag tone="info">{group.scenarioName}{group.priority ? ` ${group.priority}` : ''}</Tag></div>}
+                    {field === "content" && group.needsReview && <div title={group.reviewReason}><Tag tone="warn">待复核</Tag></div>}
+                  </>
                 );
-                return rowSpanAttr ? <td rowSpan={rowSpanAttr} style={tdBase()}>{content}</td> : <td style={tdBase()}>{content}</td>;
+                const sourceTitle = field === "caseNo" ? buildSourceTitle(group.batchId) : undefined;
+                return rowSpanAttr ? <td rowSpan={rowSpanAttr} style={tdBase()} title={sourceTitle}>{content}</td> : <td style={tdBase()} title={sourceTitle}>{content}</td>;
               };
 
               return (
@@ -438,6 +521,14 @@ export function Case() {
           </Button>
           <Button
             variant="pri"
+            disabled={pipelineLoading || caseSelectedModules.length === 0}
+            onClick={handleRegenerateSelected}
+            title="定点替换选中模块的功能点用例，不影响其他模块"
+          >
+            重新生成选中模块
+          </Button>
+          <Button
+            variant="pri"
             disabled={pipelineLoading}
             onClick={handleGenerateAll}
           >
@@ -447,6 +538,7 @@ export function Case() {
             + 新用例
           </Button>
           <Toggle on={caseAiOn} onChange={(v) => caseToggleAi(v)} label="AI 辅助" />
+          <Toggle on={readOnlyClickPolicy === 'allow_all'} onChange={(v) => setReadOnlyClickPolicy(v ? 'allow_all' : 'strict')} label="只读点击：放行" />
           <Button onClick={handleExportCsv}>导出 CSV</Button>
         </div>
       </div>
@@ -455,10 +547,51 @@ export function Case() {
         <span style={{ fontSize: 13, color: "var(--mut)" }}>
           用例列表（{caseGroups.length} 个用例分组 · {caseGroups.reduce((sum, g) => sum + g.steps.length, 0)} 个步骤）
         </span>
+        {requiredCoverageKeys.size > 0 && <Tag tone="info">覆盖 {observedCoverageKeys.size}/{requiredCoverageKeys.size}</Tag>}
+        {needsReviewCount > 0 && <Tag tone="warn">待复核 {needsReviewCount}</Tag>}
         <span style={{ marginLeft: "auto" }} />
         {caseAiOn && <Tag tone="info">AI 辅助已开启</Tag>}
-        {caseGroups.length > 0 && <Tag tone="ok">可执行</Tag>}
+        {blockingMessages.length > 0 && <Tag tone="warn">阻塞问题 {blockingMessages.length}</Tag>}
+        {isExecutable && <Tag tone="ok">可执行</Tag>}
+        {caseGenerations.length > 0 && (
+          <Button size="sm" onClick={() => setShowGenHistory((v) => !v)} title="查看每组用例的生成批次来源（batchId / 模式 / AI 配置）">
+            生成批次记录 {caseGenerations.length}
+          </Button>
+        )}
       </div>
+
+      {showGenHistory && caseGenerations.length > 0 && (
+        <Card title="生成批次记录（每组用例可追溯其生成来源）" style={{ marginBottom: 16 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: "var(--mut)" }}>
+                <th style={{ padding: "4px 8px" }}>批次 ID</th>
+                <th style={{ padding: "4px 8px" }}>模式</th>
+                <th style={{ padding: "4px 8px" }}>AI 配置</th>
+                <th style={{ padding: "4px 8px" }}>scope</th>
+                <th style={{ padding: "4px 8px" }}>本批功能点</th>
+              </tr>
+            </thead>
+            <tbody>
+              {caseGenerations.map((gen) => (
+                <tr key={gen.batchId} style={{ borderTop: "1px solid var(--bd, #eee)" }}>
+                  <td style={{ padding: "4px 8px", fontFamily: "monospace" }}>{gen.batchId}</td>
+                  <td style={{ padding: "4px 8px" }}>{gen.mode === "ai" ? "AI 辅助" : "无 AI"}</td>
+                  <td style={{ padding: "4px 8px" }}>{gen.aiConfigId ?? "无"}</td>
+                  <td style={{ padding: "4px 8px" }}>{gen.scope}{gen.regenerateSelected ? " · 定点重生成" : ""}</td>
+                  <td style={{ padding: "4px 8px" }}>{gen.orderedFeatureIds?.length ?? 0}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+
+      {blockingMessages.length > 0 && (
+        <div style={{ marginBottom: 8, color: 'var(--dng, #b91c1c)', fontSize: 13 }}>
+          {blockingMessages.map((message) => <div key={message}>{message}</div>)}
+        </div>
+      )}
 
       {filteredModules.map((moduleName) => (
         <Card key={moduleName} title={`模块: ${moduleName}`} style={{ marginBottom: 16 }}>

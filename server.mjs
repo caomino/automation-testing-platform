@@ -47,10 +47,29 @@ function readBody(req) {
 }
 
 /**
- * 凭证预处理（方案 X）：账号密码经前端会话态传入，直接透传给 stage-login 自动填充，
- * 不再写入凭证库（Vault）。保持 username/password 原样返回，不注入 credentialRef。
+ * 凭证预处理：与 packages/orchestrator/server.ts 保持一致（同一行为的两个入口）。
+ *
+ * 冻结契约 LoginInputSchema 要求 mode=credential 时 credentialRef 必填，但业务允许：
+ * - 前端会话态直传 username/password（无 credentialRef）→ 存入凭证库并注入 credentialRef，
+ *   stage-login 按 ref 取回自动填充；
+ * - 「未配置凭证的账号密码模式」（无 username/password 也无 credentialRef）→ 注入占位
+ *   credentialRef 通过契约校验；stage-login 查不到对应凭证时自动降级为人工接管
+ *   （打开浏览器由用户手动登录），不会因占位引用被阻断。
  */
 async function preprocessLoginInput(input) {
+  if ((input?.mode === 'credential' || input?.mode === 'manual-takeover') && !input.credentialRef) {
+    if (input.username && input.password) {
+      const credRef = await credStore.save(input.username, input.password);
+      console.log(`[server] auto-stored credential: ${credRef} for system ${input.systemId}`);
+      const { username, password, ...rest } = input;
+      return { ...rest, credentialRef: credRef };
+    }
+    if (input.mode === 'credential') {
+      const placeholderRef = `manual-${input.systemId ?? 'system'}-${Date.now()}`;
+      console.log(`[server] credential mode without credentials for ${input.systemId}, inject placeholder credentialRef: ${placeholderRef}`);
+      return { ...input, credentialRef: placeholderRef };
+    }
+  }
   return input;
 }
 

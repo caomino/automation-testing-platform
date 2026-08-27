@@ -69,7 +69,7 @@ function actionNode(
 ): ModuleNode {
   const text = el.text || el.label || el.tag;
   const hit = ACTION_KEYWORDS.find((a) => a.re.test(text));
-  const label = hit ? hit.label : text ? `查看(${text.slice(0, 12)})` : '查看';
+  const label = hit ? hit.label : text ? `查看${text.slice(0, 12)}` : '查看';
   return {
     id: `ai_act_${pageId}_${el.ref}`,
     label,
@@ -204,7 +204,7 @@ async function aiDeepenPages(
     const id = `ai_page_${pages.size}`;
     const node: ModuleNode = {
       id,
-      label: title ? `页面(${title})` : `页面${pages.size + 1}`,
+      label: title ? `页面${title}` : `页面${pages.size + 1}`,
       parentId: null,
       subsystemId,
       type: 'page',

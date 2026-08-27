@@ -11,6 +11,7 @@ export * from './types/FeatureRow';
 export * from './types/CaseRow';
 export * from './types/CaseSheet';
 export * from './types/shared';
+export * from './types/TestDesign';
 
 export * from './stages/LoginContract';
 export * from './stages/ExploreContract';
@@ -25,6 +26,7 @@ export * from './schemas/FeatureSchema';
 export * from './schemas/CaseSchema';
 export * from './schemas/ExecuteSchema';
 export * from './schemas/DefectSchema';
+export * from './schemas/TestDesignSchema';
 
 export * from './constants/ErrorCodes';
 

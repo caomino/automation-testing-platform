@@ -1912,8 +1912,6 @@ function _formatAndDeduplicateTree(tree: any, mode: 'non_ai' | 'ai_mcp'): Dynami
 
   const cleanNodes: DynamicPageNode[] = [];
 
-
-  const stripTitle = (t: string | undefined) => typeof t === 'string' ? t.replace(/\s*[（\(].*?[）\)]\s*/g, '').trim() : t;
   for (const node of tree.rootNodes || []) {
     totalModules++;
     // 检查是一级单页面还是包含子菜单的父模块
@@ -1922,14 +1920,12 @@ function _formatAndDeduplicateTree(tree: any, mode: 'non_ai' | 'ai_mcp'): Dynami
     if (isSinglePage) {
       if (!seenPageIds.has(node.id)) {
         seenPageIds.add(node.id);
-        node.title = stripTitle(node.title);
         totalPages++;
 
         const cleanActions: DynamicActionNode[] = [];
         for (const act of node.actions || []) {
           if (!seenActionIds.has(act.id)) {
             seenActionIds.add(act.id);
-            act.title = stripTitle(act.title);
             cleanActions.push(act);
             totalActions++;
           } else {
@@ -1943,14 +1939,12 @@ function _formatAndDeduplicateTree(tree: any, mode: 'non_ai' | 'ai_mcp'): Dynami
       for (const child of node.children || []) {
         if (!seenPageIds.has(child.id)) {
           seenPageIds.add(child.id);
-          child.title = stripTitle(child.title);
           totalPages++;
 
           const cleanChildActions: DynamicActionNode[] = [];
           for (const act of child.actions || []) {
             if (!seenActionIds.has(act.id)) {
               seenActionIds.add(act.id);
-              act.title = stripTitle(act.title);
               cleanChildActions.push(act);
               totalActions++;
             } else {

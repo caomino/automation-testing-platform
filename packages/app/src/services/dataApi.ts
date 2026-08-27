@@ -5,7 +5,7 @@
  *   后端: http://localhost:3001 (Vite proxy /api → localhost:3001)
  */
 
-import type { Project, System, FeatureRow, CaseSheet, ExecutionResult } from '@test-platform/contracts';
+import type { Project, System, FeatureArtifact, FeatureRow, CaseSheet, ExecutionResult, CaseGenerationContext } from '@test-platform/contracts';
 
 /**
  * 判断响应是否为 JSON。部署态若 /api 未被反向代理，自写静态服务器会返回
@@ -61,7 +61,7 @@ export interface KnowledgeEntryApi {
 
 export interface BootstrapData {
   projects: Project[];
-  systemData: Record<string, { featureTable?: any; caseTable?: any; execution?: any }>;
+  systemData: Record<string, { featureTable?: any; featureArtifact?: FeatureArtifact; caseTable?: any; execution?: any }>;
   knowledge: KnowledgeEntryApi[];
 }
 
@@ -107,6 +107,9 @@ export async function addSystem(projectId: string, input: {
   loginState?: string;
   parentPortalId?: string;
   credentials?: { username: string; credentialRef: string };
+  /** 登录后应用页 URL（子系统探索目标）；非冻结契约字段，store JSON 整存透传 */
+  capturedUrl?: string;
+  sessionState?: { cookies?: string[]; headers?: Record<string, string>; tokens?: string[] };
 }): Promise<System> {
   return apiCall(`/projects/${projectId}/systems`, {
     method: 'POST',
@@ -165,6 +168,18 @@ export async function getFeatureTable(projectId: string, systemId?: string): Pro
   return apiCall(`/projects/${projectId}/feature-table${qs}`);
 }
 
+export async function saveFeatureArtifact(projectId: string, systemId: string, artifact: FeatureArtifact): Promise<void> {
+  return apiCall(`/projects/${projectId}/feature-artifact`, {
+    method: 'PUT',
+    body: JSON.stringify({ systemId, artifact }),
+  });
+}
+
+export async function getFeatureArtifact(projectId: string, systemId?: string): Promise<FeatureArtifact | null> {
+  const qs = systemId ? `?systemId=${encodeURIComponent(systemId)}` : '';
+  return apiCall(`/projects/${projectId}/feature-artifact${qs}`);
+}
+
 export async function saveCaseTable(projectId: string, systemId: string, sheets: CaseSheet[]): Promise<void> {
   return apiCall(`/projects/${projectId}/case-table`, {
     method: 'PUT',
@@ -175,6 +190,11 @@ export async function saveCaseTable(projectId: string, systemId: string, sheets:
 export async function getCaseTable(projectId: string, systemId?: string): Promise<CaseSheet[] | null> {
   const qs = systemId ? `?systemId=${encodeURIComponent(systemId)}` : '';
   return apiCall(`/projects/${projectId}/case-table${qs}`);
+}
+
+export async function getCaseGenerations(projectId: string, systemId?: string): Promise<CaseGenerationContext[] | null> {
+  const qs = systemId ? `?systemId=${encodeURIComponent(systemId)}` : '';
+  return apiCall(`/projects/${projectId}/case-generation${qs}`);
 }
 
 export async function saveMetaConfig(projectId: string, systemId: string, meta: Record<string, any>): Promise<void> {
@@ -282,7 +302,9 @@ function loadLocalPolicy(): LogPolicy {
   try {
     const raw = localStorage.getItem(LOG_POLICY_KEY);
     if (raw) return JSON.parse(raw);
-  } catch {}
+  } catch {
+    // Invalid local preferences fall back to the default retention policy.
+  }
   return { retentionDays: 30, maxFileSizeMB: 10, maxFiles: 30 };
 }
 

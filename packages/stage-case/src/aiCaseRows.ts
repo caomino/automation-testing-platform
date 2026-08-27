@@ -5,7 +5,8 @@
  *  - 绑定断言：用例编号必须以功能点标识为前缀；
  *  - 证据门：AI 生成结果标记 needs_review，需人工复核；调用失败/无内容 → 返回 null 由调用方回退模板。
  */
-import type { CaseRow } from '@test-platform/contracts';
+import { z } from 'zod';
+import type { CaseRow, FeatureEvidence, ScenarioCandidate } from '@test-platform/contracts';
 import { SCENARIO_SUFFIX, SCENARIO_LABEL, type ScenarioKey, type ScenarioContext } from './templateScenarioEngine';
 
 /** 与 infra-ai 的 AIClient 结构兼容（complete 返回 {text, usage?}） */
@@ -22,22 +23,125 @@ const SCENARIO_GUIDANCE: Record<ScenarioKey, string> = {
   permission: '权限校验：以无权限账号尝试操作，验证系统拦截/无权限提示。',
 };
 
-/** 解析 AI 文本为操作步骤 + 预期结果（兼容【操作步骤】/【预期结果】分段） */
-function parseAiText(text: string, ctx: ScenarioContext): { operation: string; expected: string } {
-  const opMatch = text.match(/【操作步骤】([\s\S]*?)(?:【预期结果】|$)/);
-  const expMatch = text.match(/【预期结果】([\s\S]*?)$/);
-  const operation =
-    (opMatch?.[1] ?? text).trim() ||
-    `1. 访问 [${ctx.subModule}] 页面\n2. 执行 [${ctx.featureName}] 操作`;
-  const expected =
-    (expMatch?.[1] ?? '').trim() ||
-    `系统正常响应，"${ctx.testPoint}"操作成功。`;
-  return { operation, expected };
+const AiRefinementSchema = z.object({ operation: z.string().min(1), expected: z.string().min(1) }).strict();
+
+function parseAiJson(text: string): { operation: string; expected: string } | null {
+  try {
+    const parsed = AiRefinementSchema.safeParse(JSON.parse(text));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+function bracketTerms(text: string): string[] {
+  return [...text.matchAll(/\[([^\]]+)]/g)].map((match) => match[1].trim()).filter(Boolean);
+}
+
+function hasOnlyEvidenceBoundTerms(
+  refined: { operation: string; expected: string },
+  ctx: ScenarioContext,
+  candidate: Pick<ScenarioCandidate, 'operation' | 'expected'>,
+  evidence?: FeatureEvidence,
+): boolean {
+  const allowed = new Set<string>([
+    ctx.subModule,
+    ctx.featureName,
+    ctx.testPoint,
+    ...bracketTerms(candidate.operation),
+    ...bracketTerms(candidate.expected),
+    ...(evidence?.fields.map((field) => field.name) ?? []),
+    ...(evidence?.actionEntries.flatMap((entry) => entry.text ? [entry.text] : []) ?? []),
+    ...(evidence?.containers.flatMap((container) => container.label ? [container.label] : []) ?? []),
+  ]);
+  return [...bracketTerms(refined.operation), ...bracketTerms(refined.expected)].every((term) => allowed.has(term));
+}
+
+function hasCandidateOrEvidenceAnchor(
+  refined: { operation: string; expected: string },
+  ctx: ScenarioContext,
+  candidate: Pick<ScenarioCandidate, 'operation' | 'expected'>,
+  evidence?: FeatureEvidence,
+): boolean {
+  const anchors = new Set([
+    ctx.subModule,
+    ctx.featureName,
+    ctx.testPoint,
+    ...bracketTerms(candidate.operation),
+    ...bracketTerms(candidate.expected),
+    ...(evidence?.fields.map((field) => field.name) ?? []),
+    ...(evidence?.actionEntries.flatMap((entry) => entry.text ? [entry.text] : []) ?? []),
+    ...(evidence?.containers.flatMap((container) => container.label ? [container.label] : []) ?? []),
+  ].filter(Boolean));
+  const text = `${refined.operation}\n${refined.expected}`;
+  return [...anchors].some((anchor) => text.includes(anchor));
+}
+
+/** 不携带业务实体的固定叙述词；业务名、字段、接口参数、角色、状态一律不在这里。 */
+const GENERIC_NARRATIVE_TERMS = [
+  '系统', '页面', '操作', '预期', '结果', '响应', '查看', '验证', '使用', '执行',
+  '返回', '获得', '检查', '保持', '提示', '校验',
+  '处理', '完成', '数据', '测试', '条件',
+  '并', '或', '且', '后', '前', '的', '在', '对',
+  '与', '为', '到', '按', '和', '及', '通过', '进行', '相关', '内容', '主流程', '功能', '进入', '等待', '明确',
+  '当前', '观察',
+].sort((left, right) => right.length - left.length);
+
+/**
+ * AI 的新增文本只能由候选中已有的非业务残词和固定叙述组成。
+ * 所有候选/证据实体仍必须通过 [] 锚点校验，因此这不是按动词或控件后缀猜测。
+ */
+function entityResiduals(text: string): string[] {
+  let residual = text.replace(/\[[^\]]+]/g, '');
+  for (const term of GENERIC_NARRATIVE_TERMS) residual = residual.replaceAll(term, '');
+  // 中文按单字切分：残词检查在「字符级」判定 AI 是否引入候选外的业务实体。
+  // 若用 [\u4e00-\u9fa5]+ 整句成词，则任何中文改写都会因整词不匹配而被安全门拒绝（中文用例无法润色）。
+  return residual.match(/[A-Za-z][A-Za-z0-9_-]*|\d+(?:\.\d+)?|[\u4e00-\u9fa5]/g) ?? [];
+}
+
+function hasOnlyCandidateOrGenericNarrative(
+  refined: { operation: string; expected: string },
+  candidate: Pick<ScenarioCandidate, 'operation' | 'expected'>,
+): boolean {
+  const candidateResiduals = new Set(entityResiduals(`${candidate.operation}\n${candidate.expected}`));
+  return entityResiduals(`${refined.operation}\n${refined.expected}`).every((term) => candidateResiduals.has(term));
+}
+
+function isSafeAiRefinement(
+  refined: { operation: string; expected: string },
+  ctx: ScenarioContext,
+  candidate: Pick<ScenarioCandidate, 'operation' | 'expected'>,
+  evidence?: FeatureEvidence,
+): boolean {
+  return hasOnlyEvidenceBoundTerms(refined, ctx, candidate, evidence)
+    && hasCandidateOrEvidenceAnchor(refined, ctx, candidate, evidence)
+    && hasOnlyCandidateOrGenericNarrative(refined, candidate);
+}
+
+/** AI 只能润色已确定候选的操作和预期，调用方保留候选元数据。 */
+export async function refineScenarioText(
+  ctx: ScenarioContext,
+  candidate: Pick<ScenarioCandidate, 'operation' | 'expected'>,
+  evidence: FeatureEvidence | undefined,
+  aiClient: CaseAIClient,
+): Promise<{ operation: string; expected: string } | null> {
+  const system = '你是测试用例文字润色助手。只能改写操作步骤和预期结果，不得新增字段、按钮、规则、场景或编号。只输出 JSON。';
+  const prompt =
+    `功能点：模块=${ctx.subModule}、功能=${ctx.featureName}、测试点=${ctx.testPoint}。\n` +
+    `现有操作步骤：\n${candidate.operation}\n现有预期结果：\n${candidate.expected}\n` +
+    `允许证据：字段=${evidence?.fields.map((field) => field.name).join(',') ?? ''}；入口=${evidence?.actionEntries.map((entry) => entry.text ?? entry.selector).join(',') ?? ''}。\n` +
+    '严格只返回 JSON：{"operation":"...","expected":"..."}。';
+  // 传输层错误（网络/鉴权/限流）直接抛出，由调用方在 AI 模式下标记为 ai_failed；
+  // 解析失败或安全校验不通过时返回 null，由任务级生成器统一标记 ai_failed。
+  const res = await aiClient.complete({ prompt, system, temperature: 0.3 });
+  const text = (res?.text ?? '').trim();
+  const refined = text ? parseAiJson(text) : null;
+  return refined && isSafeAiRefinement(refined, ctx, candidate, evidence) ? refined : null;
 }
 
 /**
  * 用 AI 生成单条候选用例行。
- * @returns 成功返回 CaseRow；失败/无内容/绑定失败返回 null（调用方回退模板）。
+ * @returns 成功返回 CaseRow；失败/无内容/绑定失败返回 null，由调用方标记 ai_failed。
  */
 export async function buildAiCandidateCaseRows(
   featureId: string,
@@ -51,15 +155,20 @@ export async function buildAiCandidateCaseRows(
     `功能点：模块=${ctx.subModule}、功能=${ctx.featureName}、测试点=${ctx.testPoint}。\n` +
     `场景类型：${SCENARIO_LABEL[key]}（${SCENARIO_GUIDANCE[key]}）\n` +
     `前置条件：${ctx.precondition}\n` +
-    `请输出该场景的测试用例，严格按以下格式：\n` +
-    `【操作步骤】\n（分步骤，每步一行，使用"点击[按钮名]/在[输入框名]录入xxx/访问[页面]"自然语言）\n` +
-    `【预期结果】\n（一句话描述预期）`;
+    '严格只返回 JSON：{"operation":"...","expected":"..."}。';
 
   try {
     const res = await aiClient.complete({ prompt, system, temperature: 0.3 });
     const text = (res?.text ?? '').trim();
     if (!text) return null;
-    const { operation, expected } = parseAiText(text, ctx);
+    const parsed = parseAiJson(text);
+    if (!parsed) return null;
+    const deterministic = {
+      operation: `1. 访问 [${ctx.subModule}] 页面\n2. 执行 [${ctx.featureName}] 操作`,
+      expected: `系统正常响应，"${ctx.testPoint}"操作成功。`,
+    };
+    if (!isSafeAiRefinement(parsed, ctx, deterministic)) return null;
+    const { operation, expected } = parsed;
     // 绑定断言：编号必须以功能点标识为前缀
     if (!caseNo.startsWith(featureId)) return null;
     return {
@@ -75,12 +184,14 @@ export async function buildAiCandidateCaseRows(
       featureId,
       targetTestPoint: ctx.testPoint,
       scenarioId: key,
+      coverageKeys: [`legacy.${key}`],
       origin: 'system_generated',
       evidenceLevel: 'needs_review', // 证据门：AI 生成需人工复核
       needsReview: true,
+      reviewReason: 'AI 文本已按结构校验，仍需人工复核',
       confidence: 0.6,
     } satisfies CaseRow;
   } catch {
-    return null; // 调用失败 → 调用方回退模板
+    return null; // 调用失败 → 调用方标记 ai_failed
   }
 }
