@@ -75,8 +75,56 @@ interface JsonResponse {
 
 const DEFAULT_TEMPERATURE = 0.7;
 
+export function buildChatUrl(baseUrl: string): string {
+  let url = (baseUrl || '').trim().replace(/\/+$/, '');
+  if (!url) return '/chat/completions';
+
+  if (url.endsWith('/chat/completions')) {
+    return url;
+  }
+  if (/^https?:\/\/api\.minimax(i)?\.chat$/i.test(url)) {
+    return `${url}/v1/chat/completions`;
+  }
+  if (/^https?:\/\/api\.openai\.com$/i.test(url)) {
+    return `${url}/v1/chat/completions`;
+  }
+  if (/^https?:\/\/api\.deepseek\.com$/i.test(url)) {
+    return `${url}/v1/chat/completions`;
+  }
+  if (/^https?:\/\/api\.moonshot\.cn$/i.test(url)) {
+    return `${url}/v1/chat/completions`;
+  }
+
+  return `${url}/chat/completions`;
+}
+
+export function buildModelsUrl(baseUrl: string): string {
+  let url = (baseUrl || '').trim().replace(/\/+$/, '');
+  if (!url) return '/models';
+
+  if (url.endsWith('/models')) {
+    return url;
+  }
+  if (url.endsWith('/chat/completions')) {
+    url = url.slice(0, -'/chat/completions'.length);
+  }
+  if (/^https?:\/\/api\.minimax(i)?\.chat$/i.test(url)) {
+    return `${url}/v1/models`;
+  }
+  if (/^https?:\/\/api\.openai\.com$/i.test(url)) {
+    return `${url}/v1/models`;
+  }
+  if (/^https?:\/\/api\.deepseek\.com$/i.test(url)) {
+    return `${url}/v1/models`;
+  }
+  if (/^https?:\/\/api\.moonshot\.cn$/i.test(url)) {
+    return `${url}/v1/models`;
+  }
+  return `${url}/models`;
+}
+
 export function createAIClient(config: AIProviderConfig): AIClient {
-  const url = `${config.baseUrl.replace(/\/$/, '')}/chat/completions`;
+  const url = buildChatUrl(config.baseUrl);
 
   return {
     async complete(req: AIRequest): Promise<AIResponse> {
@@ -160,7 +208,7 @@ export function resetProviderStore(): void {
 }
 
 export async function testConnection(config: AIProviderConfig): Promise<TestConnectionResult> {
-  const url = `${config.baseUrl.replace(/\/$/, '')}/chat/completions`;
+  const url = buildChatUrl(config.baseUrl);
   const start = performance.now();
 
   try {
@@ -193,8 +241,8 @@ export async function testConnection(config: AIProviderConfig): Promise<TestConn
 
     let errorText = '';
     try {
-      const parsed = (await response.json()) as { error?: { message?: string } };
-      errorText = parsed.error?.message ?? response.statusText;
+      const parsed = (await response.json()) as { error?: { message?: string; msg?: string }; message?: string };
+      errorText = parsed.error?.message ?? parsed.error?.msg ?? parsed.message ?? response.statusText;
     } catch {
       errorText = response.statusText;
     }
@@ -221,7 +269,7 @@ export async function fetchRemoteModels(
   baseUrl: string,
   apiKey: string,
 ): Promise<{ success: boolean; models: string[]; message: string }> {
-  const url = `${baseUrl.replace(/\/$/, '')}/models`;
+  const url = buildModelsUrl(baseUrl);
 
   try {
     const response = await fetch(url, {

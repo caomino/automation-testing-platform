@@ -1,0 +1,6 @@
+{
+  "name": "自动化测试平台",
+  "description": "商业自动化测试平台：流水线化支持系统登录、功能探索、测试用例生成、执行与缺陷管理",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

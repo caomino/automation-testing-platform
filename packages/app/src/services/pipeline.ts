@@ -416,7 +416,7 @@ function isLegacyCaseNo(caseNo: string): boolean {
 }
 
 function isCurrentCaseRow(row: Pick<CaseRow, 'caseNo' | 'featureId'>): boolean {
-  return Boolean(row.featureId && row.caseNo === row.featureId && !isLegacyCaseNo(row.caseNo));
+  return Boolean(row.caseNo && !isLegacyCaseNo(row.caseNo));
 }
 
 function legacyFeatureId(caseNo: string, scenarioId?: string): string {

@@ -12,6 +12,10 @@ const LOCAL_VENDOR_PRESETS: VendorInfo[] = [
   { vendor: 'deepseek', label: 'Deepseek', baseUrl: 'https://api.deepseek.com/v1', models: ['deepseek-chat', 'deepseek-reasoner'], description: 'Deepseek AI API' },
   { vendor: 'qwen', label: '通义千问', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', models: ['qwen-max', 'qwen-plus', 'qwen-turbo'], description: '阿里巴巴通义千问' },
   { vendor: 'zhipu', label: '智谱 AI', baseUrl: 'https://open.bigmodel.cn/api/paas/v4', models: ['glm-4', 'glm-4-flash', 'glm-3-turbo'], description: '智谱 AI 开放平台' },
+  { vendor: 'minimax', label: 'MiniMax (海螺AI)', baseUrl: 'https://api.minimax.chat/v1', models: ['MiniMax-Text-01', 'abab6.5s-chat', 'abab6.5t-chat', 'abab6.5-chat', 'abab5.5-chat'], description: 'MiniMax 开放平台 (兼容 OpenAI 协议)' },
+  { vendor: 'moonshot', label: '月之暗面 (Kimi)', baseUrl: 'https://api.moonshot.cn/v1', models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'], description: 'Moonshot AI 开放平台' },
+  { vendor: 'baichuan', label: '百川智能', baseUrl: 'https://api.baichuan-ai.com/v1', models: ['Baichuan4', 'Baichuan3-Turbo', 'Baichuan2-Turbo'], description: '百川大模型 API' },
+  { vendor: 'yi', label: '零一万物 (Yi)', baseUrl: 'https://api.lingyiwanwu.com/v1', models: ['yi-large', 'yi-medium', 'yi-spark'], description: '零一万物大模型开放平台' },
   { vendor: 'custom', label: '自定义/中转', baseUrl: '', models: [], description: '兼容 OpenAI 协议的任意端点' },
 ];
 

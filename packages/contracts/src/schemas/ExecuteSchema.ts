@@ -15,7 +15,7 @@ export const BrowserOSSchema = z.object({
 
 export const DataSnapshotSchema = z.object({
   capturedAt: z.number(),
-  rowHashes: z.record(z.array(z.string())),
+  rowHashes: z.record(z.string(), z.array(z.string())),
   ownerTaskId: z.string(),
 });
 
@@ -51,8 +51,8 @@ export const ExecuteOutputSchema = z.object({
 });
 
 export function validateExecuteInput(v: unknown): ExecuteInput {
-  return ExecuteInputSchema.parse(v);
+  return ExecuteInputSchema.parse(v) as ExecuteInput;
 }
 export function validateExecuteOutput(v: unknown): ExecuteOutput {
-  return ExecuteOutputSchema.parse(v);
+  return ExecuteOutputSchema.parse(v) as ExecuteOutput;
 }

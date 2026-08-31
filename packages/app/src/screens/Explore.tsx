@@ -5,6 +5,7 @@ import { useApp } from "../context";
 import type { ModuleNodeView } from "../context";
 import * as dataApi from "../services/dataApi";
 import { moduleTreeToFeatureTable, fromFeatureViewToTable } from "../services/pipeline";
+import { normalizeDisplayLabel } from "../services/abbr";
 
 function statusTone(s?: string) {
   if (s === "已覆盖") return "ok" as const;
@@ -56,7 +57,7 @@ function typeIcon(t?: ModuleNodeView["type"]): string {
 function toTreeItems(nodes: ModuleNodeView[], selected: string | null, onSelect: (id: string) => void, onToggle: ((id: string, checked: boolean) => void) | undefined, checkedIds: string[]): TreeItem[] {
   return nodes.map((n) => ({
     id: n.id,
-    label: `${typeIcon(n.type)} ${n.name}`,
+    label: `${typeIcon(n.type)} ${normalizeDisplayLabel(n.name) || n.name}`,
     selected: n.id === selected,
     onNodeClick: () => onSelect(n.id),
     onToggle: onToggle ? (id, c) => onToggle(id, c) : undefined,

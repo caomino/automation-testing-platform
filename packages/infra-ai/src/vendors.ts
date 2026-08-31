@@ -13,6 +13,10 @@ export type AIVendor =
   | 'deepseek'
   | 'qwen'
   | 'zhipu'
+  | 'minimax'
+  | 'moonshot'
+  | 'baichuan'
+  | 'yi'
   | 'custom';
 
 export interface VendorPreset {
@@ -72,6 +76,34 @@ export const VENDOR_PRESETS: Record<AIVendor, VendorPreset> = {
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     models: ['glm-4', 'glm-4-flash', 'glm-3-turbo'],
     description: '智谱 AI 开放平台',
+  },
+  minimax: {
+    vendor: 'minimax',
+    label: 'MiniMax (海螺AI)',
+    baseUrl: 'https://api.minimax.chat/v1',
+    models: ['MiniMax-Text-01', 'abab6.5s-chat', 'abab6.5t-chat', 'abab6.5-chat', 'abab5.5-chat'],
+    description: 'MiniMax 开放平台 (兼容 OpenAI 协议)',
+  },
+  moonshot: {
+    vendor: 'moonshot',
+    label: '月之暗面 (Kimi)',
+    baseUrl: 'https://api.moonshot.cn/v1',
+    models: ['moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k'],
+    description: 'Moonshot AI 开放平台',
+  },
+  baichuan: {
+    vendor: 'baichuan',
+    label: '百川智能',
+    baseUrl: 'https://api.baichuan-ai.com/v1',
+    models: ['Baichuan4', 'Baichuan3-Turbo', 'Baichuan2-Turbo'],
+    description: '百川大模型 API',
+  },
+  yi: {
+    vendor: 'yi',
+    label: '零一万物 (Yi)',
+    baseUrl: 'https://api.lingyiwanwu.com/v1',
+    models: ['yi-large', 'yi-medium', 'yi-spark'],
+    description: '零一万物大模型开放平台',
   },
   custom: {
     vendor: 'custom',

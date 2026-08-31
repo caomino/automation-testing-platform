@@ -43,7 +43,7 @@ export const SessionHandleSchema = z.object({
   systemId: z.string(),
   loginStatus: z.enum(['ok', 'barrier', 'failed']),
   cookies: z.array(z.string()),
-  headers: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   tokens: z.array(z.string()).optional(),
   expiresAt: z.number(),
   loginAt: z.number().optional(),
@@ -63,8 +63,8 @@ export const LoginOutputSchema = z.object({
 });
 
 export function validateLoginInput(v: unknown): LoginInput {
-  return LoginInputSchema.parse(v);
+  return LoginInputSchema.parse(v) as LoginInput;
 }
 export function validateLoginOutput(v: unknown): LoginOutput {
-  return LoginOutputSchema.parse(v);
+  return LoginOutputSchema.parse(v) as LoginOutput;
 }

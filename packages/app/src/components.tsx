@@ -1,5 +1,5 @@
 
-import type { CSSProperties, ReactNode, ChangeEvent, MouseEvent } from "react";
+import type { CSSProperties, ReactNode, ChangeEvent, MouseEvent, DragEvent } from "react";
 import { useState } from "react";
 
 /* ===== 按钮 ===== */
@@ -15,6 +15,7 @@ export function Button({
   style,
 }: {
   children: ReactNode;
+  key?: any;
   onClick?: (e?: MouseEvent) => void;
   variant?: "pri" | "ghost" | "dng";
   size?: "sm";
@@ -40,6 +41,7 @@ export function Card({
   titleStyle,
 }: {
   title?: ReactNode;
+  key?: any;
   children: ReactNode;
   style?: CSSProperties;
   titleStyle?: CSSProperties;
@@ -60,6 +62,7 @@ export function Tag({
   style,
 }: {
   children: ReactNode;
+  key?: any;
   tone?: "ok" | "warn" | "danger" | "info" | "gray" | "review";
   title?: string;
   style?: CSSProperties;
@@ -439,26 +442,26 @@ export interface TreeItem {
   selected?: boolean;
   draggable?: boolean;
   onDragStart?: (id: string) => void;
-  onDragOver?: (e: React.DragEvent, id: string) => void;
+  onDragOver?: (e: DragEvent, id: string) => void;
   onDrop?: (targetId: string, position: 'before' | 'after' | 'child') => void;
   dragPosition?: 'before' | 'after' | 'child' | null;
   expanded?: boolean;
   onToggleExpand?: (id: string) => void;
 }
 
-export function TreeNode({ item, depth = 0 }: { item: TreeItem; depth?: number }) {
+export function TreeNode({ item, depth = 0 }: { item: TreeItem; depth?: number; key?: any }) {
   const hasChildren = item.children && item.children.length > 0;
-  const handleDragStart = (e: React.DragEvent) => {
+  const handleDragStart = (e: DragEvent) => {
     e.dataTransfer.setData('text/plain', item.id);
     e.dataTransfer.effectAllowed = 'move';
     item.onDragStart?.(item.id);
   };
-  const handleDragOver = (e: React.DragEvent) => {
+  const handleDragOver = (e: DragEvent) => {
     e.preventDefault();
     e.dataTransfer.dropEffect = 'move';
     item.onDragOver?.(e, item.id);
   };
-  const handleDrop = (e: React.DragEvent) => {
+  const handleDrop = (e: DragEvent) => {
     e.preventDefault();
     const position = item.dragPosition || 'after';
     item.onDrop?.(item.id, position);
@@ -516,7 +519,7 @@ export function Tree({ root, items, onMultiToggle, checkedIds, onDropNode }: { r
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [dragPosition, setDragPosition] = useState<'before' | 'after' | 'child' | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set());
 
   // 收集所有节点 ID 用于展开/折叠全部
   const collectAllIds = (list: TreeItem[]): string[] => {
@@ -531,7 +534,7 @@ export function Tree({ root, items, onMultiToggle, checkedIds, onDropNode }: { r
   };
 
   const toggleExpand = (id: string) => {
-    setExpandedIds((prev) => {
+    setCollapsedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
         next.delete(id);
@@ -543,19 +546,19 @@ export function Tree({ root, items, onMultiToggle, checkedIds, onDropNode }: { r
   };
 
   const expandAll = () => {
-    const allIds = collectAllIds(items);
-    setExpandedIds(new Set(allIds));
+    setCollapsedIds(new Set());
   };
 
   const collapseAll = () => {
-    setExpandedIds(new Set());
+    const allIds = collectAllIds(items);
+    setCollapsedIds(new Set(allIds));
   };
 
   const enrichItems = (list: TreeItem[]): TreeItem[] =>
     list.map((it) => {
       const hasChildren = it.children && it.children.length > 0;
       const isExpanded = hasChildren 
-        ? (expandedIds.has(it.id) || expandedIds.size === 0) // 默认展开所有
+        ? !collapsedIds.has(it.id) // 默认展开，只有在 collapsedIds 中才折叠
         : false;
       return {
         ...it,
@@ -563,7 +566,7 @@ export function Tree({ root, items, onMultiToggle, checkedIds, onDropNode }: { r
         onToggle: onMultiToggle ? (id: string, c: boolean) => onMultiToggle(id, c) : it.onToggle,
         draggable: !!onDropNode,
         onDragStart: (id: string) => setDraggingId(id),
-        onDragOver: (e: React.DragEvent, id: string) => {
+        onDragOver: (e: DragEvent, id: string) => {
           setDragOverId(id);
           const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
           const y = e.clientY - rect.top;
@@ -681,7 +684,7 @@ export function FileUpload({
         accept={accept}
         multiple={multiple}
         style={{ display: "none" }}
-        onChange={(e) => { const files = Array.from(e.target.files ?? []);
+        onChange={(e) => { const files = Array.from(e.target.files ?? []) as unknown as File[];
           if (files.length > 0) onFile(files);
         }}
       />

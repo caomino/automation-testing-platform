@@ -1,48 +1,8 @@
-# ===== dependencies =====
 node_modules/
-.pnpm-store/
-.pnpm/
-
-# ===== build / output =====
-dist/
 build/
-out/
-*.tsbuildinfo
-.turbo/
+dist/
 coverage/
-
-# ===== logs =====
-logs/
-*.log
-npm-debug.log*
-pnpm-debug.log*
-yarn-debug.log*
-
-# ===== env / secrets =====
-.env
-.env.*
-*.local
-
-# ===== agent memory (sensitive: project decisions, prefs, logs) =====
-.workbuddy/
-
-# ===== OS / editor =====
 .DS_Store
-Thumbs.db
-.vscode/
-.idea/
-
-# ===== temp / scratch =====
-*.tmp
-.cache/
-
-# ===== runtime artifacts (never commit) =====
-.service-pids.json
-packages/engine-mcp*.zip
-
-# ===== credentials store (keep encrypted creds local only) =====
-packages/orchestrator/.credentials/
-
-# ===== test artifacts (generated, do not commit) =====
-test-results/
-playwright-report/
+*.log
+.env*
+!.env.example

@@ -100,7 +100,7 @@ export function ProjectMgmt() {
         const status = await getCaptureStatus(sessionId);
         if (status) {
           setCaptureStatus(status.status);
-          if (status.status === "completed" || status.status === "failed" || status.status === "cancelled") {
+          if (status.status === "completed" || (status.status as any) === "failed" || (status.status as any) === "cancelled") {
             if (capturePollRef.current) {
               clearInterval(capturePollRef.current);
               capturePollRef.current = null;
@@ -518,7 +518,7 @@ export function ProjectMgmt() {
                       </div>
                       <div className="capture-hint-actions">
                         <Button size="sm" variant="pri" onClick={handleCompleteCapture}>完成捕获</Button>
-                        <Button size="sm" variant="gho" onClick={handleCancelCapture}>取消</Button>
+                        <Button size="sm" variant="ghost" onClick={handleCancelCapture}>取消</Button>
                       </div>
                     </div>
                   )}

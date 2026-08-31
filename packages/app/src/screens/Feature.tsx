@@ -38,7 +38,8 @@ function canMergeColumn(col: keyof FeatureRowView, _v: unknown): boolean {
 function sameMergeGroup(rows: FeatureRowView[], i: number, j: number, col: keyof FeatureRowView): boolean {
   if (rows[i][col] !== rows[j][col]) return false;
   const bounds: Partial<Record<keyof FeatureRowView, (keyof FeatureRowView)[]>> = {
-    chapter: ["system", "mainModule", "subModule"],
+    type: ["system"],
+    chapter: ["system"],
     subModule: ["system", "mainModule"],
     feature: ["system", "mainModule", "subModule"],
     testPoint: ["system", "mainModule", "subModule", "feature"],

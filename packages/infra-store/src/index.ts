@@ -141,7 +141,7 @@ export interface ProjectStore {
   toggleAIConfigEnabled(id: string, enabled: boolean): Promise<AIConfigRecord>;
 }
 
-const DEFAULT_DATA_DIR = join('D:', 'test-platform-data', 'store');
+const DEFAULT_DATA_DIR = process.env.TEST_PLATFORM_DATA_DIR || (process.platform === 'win32' ? join('D:', 'test-platform-data', 'store') : join(process.cwd(), '.data', 'store'));
 const DEFAULT_DB_PATH = join(DEFAULT_DATA_DIR, 'projects.db');
 
 let sqlJsPromise: Promise<any> | null = null;

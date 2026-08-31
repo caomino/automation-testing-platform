@@ -209,15 +209,20 @@ export const run = async (input: CaseInput, opts?: CaseRunOptions): Promise<Case
       logger?.warn?.(`case: 功能点 ${item.featureId} 证据缺失，标记 evidence_missing`);
       continue;
     }
-    const identityGateReasons = gate.reasons.filter((reason) =>
-      !reason.includes('证据缺少可生成场景的字段/入口/表格/设计信息'),
+    const hardConflictReasons = gate.reasons.filter((reason) =>
+      reason.includes('版本')
+      || reason.includes('系统')
+      || reason.includes('证据 featureId 与当前功能点不一致')
+      || reason.includes('缺少功能点页面入口身份')
+      || reason.includes('入口不一致')
+      || reason.includes('路径不一致'),
     );
-    if (!gate.consistent && identityGateReasons.length > 0) {
-      const status: CaseFeatureResult['status'] = gate.reasons.some((reason) => reason.includes('版本'))
+    if (!gate.consistent && hardConflictReasons.length > 0) {
+      const status: CaseFeatureResult['status'] = hardConflictReasons.some((reason) => reason.includes('版本'))
         ? 'revision_conflict'
         : 'evidence_missing';
       featureResults.push(makeResult(item, resultIndex, status, gate.reasons, emptyDecision()));
-      logger?.warn?.(`case: 功能点 ${item.featureId} 证据身份不一致，标记 ${status}`);
+      logger?.warn?.(`case: 功能点 ${item.featureId} 证据身份冲突，标记 ${status}`);
       continue;
     }
 
@@ -228,9 +233,10 @@ export const run = async (input: CaseInput, opts?: CaseRunOptions): Promise<Case
     // 3/4/5. 五类覆盖 + 确定性候选（无 AI 基础）
     const candidates = generateActionScenarios(profile, evidence, ctx);
     const unsafeEvidence = evidence?.needsReview === true
-      && (evidence.reviewReason?.includes('写入风险') === true
-        || evidence.uncovered.some((item) => item.kind === 'write_required_state'));
-    const visibleCandidates = unsafeEvidence || !gate.consistent
+      || evidence?.evidenceLevel === 'needs_review'
+      || (evidence?.reviewReason?.includes('写入风险') === true
+        || evidence?.uncovered?.some((item) => item.kind === 'write_required_state' || item.kind === 'no_safe_sample' || item.kind === 'cross_origin_iframe' || item.kind === 'closed_shadow_dom'));
+    const visibleCandidates = unsafeEvidence
       ? []
       : candidates.filter((candidate) => candidate.evidenceLevel === 'observed' && !candidate.needsReview);
     if (visibleCandidates.length === 0) {
@@ -252,25 +258,6 @@ export const run = async (input: CaseInput, opts?: CaseRunOptions): Promise<Case
     const coverage = planCoverage(profile.actionKind, evidence);
     const extraReasons = gate.consistent ? [] : [`证据一致性待复核：${gate.reasons.join('；')}`];
     const coverageReasons = [...coverage.reasons, ...extraReasons];
-    const hasNeedsReviewDecision = Object.values(coverage.decisions).some((decision) => decision === 'needs_review');
-    // AI mode retains the legacy no-manifest review gate; no-AI generation can
-    // use concrete observed evidence directly, with coverageManifest optional.
-    const legacyNoManifestEvidence = mode === 'ai'
-      && !evidence?.coverageManifest
-      && evidence?.actionKind === 'create'
-      && evidence.states.includes('base')
-      && evidence.states.includes('create')
-      && evidence.coverageKeys.length > 0;
-    if (legacyNoManifestEvidence || (hasNeedsReviewDecision && coverageReasons.length === 0)) {
-      featureResults.push(makeResult(
-        item,
-        resultIndex,
-        'needs_review',
-        coverageReasons.length > 0 ? coverageReasons : ['覆盖结论缺少可核验的具体证据原因'],
-        coverage.decisions,
-      ));
-      continue;
-    }
 
     // 6. 有 AI 模式：任务级润色（失败则整体 ai_failed，不静默降级）
     let polished: Map<string, { operation: string; expected: string }> | null = null;

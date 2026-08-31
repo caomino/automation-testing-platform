@@ -88,6 +88,7 @@ export function Case() {
   const [cellValue, setCellValue] = useState("");
   const [metaForm, setMetaForm] = useState(metaHeader);
   const [showGenHistory, setShowGenHistory] = useState(false);
+  const [moduleSearchQuery, setModuleSearchQuery] = useState("");
 
   // batchId -> 生成批次元数据（spec §6.5 / §17.7：每组用例可追溯来源）
   const genMap = useMemo(() => {
@@ -103,13 +104,83 @@ export function Case() {
     return `批次: ${gen.batchId}\n模式: ${gen.mode === 'ai' ? 'AI 辅助' : '无 AI'}\nAI 配置: ${gen.aiConfigId ?? '无'}\nscope: ${gen.scope}${gen.regenerateSelected ? ' · 定点重生成' : ''}`;
   };
 
-  const moduleOptions = useMemo(() => {
-    const { subModules } = getFeatureModules();
-    if (subModules.length > 0) {
-      return subModules.map((name) => ({ value: name, label: name }));
+  const moduleTreeData = useMemo(() => {
+    const mainMap = new Map<string, { mainName: string; subModules: { name: string; count: number }[] }>();
+    for (const row of featureRows) {
+      const main = row.mainModule || "默认模块";
+      const sub = row.subModule || "未分类";
+      if (!mainMap.has(main)) {
+        mainMap.set(main, { mainName: main, subModules: [] });
+      }
+      const subs = mainMap.get(main)!.subModules;
+      const existing = subs.find((s) => s.name === sub);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        subs.push({ name: sub, count: 1 });
+      }
     }
-    return [];
-  }, [featureRows, getFeatureModules]);
+    return Array.from(mainMap.values());
+  }, [featureRows]);
+
+  const allSubModuleNames = useMemo(() => {
+    return Array.from(new Set(featureRows.map((r) => r.subModule).filter(Boolean)));
+  }, [featureRows]);
+
+  const filteredModuleTree = useMemo(() => {
+    const q = moduleSearchQuery.trim().toLowerCase();
+    if (!q) return moduleTreeData;
+    return moduleTreeData
+      .map((main) => {
+        const matchMain = main.mainName.toLowerCase().includes(q);
+        const filteredSubs = main.subModules.filter(
+          (sub) => matchMain || sub.name.toLowerCase().includes(q)
+        );
+        return {
+          ...main,
+          subModules: filteredSubs,
+        };
+      })
+      .filter((main) => main.subModules.length > 0);
+  }, [moduleTreeData, moduleSearchQuery]);
+
+  const selectedFeaturePointsCount = useMemo(() => {
+    const selectedSet = new Set(caseSelectedModules);
+    return featureRows.filter((r) => selectedSet.has(r.subModule)).length;
+  }, [featureRows, caseSelectedModules]);
+
+  const handleSelectAllModules = () => {
+    caseSetSelection(allSubModuleNames);
+  };
+
+  const handleClearModuleSelection = () => {
+    caseSetSelection([]);
+  };
+
+  const handleInvertModuleSelection = () => {
+    const currentSet = new Set(caseSelectedModules);
+    const inverted = allSubModuleNames.filter((name) => !currentSet.has(name));
+    caseSetSelection(inverted);
+  };
+
+  const handleToggleMainModule = (subNames: string[]) => {
+    const currentSet = new Set(caseSelectedModules);
+    const allSelected = subNames.every((n) => currentSet.has(n));
+    if (allSelected) {
+      caseSetSelection(caseSelectedModules.filter((n) => !subNames.includes(n)));
+    } else {
+      const merged = Array.from(new Set([...caseSelectedModules, ...subNames]));
+      caseSetSelection(merged);
+    }
+  };
+
+  const handleToggleSubModule = (name: string) => {
+    if (caseSelectedModules.includes(name)) {
+      caseSetSelection(caseSelectedModules.filter((s) => s !== name));
+    } else {
+      caseSetSelection([...caseSelectedModules, name]);
+    }
+  };
 
 
   const handleGenerateSelected = async () => {
@@ -125,6 +196,7 @@ export function Case() {
       toast("请先选择要测试的模块");
       return;
     }
+    toast("正在生成选中模块测试用例，请稍候...");
     const input = buildCaseInput(featureRows, caseSelectedModules, metaHeader, 'selected_modules', featurePaths, caseAiOn, featureProfiles, featureEvidence, undefined, currentCaseWorkbook, aiCurrentDefault);
     const result = await runPipelineCase(input);
     if (!result) return;
@@ -145,6 +217,7 @@ export function Case() {
       toast("请先选择要重新生成的模块");
       return;
     }
+    toast("正在重新生成选中模块测试用例，请稍候...");
     const input = buildCaseInput(featureRows, caseSelectedModules, metaHeader, 'selected_modules', featurePaths, caseAiOn, featureProfiles, featureEvidence, true, currentCaseWorkbook, aiCurrentDefault);
     const result = await runPipelineCase(input);
     if (!result) return;
@@ -161,6 +234,7 @@ export function Case() {
       toast("请先在功能点阶段确认功能点");
       return;
     }
+    toast("正在生成全部测试用例，请稍候...");
     const input = buildCaseInput(featureRows, caseSelectedModules, metaHeader, 'all', featurePaths, caseAiOn, featureProfiles, featureEvidence, undefined, currentCaseWorkbook, aiCurrentDefault);
     const result = await runPipelineCase(input);
     if (!result) return;
@@ -184,7 +258,7 @@ export function Case() {
     return modules.filter((m) => caseSelectedModules.includes(m));
   }, [groupedByModule, caseSelectedModules]);
   const requiredCoverageKeys = useMemo(() => new Set([
-    ...Object.values(featureEvidence).flatMap((evidence) => (evidence.coverageManifest?.requiredKeys ?? evidence.coverageKeys).map((key) => coverageId(evidence.featureId, key))),
+    ...Object.values(featureEvidence).flatMap((evidence: any) => (evidence?.coverageManifest?.requiredKeys ?? evidence?.coverageKeys ?? []).map((key: string) => coverageId(evidence?.featureId || '', key))),
     ...caseGroups.flatMap((group) => (group.coverageKeys ?? []).map((key) => coverageId(groupFeatureId(group), key))),
   ]), [caseGroups, featureEvidence]);
   const observedCoverageKeys = useMemo(() => new Set(
@@ -196,7 +270,7 @@ export function Case() {
   const needsReviewCount = useMemo(() => caseGroups.filter((group) => group.needsReview).length, [caseGroups]);
   const blockingMessages = useMemo(() => [
     ...caseQualityGateIssues.filter((issue) => issue.blocking).map((issue) => issue.message),
-    ...Object.values(featureEvidence).flatMap((evidence) => (evidence.coverageManifest?.missingKeys ?? []).map((key) => `${evidence.featureId} 缺少已观测覆盖：${key}`)),
+    ...Object.values(featureEvidence).flatMap((evidence: any) => (evidence?.coverageManifest?.missingKeys ?? []).map((key: string) => `${evidence?.featureId} 缺少已观测覆盖：${key}`)),
     ...localCaseBlockingMessages(caseGroups),
   ].filter((message, index, all) => all.indexOf(message) === index), [caseGroups, caseQualityGateIssues, featureEvidence]);
   const isExecutable = caseGroups.length > 0 && needsReviewCount < caseGroups.length && blockingMessages.length === 0;
@@ -492,8 +566,15 @@ export function Case() {
           )}
           {caseGroups.length === 0 && (
             <tr>
-              <td colSpan={9} style={{ border: "1px solid #000", padding: "20px", textAlign: "center", color: "#999" }}>
-                暂无测试用例，请先生成或添加
+              <td colSpan={9} style={{ border: "1px solid #000", padding: "32px 20px", textAlign: "center", color: "var(--mut, #888)" }}>
+                {pipelineLoading ? (
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                    <div style={{ width: 24, height: 24, border: "2px solid #2563eb", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                    <div style={{ fontWeight: 500, color: "var(--pri, #2563eb)" }}>正在生成测试用例，请稍候...</div>
+                  </div>
+                ) : (
+                  "暂无测试用例，请先生成或添加"
+                )}
               </td>
             </tr>
           )}
@@ -517,7 +598,7 @@ export function Case() {
             disabled={pipelineLoading}
             onClick={handleGenerateSelected}
           >
-            生成选中
+            {pipelineLoading ? "⏳ 生成中..." : "生成选中"}
           </Button>
           <Button
             variant="pri"
@@ -525,14 +606,14 @@ export function Case() {
             onClick={handleRegenerateSelected}
             title="定点替换选中模块的功能点用例，不影响其他模块"
           >
-            重新生成选中模块
+            {pipelineLoading ? "⏳ 重新生成中..." : "重新生成选中模块"}
           </Button>
           <Button
             variant="pri"
             disabled={pipelineLoading}
             onClick={handleGenerateAll}
           >
-            全部生成
+            {pipelineLoading ? "⏳ 全部生成中..." : "全部生成"}
           </Button>
           <Button onClick={() => caseGroupAdd()} title="添加新用例分组">
             + 新用例
@@ -542,6 +623,40 @@ export function Case() {
           <Button onClick={handleExportCsv}>导出 CSV</Button>
         </div>
       </div>
+
+      {pipelineLoading && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
+            padding: "12px 16px",
+            marginBottom: "12px",
+            borderRadius: "6px",
+            backgroundColor: "rgba(37, 99, 235, 0.08)",
+            border: "1px solid rgba(37, 99, 235, 0.25)",
+            color: "var(--pri, #2563eb)",
+          }}
+        >
+          <div
+            style={{
+              width: "18px",
+              height: "18px",
+              border: "2px solid rgba(37, 99, 235, 0.3)",
+              borderTopColor: "#2563eb",
+              borderRadius: "50%",
+              animation: "spin 0.8s linear infinite",
+              flexShrink: 0,
+            }}
+          />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600, fontSize: "14px" }}>测试用例生成中...</div>
+            <div style={{ fontSize: "12px", color: "var(--mut, #64748b)", marginTop: "2px" }}>
+              正在执行页面特征探索、提取表单字段/操作入口并构建标准测试用例矩阵，请稍候...
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="row" style={{ marginBottom: 8 }}>
         <span style={{ fontSize: 13, color: "var(--mut)" }}>
@@ -663,21 +778,145 @@ export function Case() {
         footer={
           <>
             <Button onClick={closeModal}>取消</Button>
-            <Button variant="pri" onClick={handleApplySelection}>确认选择</Button>
+            <Button variant="pri" onClick={handleApplySelection}>确认选择（已选 {caseSelectedModules.length} 个）</Button>
           </>
         }
       >
-        <div className="field">
-          <label>已选模块（{caseSelectedModules.length} 个）</label>
-          <SearchableSelect
-            multiple
-            selected={caseSelectedModules}
-            onSelectedChange={(sel) => caseSetSelection(sel)}
-            options={moduleOptions}
-            placeholder="选择模块..."
-          />
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {/* 搜索与快捷操作栏 */}
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <input
+              type="text"
+              className="text-input"
+              style={{ flex: 1, minWidth: 160 }}
+              placeholder="🔍 搜索主模块或子模块名称..."
+              value={moduleSearchQuery}
+              onChange={(e) => setModuleSearchQuery(e.target.value)}
+            />
+            <Button size="sm" onClick={handleSelectAllModules}>全选</Button>
+            <Button size="sm" onClick={handleInvertModuleSelection}>反选</Button>
+            <Button size="sm" onClick={handleClearModuleSelection}>清空</Button>
+          </div>
+
+          {/* 统计提示 */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 13, color: "var(--mut)" }}>
+            <span>已选 <strong>{caseSelectedModules.length}</strong> / {allSubModuleNames.length} 个子模块</span>
+            <span>覆盖 <strong>{selectedFeaturePointsCount}</strong> / {featureRows.length} 个功能点</span>
+          </div>
+
+          {/* 已选模块标签列表 */}
+          {caseSelectedModules.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, maxHeight: 80, overflowY: "auto", padding: "6px 8px", background: "var(--bg-subtle, #f8f9fa)", borderRadius: 6, border: "1px solid var(--bd, #e5e7eb)" }}>
+              {caseSelectedModules.map((mod) => (
+                <Tag key={mod} tone="info">
+                  {mod}
+                  <span
+                    style={{ marginLeft: 4, cursor: "pointer", fontWeight: "bold" }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleToggleSubModule(mod);
+                    }}
+                    title="移除"
+                  >
+                    ×
+                  </span>
+                </Tag>
+              ))}
+            </div>
+          )}
+
+          {/* 模块分组卡片列表 */}
+          <div style={{ maxHeight: 320, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8, paddingRight: 4 }}>
+            {filteredModuleTree.length === 0 ? (
+              <div style={{ textAlign: "center", padding: 24, color: "var(--mut)", fontSize: 13 }}>
+                未搜索到匹配的模块
+              </div>
+            ) : (
+              filteredModuleTree.map((main) => {
+                const subNames = main.subModules.map((s) => s.name);
+                const allSelected = subNames.length > 0 && subNames.every((n) => caseSelectedModules.includes(n));
+                const someSelected = subNames.some((n) => caseSelectedModules.includes(n)) && !allSelected;
+                const totalMainCount = main.subModules.reduce((acc, s) => acc + s.count, 0);
+
+                return (
+                  <div
+                    key={main.mainName}
+                    style={{
+                      border: "1px solid var(--bd, #e5e7eb)",
+                      borderRadius: 8,
+                      padding: "8px 12px",
+                      background: "var(--card-bg, #fff)",
+                    }}
+                  >
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        cursor: "pointer",
+                        userSelect: "none",
+                        paddingBottom: 6,
+                        borderBottom: "1px solid var(--bd, #f0f0f0)",
+                        marginBottom: 6,
+                      }}
+                      onClick={() => handleToggleMainModule(subNames)}
+                    >
+                      <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", fontWeight: 600, fontSize: 13 }}>
+                        <input
+                          type="checkbox"
+                          checked={allSelected}
+                          ref={(el) => {
+                            if (el) el.indeterminate = someSelected;
+                          }}
+                          onChange={() => handleToggleMainModule(subNames)}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                        <span>{main.mainName}</span>
+                      </label>
+                      <span style={{ fontSize: 12, color: "var(--mut)" }}>
+                        {main.subModules.length} 个子模块 · {totalMainCount} 个功能点
+                      </span>
+                    </div>
+
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {main.subModules.map((sub) => {
+                        const isChecked = caseSelectedModules.includes(sub.name);
+                        return (
+                          <div
+                            key={sub.name}
+                            onClick={() => handleToggleSubModule(sub.name)}
+                            style={{
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: 6,
+                              padding: "4px 8px",
+                              borderRadius: 4,
+                              fontSize: 12,
+                              cursor: "pointer",
+                              userSelect: "none",
+                              border: isChecked ? "1px solid var(--pri, #2563eb)" : "1px solid var(--bd, #e5e7eb)",
+                              background: isChecked ? "var(--pri-subtle, #eff6ff)" : "var(--bg, #fff)",
+                              color: isChecked ? "var(--pri, #1d4ed8)" : "inherit",
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => handleToggleSubModule(sub.name)}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                            <span>{sub.name}</span>
+                            <span style={{ color: "var(--mut)", fontSize: 11 }}>({sub.count})</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
         </div>
-        <div className="hint" style={{ marginTop: 8 }}>选择后只渲染选中模块的测试用例表格。</div>
       </Modal>
 
       <ConfirmDialog

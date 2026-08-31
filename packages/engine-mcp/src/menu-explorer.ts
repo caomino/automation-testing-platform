@@ -70,35 +70,39 @@ const MENU_ITEMS = [
 ].join(',');
 
 /** 浏览器内收集导航项（含层级 parentSelector）；跨 frame 收集 */
-const COLLECT_NAV_FN = (args: { containerSel: string; itemSel: string; dangerousSource: string }) => {
-  const { containerSel, itemSel, dangerousSource } = args;
+const COLLECT_NAV_FN = `((args) => {
+  var containerSel = args.containerSel;
+  var itemSel = args.itemSel;
+  var dangerousSource = args.dangerousSource;
   // 黑名单由 Node 侧注入（DANGEROUS_SOURCE），避免浏览器侧维护第二份正则导致改一处等于没改
-  const dangerous = new RegExp(dangerousSource, 'i');
+  var dangerous = new RegExp(dangerousSource, 'i');
 
-  const cssPath = (el: Element): string => {
-    let cur: Element | null = el;
-    if (cur.id) return `#${cur.id}`;
-    for (const a of ['data-testid', 'data-id', 'data-key', 'data-menu-id']) {
-      if (cur.getAttribute(a)) return `${cur.tagName.toLowerCase()}[${a}="${cur.getAttribute(a)}"]`;
+  var cssPath = (el) => {
+    var cur = el;
+    if (cur.id) return '#' + cur.id;
+    var attrs = ['data-testid', 'data-id', 'data-key', 'data-menu-id'];
+    for (var i = 0; i < attrs.length; i++) {
+      var a = attrs[i];
+      if (cur.getAttribute(a)) return cur.tagName.toLowerCase() + '[' + a + '="' + cur.getAttribute(a) + '"]';
     }
-    const parts: string[] = [];
+    var parts = [];
     while (cur && cur !== document.body && parts.length < 12) {
-      let seg = cur.tagName.toLowerCase();
+      var seg = cur.tagName.toLowerCase();
       if (cur.id) {
-        parts.unshift(`${seg}#${cur.id}`);
+        parts.unshift(seg + '#' + cur.id);
         break;
       }
       // 过滤状态类（open/active/selected/collapsed 等），保证展开前后 selector 稳定，避免同一菜单项被当成两个
-      const stateCls = /open|active|selected|collapsed|expanded|show|hidden|disabled|checked|hover/i;
-      const cls = Array.from(cur.classList)
+      var stateCls = /open|active|selected|collapsed|expanded|show|hidden|disabled|checked|hover/i;
+      var cls = Array.from(cur.classList)
         .filter((c) => !stateCls.test(c))
         .slice(0, 2)
-        .map((c) => `.${c}`)
+        .map((c) => '.' + c)
         .join('');
-      const parent: Element | null = cur.parentElement;
+      var parent = cur.parentElement;
       if (parent) {
-        const sameTag = Array.from(parent.children).filter((c) => c.tagName === cur!.tagName);
-        if (sameTag.length > 1) seg += `:nth-of-type(${sameTag.indexOf(cur) + 1})`;
+        var sameTag = Array.from(parent.children).filter((c) => c.tagName === cur.tagName);
+        if (sameTag.length > 1) seg += ':nth-of-type(' + (sameTag.indexOf(cur) + 1) + ')';
       }
       parts.unshift(seg + cls);
       cur = cur.parentElement;
@@ -106,71 +110,72 @@ const COLLECT_NAV_FN = (args: { containerSel: string; itemSel: string; dangerous
     return parts.join('>');
   };
 
-  const containers = Array.from(document.querySelectorAll(containerSel));
-  const out: RawNavItem[] = [];
-  const seen = new Set<string>();
+  var containers = Array.from(document.querySelectorAll(containerSel));
+  var out = [];
+  var seen = new Set();
 
-  for (const container of containers) {
-    const allEls = Array.from(container.querySelectorAll(itemSel));
+  for (var cIdx = 0; cIdx < containers.length; cIdx++) {
+    var container = containers[cIdx];
+    var allEls = Array.from(container.querySelectorAll(itemSel));
     // 第一阶段：去嵌套过滤——跳过「内部含命中项、自身非链接、非子菜单容器」的纯容器（li 与其内部 a 不重复成父子）
-    const keptEls: Element[] = [];
-    for (const el of allEls) {
-      const html = el as HTMLElement;
-      const hasNestedItem = allEls.some((c) => c !== el && el.contains(c));
+    var keptEls = [];
+    for (var eIdx = 0; eIdx < allEls.length; eIdx++) {
+      var el = allEls[eIdx];
+      var html = el;
+      var hasNestedItem = allEls.some((c) => c !== el && el.contains(c));
       if (hasNestedItem && !html.getAttribute('href') && !html.querySelector('ul, ol, [role="menu"]')) {
         continue;
       }
       keptEls.push(el);
     }
     // 第二阶段：先算文本（去重用）
-    const textOf = (el: Element): string => {
-      const html = el as HTMLElement;
-      let t = '';
-      for (const c of Array.from(html.childNodes)) {
+    var textOf = (el) => {
+      var html = el;
+      var t = '';
+      for (var n = 0; n < html.childNodes.length; n++) {
+        var c = html.childNodes[n];
         if (c.nodeType === 3) t += (c.textContent || '');
       }
-      t = t.replace(/\s+/g, ' ').trim();
+      t = t.replace(/\\s+/g, ' ').trim();
       if (!t) {
-        const leaf = html.querySelector('a, span, [class*="title"], [class*="label"], [class*="text"]');
-        t = (leaf ? (leaf.textContent || '') : '').replace(/\s+/g, ' ').trim();
+        var leaf = html.querySelector('a, span, [class*="title"], [class*="label"], [class*="text"]');
+        t = (leaf ? (leaf.textContent || '') : '').replace(/\\s+/g, ' ').trim();
       }
-      if (!t) t = (html.textContent || '').replace(/\s+/g, ' ').trim().replace(/\s*\d+\s*$/, '').trim();
+      if (!t) t = (html.textContent || '').replace(/\\s+/g, ' ').trim().replace(/\\s*\\d+\\s*$/, '').trim();
       return t;
     };
-    const textCache = new Map<Element, string>();
-    for (const el of keptEls) textCache.set(el, textOf(el));
+    var textCache = new Map();
+    for (var kIdx = 0; kIdx < keptEls.length; kIdx++) textCache.set(keptEls[kIdx], textOf(keptEls[kIdx]));
 
     // 关键修复（T1.5 真机验证）：把「被更深同文本后代合并的浅层祖先」**真正移出**保留集合。
-    // ruoyi 等：a[href] 直接包裹 li.el-menu-item（同文本）时，a 与 li 都命中 itemSel。
-    // 若 a 仍留在集合里，li 的 parentSelector 会指向 a 而非父菜单 li.el-submenu，
-    // 导致层级匹配失败（只匹配到不被 a 包裹的项）。此处把 a 移除，li 继承其 href。
-    const keptFinal = keptEls.filter(
+    var keptFinal = keptEls.filter(
       (el) =>
         !keptEls.some((c) => c !== el && el.contains(c) && textCache.get(c) === textCache.get(el)),
     );
 
     // 第三阶段：对最终保留项计算 text/selector/expandable/parentSelector（父级只在最终保留项中找）
-    for (const el of keptFinal) {
-      const html = el as HTMLElement;
-      const text = textCache.get(el) || '';
+    for (var fIdx = 0; fIdx < keptFinal.length; fIdx++) {
+      var el = keptFinal[fIdx];
+      var html = el;
+      var text = textCache.get(el) || '';
       if (!text || text.length < 2 || text.length > 30) continue;
       if (dangerous.test(text)) continue;
-      const style = window.getComputedStyle(html);
+      var style = window.getComputedStyle(html);
       if (style.display === 'none' || style.visibility === 'hidden') continue;
-      const rect = html.getBoundingClientRect();
+      var rect = html.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) continue;
-      const selector = cssPath(html);
-      const expandable =
+      var selector = cssPath(html);
+      var expandable =
         html.querySelector('ul, ol, [role="menu"], [class*="submenu"], [class*="sub-menu"], [class*="children"]') !== null;
       // href：自身 → 内部 a → 祖先 a（a 包裹 li 的场景）
-      let href: string | undefined = html.getAttribute('href') || undefined;
+      var href = html.getAttribute('href') || undefined;
       if (!href && !expandable) {
-        href = html.querySelector('a[href]')?.getAttribute('href') ?? undefined;
+        href = html.querySelector('a[href]')?.getAttribute('href') || undefined;
       }
       if (!href) {
-        let p: Element | null = html.parentElement;
+        var p = html.parentElement;
         while (p && p !== document.body) {
-          const ah = (p as HTMLElement).getAttribute?.('href');
+          var ah = p.getAttribute ? p.getAttribute('href') : null;
           if (ah) {
             href = ah;
             break;
@@ -179,8 +184,8 @@ const COLLECT_NAV_FN = (args: { containerSel: string; itemSel: string; dangerous
         }
       }
       // 父级：最近的「也在最终保留集合里」的祖先菜单项（避免指向被跳过的 li 或 ul 容器）
-      let parentEl: Element | null = html.parentElement;
-      let parentSelector: string | null = null;
+      var parentEl = html.parentElement;
+      var parentSelector = null;
       while (parentEl && parentEl !== document.body) {
         if (keptFinal.includes(parentEl)) {
           parentSelector = cssPath(parentEl);
@@ -188,58 +193,61 @@ const COLLECT_NAV_FN = (args: { containerSel: string; itemSel: string; dangerous
         }
         parentEl = parentEl.parentElement;
       }
-      const key = selector;
+      var key = selector;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push({ selector, text, href: href ?? undefined, expandable, parentSelector });
+      out.push({ selector, text, href: href || undefined, expandable, parentSelector });
     }
   }
   return out;
-};
+})`;
 
 /** 浏览器内收集页面功能点控件 + 是否含数据表格/列表（只识别、不点击） */
-const COLLECT_CONTROLS_FN = () => {
+const COLLECT_CONTROLS_FN = `(() => {
   // 多容器扫描：所有 main/.content 容器都扫，而非只取第一个（表格/表单可能不在第一个容器内）
-  const containers = Array.from(document.querySelectorAll('main, .content, #main, [class*="content"], [class*="main"]'));
-  const roots: Element[] = containers.length > 0 ? (containers as Element[]) : [document.body];
-  const hasDataGrid = roots.some((r) => !!r.querySelector('table, [class*="table"], [class*="grid"], [class*="list"], [class*="list-view"]'));
-  const controls: PageControl[] = [];
-  const seen = new Set<string>();
+  var containers = Array.from(document.querySelectorAll('main, .content, #main, [class*="content"], [class*="main"]'));
+  var roots = containers.length > 0 ? containers : [document.body];
+  var hasDataGrid = roots.some((r) => !!r.querySelector('table, [class*="table"], [class*="grid"], [class*="list"], [class*="list-view"]'));
+  var controls = [];
+  var seen = new Set();
   // 扩展候选：Tab/标签页、列表项、textarea、分页等，补「页面菜单下的标签」颗粒度
-  const SEL = 'button, a[href], [role="button"], [class*="btn"], input, select, textarea, [role="tab"], .ant-tabs-tab, .el-tabs__item, [role="listitem"], .ant-list-item, .ant-pagination-item';
-  for (const main of roots) {
-    const candidates = main.querySelectorAll(SEL);
-    for (const el of Array.from(candidates)) {
-      const html = el as HTMLElement;
+  var SEL = 'button, a[href], [role="button"], [class*="btn"], input, select, textarea, [role="tab"], .ant-tabs-tab, .el-tabs__item, [role="listitem"], .ant-list-item, .ant-pagination-item';
+  for (var mIdx = 0; mIdx < roots.length; mIdx++) {
+    var main = roots[mIdx];
+    var candidates = main.querySelectorAll(SEL);
+    for (var cIdx = 0; cIdx < candidates.length; cIdx++) {
+      var el = candidates[cIdx];
+      var html = el;
       // 关键修复（串页污染）：keep-alive 缓存的隐藏页面 DOM 仍在文档中（display:none），
       // 必须跳过不可见元素，否则会把上一个页面的按钮/导航控件误挂到当前页面。
-      const style = window.getComputedStyle(html);
-      const rect = html.getBoundingClientRect();
+      var style = window.getComputedStyle(html);
+      var rect = html.getBoundingClientRect();
       if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0' || rect.width === 0 || rect.height === 0) continue;
       // 排除全局导航/标签页/顶栏内的控件（个人中心/刷新/公告弹窗等不属于页面功能点）
       if (html.closest('.navbar, .navbar-container, .tags-view, .tags-view-container, .sidebar, .sidebar-container, header, .header, .topbar, .top-bar, .layout-header, .sidebar-logo-container')) continue;
-      const tag = html.tagName.toLowerCase();
-      const isTab = !!html.closest('[role="tablist"]') || html.getAttribute('role') === 'tab' || /tabs-tab|tabs__item/i.test(html.className);
-      const text = (html.textContent || '').replace(/\s+/g, ' ').trim();
-      const label = html.getAttribute('aria-label') || text || (html as HTMLInputElement).placeholder || '';
+      var tag = html.tagName.toLowerCase();
+      var isTab = !!html.closest('[role="tablist"]') || html.getAttribute('role') === 'tab' || /tabs-tab|tabs__item/i.test(html.className);
+      var text = (html.textContent || '').replace(/\\s+/g, ' ').trim();
+      var label = html.getAttribute('aria-label') || text || html.placeholder || '';
       if (!label) continue;
-      const sel =
-        html.id ? `#${html.id}` : `${tag}[${['data-testid', 'data-id', 'name'].map((a) => html.getAttribute(a) ? `${a}="${html.getAttribute(a)}"` : '').filter(Boolean).join('][') || 'class'}='${html.className}']`;
-      const key = sel + label;
+      var attrs = ['data-testid', 'data-id', 'name'];
+      var attrStr = attrs.map((a) => html.getAttribute(a) ? '[' + a + '="' + html.getAttribute(a) + '"]' : '').filter(Boolean).join('');
+      var sel = html.id ? ('#' + html.id) : (tag + (attrStr || ("['class'='" + html.className + "']")));
+      var key = sel + label;
       if (seen.has(key)) continue;
       seen.add(key);
       controls.push({
         selector: sel,
         tag,
         text: label,
-        href: tag === 'a' ? (html as HTMLAnchorElement).getAttribute('href') ?? undefined : undefined,
-        type: isTab ? 'tab' : ((html as HTMLInputElement).type || undefined),
-        placeholder: (html as HTMLInputElement).placeholder || undefined,
+        href: tag === 'a' ? (html.getAttribute('href') || undefined) : undefined,
+        type: isTab ? 'tab' : (html.type || undefined),
+        placeholder: html.placeholder || undefined,
       });
     }
   }
   return { controls, hasDataGrid };
-};
+})`;
 
 /** 跨 frame 收集导航项 */
 async function collectNavAll(page: Page): Promise<RawNavItem[]> {
@@ -262,7 +270,7 @@ async function collectNavAll(page: Page): Promise<RawNavItem[]> {
 
 async function collectControls(page: Page): Promise<{ controls: PageControl[]; hasDataGrid: boolean }> {
   const frame = page.mainFrame();
-  return frame.evaluate(COLLECT_CONTROLS_FN).catch(() => ({ controls: [], hasDataGrid: false }));
+  return frame.evaluate<{ controls: PageControl[]; hasDataGrid: boolean }>(COLLECT_CONTROLS_FN).catch(() => ({ controls: [], hasDataGrid: false }));
 }
 
 async function waitSettled(page: Page, settleMs: number): Promise<void> {
@@ -291,12 +299,12 @@ async function waitForContentLoaded(page: Page): Promise<void> {
   const sample = async (): Promise<string> =>
     page
       .mainFrame()
-      .evaluate(() => {
-        const el =
-          document.querySelector('.app-main, main, .main, .content, [class*="content"], [class*="main"]') ??
+      .evaluate<string>(`(() => {
+        var el =
+          document.querySelector('.app-main, main, .main, .content, [class*="content"], [class*="main"]') ||
           document.body;
-        return ((el as HTMLElement).innerText ?? '').replace(/\s+/g, ' ').trim().slice(0, 500);
-      })
+        return (el && el.innerText ? el.innerText : '').replace(/\\s+/g, ' ').trim().slice(0, 500);
+      })()`)
       .catch(() => '');
 
   // 1) 等待内容区文本稳定：内容变化后连续采样一致（间隔 250ms）且非空，最多 ~5s
@@ -321,12 +329,12 @@ async function waitForContentLoaded(page: Page): Promise<void> {
     'table, .el-table, .ant-table, .btn, button, [role="button"], [class*="toolbar"], [class*="operation"], [class*="actions"]';
   try {
     await page.waitForFunction(
-      (args: { contentSel: string; markerSel: string }) => {
-        const containers = Array.from(document.querySelectorAll(args.contentSel));
-        const roots = containers.length > 0 ? (containers as Element[]) : [document.body];
+      `((args) => {
+        var containers = Array.from(document.querySelectorAll(args.contentSel));
+        var roots = containers.length > 0 ? containers : [document.body];
         return roots.some((r) => r.querySelector(args.markerSel));
-      },
-      { contentSel, markerSel },
+      })(${JSON.stringify({ contentSel, markerSel })})`,
+      null,
       { timeout: 3000 },
     );
   } catch {
@@ -350,13 +358,13 @@ export async function pageFingerprint(page: Page): Promise<string> {
   const url = page.url();
   const body = await page
     .mainFrame()
-    .evaluate(() => {
-      const el =
-        document.querySelector('main, .main, .app-main, .content, [class*="content"], [class*="main"]') ??
+    .evaluate<string>(`(() => {
+      var el =
+        document.querySelector('main, .main, .app-main, .content, [class*="content"], [class*="main"]') ||
         document.body;
-      const text = (el as HTMLElement).innerText ?? '';
-      return `${el.querySelectorAll('*').length}:${text.slice(0, 300)}`;
-    })
+      var text = el && el.innerText ? el.innerText : '';
+      return (el ? el.querySelectorAll('*').length : 0) + ':' + text.slice(0, 300);
+    })()`)
     .catch(() => '');
   return `${url}||${body}`;
 }

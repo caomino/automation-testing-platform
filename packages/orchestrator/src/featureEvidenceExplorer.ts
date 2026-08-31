@@ -299,7 +299,7 @@ async function restoreBase(engine: McpEngine, baseUrl: string | undefined): Prom
       const target = new URL(baseUrl);
       const current = new URL(cur);
       if (current.hash !== target.hash && typeof engine.evaluate === 'function') {
-        await engine.evaluate('(hash: string) => { try { window.location.hash = hash; } catch {} }', target.hash);
+        await engine.evaluate('((hash) => { try { window.location.hash = hash; } catch (e) {} })', target.hash);
         await engine.waitForTimeout(300);
       }
       return;

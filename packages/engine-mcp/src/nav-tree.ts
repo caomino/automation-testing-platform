@@ -69,10 +69,15 @@ const OPERATION_KEYWORDS: Array<{ re: RegExp; kind: ActionKind; label: string }>
   { re: /(提交|保存|确定|确认|发布)/, kind: 'other', label: '提交' },
 ];
 
-/** 文本清洗：去多余空白、截断、去首尾标点 */
+/** 文本清洗：去括号注释/角标、去多余空白、截断、去首尾标点 */
 export function cleanLabel(label: string): string {
   let s = (label || '').replace(/\s+/g, ' ').trim();
   if (!s) return '未命名';
+  // 去除括号及括号内的内容（英文别名/计数角标/快捷键等）
+  const withoutBrackets = s.replace(/\s*[(（\[【][^)\]\）】]{0,80}[)）\]】]\s*/g, ' ').replace(/\s+/g, ' ').trim();
+  if (withoutBrackets) {
+    s = withoutBrackets;
+  }
   s = s.replace(/^[\s\-_:|>]+|[\s\-_:|<]+$/g, '');
   if (s.length > 60) s = s.slice(0, 57).trim() + '...';
   return s || '未命名';

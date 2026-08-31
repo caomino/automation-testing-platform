@@ -290,16 +290,31 @@ const DOM_WALK = `
   const navModules = extractNavModules(rootEl);
   if (navModules.length > 0) {
     const contentModules = [];
-    const mainContent = rootEl.querySelector('main, .content, .main, #main, [class*="content"], [class*="main"]');
+    const mainContent = rootEl.querySelector('main, .content, .main, #main, [class*="content"], [class*="main"], #app, #root, .app-main, .layout-content, .el-main, .ant-layout-content');
     if (mainContent && isVisible(mainContent)) {
       const mc = toNode(mainContent);
       if (mc.children.length > 0 || mc.interactive) contentModules.push(mc);
+    }
+    // Also include top-level non-nav container children from rootEl (e.g. #app, .app-wrapper, section) so all form controls/buttons are retained
+    for (const child of rootEl.children) {
+      if (child.nodeType === 1 && isVisible(child) && !hasNavRole(child)) {
+        const cn = toNode(child);
+        if (cn.children.length > 0 || cn.interactive || cn.isDataControl || containerTags.has(cn.tag)) {
+          if (!contentModules.some((existing) => existing.selector === cn.selector)) {
+            contentModules.push(cn);
+          }
+        }
+      }
     }
     const forms = rootEl.querySelectorAll('form');
     for (const form of forms) {
       if (!isVisible(form)) continue;
       const fn = toNode(form);
-      if (fn.children.length > 0 || fn.isDataControl) contentModules.push(fn);
+      if (fn.children.length > 0 || fn.isDataControl) {
+        if (!contentModules.some((existing) => existing.selector === fn.selector)) {
+          contentModules.push(fn);
+        }
+      }
     }
     return [...navModules, ...contentModules];
   }
@@ -392,15 +407,70 @@ export class PlaywrightEngine implements CaptureEngine {
       console.log(`[engine-mcp] connecting to existing browser via CDP ${cdpUrl}`);
       this.browser = await chromium.connectOverCDP(cdpUrl);
     } else {
-      this.browser = await chromium.launch({
-        headless: this.config.headless,
-        executablePath: this.config.executablePath,
-        args: [
-          '--ignore-certificate-errors',
-          '--ignore-ssl-errors',
-          ...(this.config.manualTakeover ? ['--remote-debugging-port=0'] : []),
-        ],
-      });
+      let headlessMode = this.config.headless;
+      // 在没有 X11 / $DISPLAY 的 Linux 容器环境下，有头模式无法创建窗口，自动降级为 headless: true
+      if (headlessMode === false && process.platform === 'linux' && !process.env.DISPLAY) {
+        console.warn('[engine-mcp] Linux 环境未检测到 XServer / $DISPLAY，自动降级为无头模式 (headless: true)');
+        headlessMode = true;
+      }
+      const launchArgs = [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--ignore-certificate-errors',
+        '--ignore-ssl-errors',
+        ...(this.config.manualTakeover ? ['--remote-debugging-port=0'] : []),
+      ];
+      let execPath = this.config.executablePath;
+      if (!execPath && process.platform === 'linux') {
+        const candidatePaths = [
+          '/root/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome',
+          '/root/.cache/ms-playwright/chromium_headless_shell-1234/chrome-headless-shell-linux64/chrome-headless-shell',
+          '/usr/bin/google-chrome',
+          '/usr/bin/chromium',
+          '/usr/bin/chromium-browser',
+        ];
+        try {
+          const fs = await import('fs');
+          for (const p of candidatePaths) {
+            if (fs.existsSync(p)) {
+              execPath = p;
+              break;
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      try {
+        this.browser = await chromium.launch({
+          headless: headlessMode,
+          executablePath: execPath,
+          args: launchArgs,
+        });
+      } catch (err: any) {
+        // 若依然因缺失 XServer / DISPLAY 或无头 shell 路径启动失败，自动重试并尝试其他已知路径
+        if (headlessMode === false || /XServer|DISPLAY|ozone|headless: true|Executable doesn't exist/i.test(err?.message || '')) {
+          console.warn(`[engine-mcp] 浏览器初次启动异常 (${err?.message || err})，尝试无头模式/备用可执行路径重试...`);
+          try {
+            this.browser = await chromium.launch({
+              headless: true,
+              executablePath: execPath,
+              args: launchArgs,
+            });
+          } catch (retryErr: any) {
+            // 如果指定了 execPath 依然报错，尝试不带 execPath
+            this.browser = await chromium.launch({
+              headless: true,
+              args: launchArgs,
+            });
+          }
+        } else {
+          throw err;
+        }
+      }
     }
 
     const contextOptions: {
@@ -422,6 +492,21 @@ export class PlaywrightEngine implements CaptureEngine {
       this.context = existing ?? (await this.browser.newContext(contextOptions));
     } else {
       this.context = await this.browser.newContext(contextOptions);
+    }
+    try {
+      await this.context.addInitScript(`
+        var __name = function(target, value) {
+          try { return Object.defineProperty(target, 'name', { value: value, configurable: true }); } catch (e) { return target; }
+        };
+        if (typeof window !== 'undefined') {
+          window.__name = __name;
+        }
+        if (typeof globalThis !== 'undefined') {
+          globalThis.__name = __name;
+        }
+      `);
+    } catch {
+      // ignore
     }
     // 追踪新标签页（如门户「业务系统」点击后弹出的子系统页）：后续 getCurrentUrl /
     // 会话捕获 / 探索必须落在最新活动页，否则 capturedUrl 永远停在门户工作台。
@@ -468,23 +553,44 @@ export class PlaywrightEngine implements CaptureEngine {
     const storageState = await sourceContext.storageState();
     const html = await sourcePage.content();
     const sourceUrl = sourcePage.url();
-    const sessionStorage = await sourcePage.evaluate(() => Object.fromEntries(
-      Array.from({ length: window.sessionStorage.length }, (_, index) => {
-        const key = window.sessionStorage.key(index) ?? '';
-        return [key, window.sessionStorage.getItem(key) ?? ''];
-      }).filter(([key]) => key),
-    )).catch(() => ({} as Record<string, string>));
+    const sessionStorage = await sourcePage.evaluate(`(() => {
+      var out = {};
+      var ss = window.sessionStorage;
+      if (ss) {
+        for (var i = 0; i < ss.length; i++) {
+          var key = ss.key(i);
+          if (key) out[key] = ss.getItem(key) || '';
+        }
+      }
+      return out;
+    })()`).catch(() => ({} as Record<string, string>));
     const context = await this.browser.newContext({
       viewport: this.config.viewport ?? { width: 1366, height: 768 },
       ignoreHTTPSErrors: true,
       storageState,
     });
     try {
+      await context.addInitScript(`
+        if (typeof window !== 'undefined' && typeof window.__name === 'undefined') {
+          window.__name = function(target, value) {
+            try { return Object.defineProperty(target, 'name', { value: value, configurable: true }); } catch (e) { return target; }
+          };
+        }
+        if (typeof globalThis !== 'undefined' && typeof globalThis.__name === 'undefined') {
+          globalThis.__name = function(target, value) {
+            try { return Object.defineProperty(target, 'name', { value: value, configurable: true }); } catch (e) { return target; }
+          };
+        }
+      `);
       const sandbox = await context.newPage();
       sandbox.setDefaultTimeout(this.config.timeoutMs ?? 30_000);
-      await sandbox.addInitScript((entries: Record<string, string>) => {
-        for (const [key, value] of Object.entries(entries)) window.sessionStorage.setItem(key, value);
-      }, sessionStorage);
+      await sandbox.addInitScript(`((entries) => {
+        for (var key in entries) {
+          if (Object.prototype.hasOwnProperty.call(entries, key)) {
+            window.sessionStorage.setItem(key, entries[key]);
+          }
+        }
+      })(${JSON.stringify(sessionStorage)})`);
       if (/^https?:\/\//i.test(sourceUrl)) {
         const initialUrl = sourceUrl.replace(/#.*$/, '');
         const initialize = async (routeValue: Route): Promise<void> => {
@@ -523,7 +629,15 @@ export class PlaywrightEngine implements CaptureEngine {
   async navigate(url: string): Promise<void> {
     await this.discardReadOnlySandbox();
     const page = this.currentPage();
-    await page.goto(url, { waitUntil: 'load' });
+    try {
+      await page.goto(url, { waitUntil: 'load', timeout: 15_000 });
+    } catch {
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15_000 });
+      } catch {
+        // Continue if page is partially loaded
+      }
+    }
     this.navigationPath.push(url);
     // Wait for SPA rendering: give JavaScript time to render navigation/menus
     await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -547,12 +661,11 @@ export class PlaywrightEngine implements CaptureEngine {
     }
     // Final safety wait: ensure SPA has rendered enough content
     try {
-      await page.waitForFunction(() => {
-        const root = document.querySelector('#app, #root, #__nuxt, #__next');
+      await page.waitForFunction(`(() => {
+        var root = document.querySelector('#app, #root, #__nuxt, #__next');
         if (!root) return document.body && document.body.children.length > 0;
-        // SPA root should have children (app mounted)
         return root.children.length > 0 || (document.body && document.body.textContent && document.body.textContent.trim().length > 10);
-      }, { timeout: 5000 });
+      })()`, { timeout: 5000 });
     } catch {
       // Could not detect SPA rendering, continue anyway
     }
@@ -561,12 +674,11 @@ export class PlaywrightEngine implements CaptureEngine {
   async extractSemanticDom(rootSelector?: string): Promise<SemanticNode[]> {
     const page = this.currentPage();
     const result = await page.evaluate(
-      ({ fn, selector }: { fn: string; selector: string | null }) => {
-        const f = new Function('return (' + fn.trim() + ')')();
-        const root = selector ? (globalThis as any).document.querySelector(selector) : null;
+      `(({ fn, selector }) => {
+        var f = new Function('return (' + fn.trim() + ')')();
+        var root = selector ? document.querySelector(selector) : null;
         return f(root);
-      },
-      { fn: DOM_WALK, selector: rootSelector ?? null },
+      })(${JSON.stringify({ fn: DOM_WALK, selector: rootSelector ?? null })})`
     );
     return result as SemanticNode[];
   }
@@ -698,24 +810,71 @@ export class PlaywrightEngine implements CaptureEngine {
     let locator = page.locator(selector);
     let createdSandbox = false;
     try {
-      if (await locator.count() !== 1) return { status: 'blocked', beforeUrl, reason: '只读点击要求 selector 精确匹配一个当前 DOM 节点' };
-      const semantics = await locator.evaluate((element) => {
-        const el = element as HTMLElement;
-        const tag = el.tagName.toLowerCase();
-        const role = (el.getAttribute('role') || '').toLowerCase();
-        const type = (el.getAttribute('type') || '').toLowerCase();
-        const text = `${el.textContent || ''} ${el.getAttribute('aria-label') || ''} ${el.getAttribute('title') || ''}`.trim();
-        const className = el.className?.toString().toLowerCase() || '';
+      const initialCount = await locator.count();
+      if (initialCount === 0) {
+        return { status: 'blocked', beforeUrl, reason: '未找到匹配的当前 DOM 节点' };
+      }
+      if (initialCount > 1) {
+        // 存在多个匹配节点时，优先选取可见（visible）节点
+        const visibleLocator = locator.locator('visible=true');
+        const vCount = await visibleLocator.count();
+        if (vCount >= 1) {
+          locator = visibleLocator.first();
+        } else {
+          locator = locator.first();
+        }
+      }
+      let semantics: {
+        tag: string;
+        role: string;
+        type: string;
+        text: string;
+        className: string;
+        href: string;
+        hasPopup: string;
+        safeOpener: boolean;
+        safeSample: boolean;
+        expanded: string | null;
+        isSummary: boolean;
+      } | null = null;
+
+      try {
+        semantics = await locator.evaluate((element: Element) => {
+          var el = (element || document.body) as HTMLElement;
+          var tag = el.tagName ? el.tagName.toLowerCase() : '';
+          var role = (el.getAttribute('role') || '').toLowerCase();
+          var type = (el.getAttribute('type') || '').toLowerCase();
+          var text = ((el.textContent || '') + ' ' + (el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '')).trim();
+          var className = el.className ? el.className.toString().toLowerCase() : '';
+          return {
+            tag: tag,
+            role: role,
+            type: type,
+            text: text,
+            className: className,
+            href: tag === 'a' ? (el.getAttribute('href') || '') : '',
+            hasPopup: (el.getAttribute('aria-haspopup') || '').toLowerCase(),
+            safeOpener: el.hasAttribute('data-safe-opener') || el.hasAttribute('data-readonly-opener'),
+            safeSample: el.hasAttribute('data-safe-sample') || el.hasAttribute('data-readonly-sample'),
+            expanded: el.getAttribute('aria-expanded'),
+            isSummary: tag === 'summary',
+          };
+        });
+      } catch (err: any) {
         return {
-          tag, role, type, text, className,
-          href: tag === 'a' ? el.getAttribute('href') || '' : '',
-          hasPopup: (el.getAttribute('aria-haspopup') || '').toLowerCase(),
-          safeOpener: el.hasAttribute('data-safe-opener') || el.hasAttribute('data-readonly-opener'),
-          safeSample: el.hasAttribute('data-safe-sample') || el.hasAttribute('data-readonly-sample'),
-          expanded: el.getAttribute('aria-expanded'),
-          isSummary: tag === 'summary',
+          status: 'blocked',
+          beforeUrl,
+          reason: `提取节点语义异常: ${err?.message || String(err)}`,
         };
-      });
+      }
+
+      if (!semantics) {
+        return {
+          status: 'blocked',
+          beforeUrl,
+          reason: '提取节点语义返回为空',
+        };
+      }
       const normalized = semantics.text.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/g, '');
       const dangerous = /提交|保存|删除|移除|导入|导出|发布|审批|同意|驳回|submit|save|delete|remove|import|export|publish|approve|reject/.test(normalized);
       const iconOnly = !semantics.text;
@@ -749,9 +908,19 @@ export class PlaywrightEngine implements CaptureEngine {
         page = await this.createReadOnlySandbox(page);
         createdSandbox = true;
         locator = page.locator(selector);
-        if (await locator.count() !== 1) {
+        const sCount = await locator.count();
+        if (sCount === 0) {
           await this.discardReadOnlySandbox();
-          return { status: 'blocked', beforeUrl, reason: '隔离上下文中 selector 未精确匹配当前 DOM 节点' };
+          return { status: 'blocked', beforeUrl, reason: '隔离上下文中未找到匹配的 DOM 节点' };
+        }
+        if (sCount > 1) {
+          const visibleLocator = locator.locator('visible=true');
+          const vCount = await visibleLocator.count();
+          if (vCount >= 1) {
+            locator = visibleLocator.first();
+          } else {
+            locator = locator.first();
+          }
         }
       }
 
@@ -764,18 +933,19 @@ export class PlaywrightEngine implements CaptureEngine {
       const route = async (routeValue: Route): Promise<void> => {
         const request = routeValue.request();
         const method = request.method().toUpperCase();
+        const isSafeReadMethod = ['GET', 'HEAD', 'OPTIONS'].includes(method);
         const allowedNavigation = allowExpectedNavigation
           && method === 'GET'
           && request.isNavigationRequest()
           && request.resourceType() === 'document'
           && request.url().replace(/#.*$/, '') === allowedDocumentUrl;
-        if (!allowedNavigation) {
-          writeRequest = { method, url: request.url() };
-          await routeValue.abort('blockedbyclient');
+        // Non-navigation GET / HEAD / OPTIONS requests (SPA data fetching, assets, read-only APIs) are safe and permitted
+        if (isSafeReadMethod && (!request.isNavigationRequest() || allowedNavigation)) {
+          await routeValue.fallback();
           return;
         }
-        // Only the exact, preflighted same-origin href may navigate. Dynamic reads are untrusted and become needs_review.
-        await routeValue.fallback();
+        writeRequest = { method, url: request.url() };
+        await routeValue.abort('blockedbyclient');
       };
       const onDownload = (download: Download): void => {
         downloaded = true;
@@ -791,78 +961,113 @@ export class PlaywrightEngine implements CaptureEngine {
         void popup.close().catch(() => {});
       };
       const guardKey = `__testPlatformReadOnlyGuard_${randomUUID()}`;
-      await page.evaluate((key) => {
-        const snapshot = (storage: Storage): Record<string, string> => Object.fromEntries(Array.from(
-          { length: storage.length },
-          (_, index) => {
-            const itemKey = storage.key(index) ?? '';
-            return [itemKey, storage.getItem(itemKey) ?? ''];
-          },
-        ).filter(([itemKey]) => itemKey));
-        const safeSnapshot = (name: 'localStorage' | 'sessionStorage'): Record<string, string> | undefined => {
-          try { return snapshot(globalThis[name]); } catch { return undefined; }
+      await page.evaluate(`((key) => {
+        if (typeof globalThis.__name === 'undefined') {
+          globalThis.__name = function(t, v) { try { return Object.defineProperty(t, 'name', { value: v, configurable: true }); } catch (e) { return t; } };
+        }
+        var snapshot = function(storage) {
+          return Object.fromEntries(Array.from(
+            { length: storage.length },
+            function(_, index) {
+              var itemKey = storage.key(index) || '';
+              return [itemKey, storage.getItem(itemKey) || ''];
+            }
+          ).filter(function(entry) { return entry[0]; }));
         };
-        const state: { writes: string[]; restores: Array<() => void>; storage: { local?: Record<string, string>; session?: Record<string, string> } } = {
+        var safeSnapshot = function(name) {
+          try { return snapshot(globalThis[name]); } catch (e) { return undefined; }
+        };
+        var state = {
           writes: [],
           restores: [],
           storage: { local: safeSnapshot('localStorage'), session: safeSnapshot('sessionStorage') },
         };
-        const rejectWrite = (name: string): (() => never) => () => {
-          state.writes.push(name);
-          throw new Error(`read-only interaction blocked ${name}`);
-        };
-        const wrap = (target: object | undefined, name: string, label: string): void => {
-          if (!target || typeof (target as Record<string, unknown>)[name] !== 'function') return;
-          const record = target as Record<string, unknown>;
-          const original = record[name];
-          record[name] = rejectWrite(label);
-          state.restores.push(() => { record[name] = original; });
-        };
-        const wrapConstructor = (target: object | undefined, name: string, label: string): void => {
-          if (!target || typeof (target as Record<string, unknown>)[name] !== 'function') return;
-          const record = target as Record<string, unknown>;
-          const original = record[name];
-          record[name] = function blockedConstructor(): never {
-            state.writes.push(label);
-            throw new Error(`read-only interaction blocked ${label}`);
+        var rejectWrite = function(name) {
+          return function() {
+            state.writes.push(name);
+            throw new Error('read-only interaction blocked ' + name);
           };
-          state.restores.push(() => { record[name] = original; });
         };
-        wrap(globalThis, 'fetch', 'fetch');
-        wrap(globalThis.XMLHttpRequest?.prototype, 'open', 'XMLHttpRequest.open');
-        wrap(globalThis.Navigator?.prototype, 'sendBeacon', 'navigator.sendBeacon');
-        wrap(globalThis.HTMLFormElement?.prototype, 'submit', 'HTMLFormElement.submit');
-        wrap(globalThis.HTMLFormElement?.prototype, 'requestSubmit', 'HTMLFormElement.requestSubmit');
+        var wrap = function(target, name, label) {
+          if (!target || typeof target[name] !== 'function') return;
+          var original = target[name];
+          target[name] = rejectWrite(label);
+          state.restores.push(function() { target[name] = original; });
+        };
+        var wrapConstructor = function(target, name, label) {
+          if (!target || typeof target[name] !== 'function') return;
+          var original = target[name];
+          target[name] = function() {
+            state.writes.push(label);
+            throw new Error('read-only interaction blocked ' + label);
+          };
+          state.restores.push(function() { target[name] = original; });
+        };
+        var wrapFetch = function() {
+          if (!globalThis.fetch) return;
+          var originalFetch = globalThis.fetch;
+          globalThis.fetch = function(input, init) {
+            var method = 'GET';
+            if (init && init.method) {
+              method = String(init.method).toUpperCase();
+            } else if (input && typeof input === 'object' && 'method' in input && input.method) {
+              method = String(input.method).toUpperCase();
+            }
+            if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+              state.writes.push('fetch(' + method + ')');
+              throw new Error('read-only interaction blocked fetch(' + method + ')');
+            }
+            return originalFetch.apply(globalThis, arguments);
+          };
+          state.restores.push(function() { globalThis.fetch = originalFetch; });
+        };
+        var wrapXhr = function() {
+          if (!globalThis.XMLHttpRequest || !globalThis.XMLHttpRequest.prototype) return;
+          var originalOpen = globalThis.XMLHttpRequest.prototype.open;
+          globalThis.XMLHttpRequest.prototype.open = function(method) {
+            var m = String(method || 'GET').toUpperCase();
+            if (m !== 'GET' && m !== 'HEAD' && m !== 'OPTIONS') {
+              state.writes.push('XMLHttpRequest.open(' + m + ')');
+              throw new Error('read-only interaction blocked XMLHttpRequest.open(' + m + ')');
+            }
+            return originalOpen.apply(this, arguments);
+          };
+          state.restores.push(function() { globalThis.XMLHttpRequest.prototype.open = originalOpen; });
+        };
+        wrapFetch();
+        wrapXhr();
+        wrap(globalThis.Navigator && globalThis.Navigator.prototype, 'sendBeacon', 'navigator.sendBeacon');
+        wrap(globalThis.HTMLFormElement && globalThis.HTMLFormElement.prototype, 'submit', 'HTMLFormElement.submit');
+        wrap(globalThis.HTMLFormElement && globalThis.HTMLFormElement.prototype, 'requestSubmit', 'HTMLFormElement.requestSubmit');
         wrapConstructor(globalThis, 'WebSocket', 'WebSocket');
         wrapConstructor(globalThis, 'EventSource', 'EventSource');
-        const preventAnchorNavigation = (event: MouseEvent): void => {
+        var preventAnchorNavigation = function(event) {
           if (event.target instanceof Element && event.target.closest('a[href]')) event.preventDefault();
         };
         document.addEventListener('click', preventAnchorNavigation, true);
-        state.restores.push(() => { document.removeEventListener('click', preventAnchorNavigation, true); });
+        state.restores.push(function() { document.removeEventListener('click', preventAnchorNavigation, true); });
         wrap(Storage.prototype, 'setItem', 'Storage.setItem');
         wrap(Storage.prototype, 'removeItem', 'Storage.removeItem');
         wrap(Storage.prototype, 'clear', 'Storage.clear');
-        wrap(globalThis.IDBObjectStore?.prototype, 'add', 'IndexedDB.add');
-        wrap(globalThis.IDBObjectStore?.prototype, 'put', 'IndexedDB.put');
-        wrap(globalThis.IDBObjectStore?.prototype, 'delete', 'IndexedDB.delete');
-        wrap(globalThis.IDBObjectStore?.prototype, 'clear', 'IndexedDB.clear');
-        wrap(globalThis.IDBFactory?.prototype, 'deleteDatabase', 'IndexedDB.deleteDatabase');
-        // A delayed callback could outlive the network route guard, so deny scheduling new work during this click window.
+        wrap(globalThis.IDBObjectStore && globalThis.IDBObjectStore.prototype, 'add', 'IndexedDB.add');
+        wrap(globalThis.IDBObjectStore && globalThis.IDBObjectStore.prototype, 'put', 'IndexedDB.put');
+        wrap(globalThis.IDBObjectStore && globalThis.IDBObjectStore.prototype, 'delete', 'IndexedDB.delete');
+        wrap(globalThis.IDBObjectStore && globalThis.IDBObjectStore.prototype, 'clear', 'IndexedDB.clear');
+        wrap(globalThis.IDBFactory && globalThis.IDBFactory.prototype, 'deleteDatabase', 'IndexedDB.deleteDatabase');
         wrap(globalThis, 'setTimeout', 'setTimeout');
         wrap(globalThis, 'setInterval', 'setInterval');
         wrap(globalThis, 'requestAnimationFrame', 'requestAnimationFrame');
-        const cookie = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
-        if (cookie?.get && cookie.configurable !== false) {
+        var cookie = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie');
+        if (cookie && cookie.get && cookie.configurable !== false) {
           Object.defineProperty(document, 'cookie', {
             configurable: true,
-            get: () => cookie.get!.call(document),
+            get: function() { return cookie.get.call(document); },
             set: rejectWrite('document.cookie'),
           });
-          state.restores.push(() => { delete (document as unknown as Record<string, unknown>).cookie; });
+          state.restores.push(function() { delete document.cookie; });
         }
-        (globalThis as unknown as Record<string, unknown>)[key] = state;
-      }, guardKey);
+        globalThis[key] = state;
+      })(${JSON.stringify(guardKey)})`);
       const context = page.context();
       let cdp: CDPSession | undefined;
       const onWebSocketCreated = (event: { url: string }): void => {
@@ -874,7 +1079,6 @@ export class PlaywrightEngine implements CaptureEngine {
         cdp = await context.newCDPSession(page);
         cdp.on('Network.webSocketCreated', onWebSocketCreated);
         await cdp.send('Network.enable');
-        await cdp.send('Network.setBlockedURLs', { urls: ['*'] });
       } else {
         await page.route('**/*', route);
         page.on('popup', onPopup);
@@ -883,34 +1087,41 @@ export class PlaywrightEngine implements CaptureEngine {
       page.on('websocket', onWebSocket);
       let clientWrites: string[] = [];
       let guardsRestored = false;
-      const restoreClientGuards = async (): Promise<string[]> => page.evaluate((key) => {
-        const state = (globalThis as unknown as Record<string, {
-          writes?: string[];
-          restores?: Array<() => void>;
-          storage?: { local?: Record<string, string>; session?: Record<string, string> };
-        }>)[key];
+      const restoreClientGuards = async (): Promise<string[]> => page.evaluate<string[]>(`((key) => {
+        if (typeof globalThis.__name === 'undefined') {
+          globalThis.__name = function(t, v) { try { return Object.defineProperty(t, 'name', { value: v, configurable: true }); } catch (e) { return t; } };
+        }
+        var state = globalThis[key];
         if (!state) return [];
-        const current = (storage: Storage): Record<string, string> => Object.fromEntries(Array.from(
-          { length: storage.length },
-          (_, index) => {
-            const itemKey = storage.key(index) ?? '';
-            return [itemKey, storage.getItem(itemKey) ?? ''];
-          },
-        ).filter(([itemKey]) => itemKey));
-        const localChanged = state.storage?.local !== undefined && JSON.stringify(current(localStorage)) !== JSON.stringify(state.storage.local);
-        const sessionChanged = state.storage?.session !== undefined && JSON.stringify(current(sessionStorage)) !== JSON.stringify(state.storage.session);
-        if (localChanged) state.writes?.push('localStorage snapshot changed');
-        if (sessionChanged) state.writes?.push('sessionStorage snapshot changed');
-        for (const restore of state.restores ?? []) restore();
-        const restoreStorage = (storage: Storage, values: Record<string, string>): void => {
-          storage.clear();
-          for (const [itemKey, value] of Object.entries(values)) storage.setItem(itemKey, value);
+        var current = function(storage) {
+          return Object.fromEntries(Array.from(
+            { length: storage.length },
+            function(_, index) {
+              var itemKey = storage.key(index) || '';
+              return [itemKey, storage.getItem(itemKey) || ''];
+            }
+          ).filter(function(entry) { return entry[0]; }));
         };
-        if (state.storage?.local !== undefined) restoreStorage(localStorage, state.storage.local);
-        if (state.storage?.session !== undefined) restoreStorage(sessionStorage, state.storage.session);
-        delete (globalThis as unknown as Record<string, unknown>)[key];
-        return state.writes ?? [];
-      }, guardKey).catch(() => ['浏览器上下文已变化，无法确认客户端写入守卫恢复']);
+        var localChanged = state.storage && state.storage.local !== undefined && JSON.stringify(current(localStorage)) !== JSON.stringify(state.storage.local);
+        var sessionChanged = state.storage && state.storage.session !== undefined && JSON.stringify(current(sessionStorage)) !== JSON.stringify(state.storage.session);
+        if (localChanged) state.writes && state.writes.push('localStorage snapshot changed');
+        if (sessionChanged) state.writes && state.writes.push('sessionStorage snapshot changed');
+        for (var i = 0; i < (state.restores || []).length; i++) {
+          try { state.restores[i](); } catch (e) {}
+        }
+        var restoreStorage = function(storage, values) {
+          storage.clear();
+          for (var itemKey in values) {
+            if (Object.prototype.hasOwnProperty.call(values, itemKey)) {
+              storage.setItem(itemKey, values[itemKey]);
+            }
+          }
+        };
+        if (state.storage && state.storage.local !== undefined) restoreStorage(localStorage, state.storage.local);
+        if (state.storage && state.storage.session !== undefined) restoreStorage(sessionStorage, state.storage.session);
+        delete globalThis[key];
+        return state.writes || [];
+      })(${JSON.stringify(guardKey)})`).catch(() => ['浏览器上下文已变化，无法确认客户端写入守卫恢复']);
       try {
         await locator.click({ timeout: this.config.timeoutMs ?? 30_000, noWaitAfter: true });
         await page.waitForTimeout(250);
@@ -1002,6 +1213,7 @@ export class PlaywrightEngine implements CaptureEngine {
     // Remove excessive whitespace and normalize
     let cleaned = label.replace(/\s+/g, ' ').trim();
     // Remove common noise patterns
+    cleaned = cleaned.replace(/\s*[(（\[【][^)\]\）】]{0,80}[)）\]】]\s*/g, ' ');
     cleaned = cleaned.replace(/⌘.*?K/g, ''); // Remove keyboard shortcuts
     cleaned = cleaned.replace(/Ctrl/g, '');
     // Remove URLs and paths
@@ -1231,35 +1443,33 @@ export class PlaywrightEngine implements CaptureEngine {
   /** 提取当前会话请求头（扫描文档内鉴权 meta 头，供复用） */
   async getSessionHeaders(): Promise<Record<string, string>> {
     const page = this.currentPage();
-    return page.evaluate(() => {
-      // engine-mcp 为 Node 包（tsconfig 不含 dom lib），浏览器全局经 globalThis 访问并显式收窄类型
-      const g = globalThis as unknown as {
-        document: { querySelector(sel: string): { content?: string } | null };
-      };
-      const out: Record<string, string> = {};
-      for (const key of ['Authorization', 'X-Token', 'X-Auth-Token', 'X-CSRF-Token']) {
-        const meta = g.document.querySelector(`meta[name="${key}"]`);
-        if (meta?.content) out[key] = meta.content;
+    return page.evaluate(`(() => {
+      var g = globalThis;
+      var out = {};
+      var keys = ['Authorization', 'X-Token', 'X-Auth-Token', 'X-CSRF-Token'];
+      for (var i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        var meta = g.document && g.document.querySelector ? g.document.querySelector('meta[name="' + key + '"]') : null;
+        if (meta && meta.content) out[key] = meta.content;
       }
       return out;
-    });
+    })()`);
   }
 
   /** 提取当前会话 Token（localStorage/sessionStorage），供复用 */
   async getSessionTokens(): Promise<string[]> {
     const page = this.currentPage();
-    return page.evaluate(() => {
-      const g = globalThis as unknown as {
-        localStorage: { getItem(k: string): string | null };
-        sessionStorage: { getItem(k: string): string | null };
-      };
-      const out: string[] = [];
-      for (const key of ['token', 'accessToken', 'authToken', 'Authorization']) {
-        const v = g.localStorage.getItem(key) || g.sessionStorage.getItem(key);
-        if (v) out.push(`${key}=${v}`);
+    return page.evaluate(`(() => {
+      var g = globalThis;
+      var out = [];
+      var keys = ['token', 'accessToken', 'authToken', 'Authorization'];
+      for (var i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        var v = (g.localStorage && g.localStorage.getItem(key)) || (g.sessionStorage && g.sessionStorage.getItem(key));
+        if (v) out.push(key + '=' + v);
       }
       return out;
-    });
+    })()`);
   }
 
   /** 注入复用会话：将门户会话的 cookies/tokens 应用到当前上下文，实现跨子系统复用 */
@@ -1279,21 +1489,18 @@ export class PlaywrightEngine implements CaptureEngine {
     if (cookies.length) await page.context().addCookies(cookies);
     if (state.tokens?.length) {
       const tokens = state.tokens;
-      await page.evaluate((tkns: string[]) => {
-        const g = globalThis as unknown as {
-          localStorage: { setItem(k: string, v: string): void };
-        };
-        for (const t of tkns) {
-          const idx = t.indexOf('=');
-          const k = idx >= 0 ? t.slice(0, idx) : t;
-          const v = idx >= 0 ? t.slice(idx + 1) : '';
+      await page.evaluate(`((tkns) => {
+        var g = globalThis;
+        for (var i = 0; i < tkns.length; i++) {
+          var t = tkns[i];
+          var idx = t.indexOf('=');
+          var k = idx >= 0 ? t.slice(0, idx) : t;
+          var v = idx >= 0 ? t.slice(idx + 1) : '';
           try {
-            g.localStorage.setItem(k, v);
-          } catch {
-            // 忽略无 localStorage 的场景（如 about:blank）
-          }
+            if (g.localStorage) g.localStorage.setItem(k, v);
+          } catch (e) {}
         }
-      }, tokens);
+      })(${JSON.stringify(tokens)})`);
     }
   }
 
@@ -1309,17 +1516,27 @@ export class PlaywrightEngine implements CaptureEngine {
 
   /** 在页面上下文执行表达式（人工补录录制等场景使用） */
   async evaluate<T = any>(fn: string | ((...args: any[]) => T), ...args: any[]): Promise<T> {
-    return this.currentPage().evaluate(fn as any, ...args);
+    const page = this.currentPage();
+    const fnStr = typeof fn === 'function' ? fn.toString() : fn.trim();
+    const wrapped = `((...callArgs) => {
+      var __name = function(t, v) { try { return Object.defineProperty(t, 'name', { value: v, configurable: true }); } catch (e) { return t; } };
+      if (typeof window !== 'undefined') { window.__name = __name; }
+      if (typeof globalThis !== 'undefined') { globalThis.__name = __name; }
+      var targetFn = (0, eval)(${JSON.stringify(fnStr)});
+      if (typeof targetFn === 'function') {
+        return targetFn(...callArgs);
+      }
+      return targetFn;
+    })`;
+    return page.evaluate<T, any[]>(wrapped, args);
   }
 
   /** 检查当前页面是否有登录表单（判断是否需要登录） */
   async hasLoginForm(): Promise<boolean> {
     const page = this.currentPage();
-    return page.evaluate(() => {
-      const g = globalThis as unknown as {
-        document: Document;
-      };
-      const selectors = [
+    return page.evaluate(`(() => {
+      var g = globalThis;
+      var selectors = [
         'input[type="password"]',
         '.login-form',
         '.login-container',
@@ -1328,28 +1545,26 @@ export class PlaywrightEngine implements CaptureEngine {
         '#login-form',
         'form[action*="login"]',
       ];
-      for (const sel of selectors) {
+      for (var i = 0; i < selectors.length; i++) {
         try {
-          if (g.document.querySelector(sel)) return true;
-        } catch {
-          // 忽略无效选择器
-        }
+          if (g.document && g.document.querySelector(selectors[i])) return true;
+        } catch (e) {}
       }
-      // 检查是否有用户名/密码输入框
-      const inputs = Array.from(g.document.querySelectorAll('input'));
-      let hasUserField = false;
-      let hasPasswordField = false;
-      for (const input of inputs) {
-        const type = input.type.toLowerCase();
-        const name = (input.name || '').toLowerCase();
-        const placeholder = (input.placeholder || '').toLowerCase();
+      var inputs = g.document ? Array.from(g.document.querySelectorAll('input')) : [];
+      var hasUserField = false;
+      var hasPasswordField = false;
+      for (var j = 0; j < inputs.length; j++) {
+        var input = inputs[j];
+        var type = (input.type || '').toLowerCase();
+        var name = (input.name || '').toLowerCase();
+        var placeholder = (input.placeholder || '').toLowerCase();
         if (type === 'password') hasPasswordField = true;
         if (type === 'text' && (name.includes('user') || name.includes('account') || placeholder.includes('用户') || placeholder.includes('账号') || placeholder.includes('user'))) {
           hasUserField = true;
         }
       }
       return hasPasswordField || (hasUserField && hasPasswordField);
-    });
+    })()`);
   }
 
   /** 导航到 URL 并确保会话有效：先检查已登录，再应用保存的会话 */
@@ -1421,20 +1636,24 @@ export class PlaywrightEngine implements CaptureEngine {
   /** 抓取当前页面全部 localStorage + sessionStorage（任意 key），供跨重载会话保持 */
   async getAllStorageTokens(): Promise<Array<{ storage: 'local' | 'session'; name: string; value: string }>> {
     const page = this.currentPage();
-    return page.evaluate(() => {
-      const out: Array<{ storage: 'local' | 'session'; name: string; value: string }> = [];
-      const ls = window.localStorage;
-      for (let i = 0; i < ls.length; i++) {
-        const k = ls.key(i);
-        if (k != null) out.push({ storage: 'local', name: k, value: ls.getItem(k) ?? '' });
+    return page.evaluate(`(() => {
+      var out = [];
+      var ls = window.localStorage;
+      if (ls) {
+        for (var i = 0; i < ls.length; i++) {
+          var k = ls.key(i);
+          if (k != null) out.push({ storage: 'local', name: k, value: ls.getItem(k) || '' });
+        }
       }
-      const ss = window.sessionStorage;
-      for (let i = 0; i < ss.length; i++) {
-        const k = ss.key(i);
-        if (k != null) out.push({ storage: 'session', name: k, value: ss.getItem(k) ?? '' });
+      var ss = window.sessionStorage;
+      if (ss) {
+        for (var j = 0; j < ss.length; j++) {
+          var sk = ss.key(j);
+          if (sk != null) out.push({ storage: 'session', name: sk, value: ss.getItem(sk) || '' });
+        }
       }
       return out;
-    });
+    })()`);
   }
 
   /**

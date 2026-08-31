@@ -27,7 +27,7 @@ import {
   type AIVendor,
 } from '@test-platform/infra-ai';
 
-const PORT = process.env.PORT || 3001;
+const PORT = 3001;
 
 // 凭证存储（AES-256-GCM 加密落盘）
 const credDir = process.env.TEST_PLATFORM_CRED_DIR || '.credentials';
@@ -36,6 +36,7 @@ const credStore = createCredentialStore({ dir: credDir, masterKey: credMasterKey
 
 const orchestrator = new PipelineOrchestrator({
   engineConfig: { headless: false },
+  credStore,
 });
 
 // 浏览器捕获服务（Playwright 直连模式）
@@ -145,8 +146,8 @@ async function handleStore(
     // POST /api/store/projects → create
     if (method === 'POST' && pathname === '/api/store/projects') {
       const v = validateNewProject(body);
-      if (!v.ok) return jsonResponse(res, 400, false, undefined, v.error);
-      const p = await store.createProject(v.value);
+      if (!v.ok) return jsonResponse(res, 400, false, undefined, (v as any).error);
+      const p = await store.createProject(v.value as any);
       return jsonResponse(res, 201, true, p);
     }
 

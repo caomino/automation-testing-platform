@@ -155,6 +155,7 @@ export function buildFeatureTable(
 
     const rows: FeatureRow[] = [];
     group.forEach((r, localIdx) => {
+      globalIndex += 1;
       let testPointId = `${base}_${pad2(localIdx + 1)}`;
       // 跨分组 base 碰撞时追加去重后缀，保证整表行内全局唯一（用例编号绑定键）
       if (usedTestPointIds.has(testPointId)) {
@@ -173,7 +174,7 @@ export function buildFeatureTable(
       const testPoint = r.node.label;
 
       const row: FeatureRow = [
-        String(localIdx + 1),          // 序号
+        String(globalIndex),           // 序号（全局自增）
         TEST_TYPE_DEFAULT,             // 测试类型
         requirementSection,            // 需求章节（X.Y.Z 占位）
         systemName,                    // 系统名称

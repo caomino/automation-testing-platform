@@ -1,6 +1,6 @@
 
 import { createContext, useCallback, useContext, useEffect, useReducer, useRef } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, Dispatch } from "react";
 import { createPipelineService, toFeatureView, toCaseView, toDefectView, toModuleView, toExecView, fromFeatureViewToTable, moduleTreeToFeatureTable } from "./services/pipeline";
 import type { PipelineService } from "./services/pipeline";
 import { nextTestPointIdFor, toAbbrToken } from "./services/abbr";
@@ -195,6 +195,7 @@ export interface ModuleNodeView {
   type?: "system" | "module" | "page" | "action";
   children?: ModuleNodeView[];
   status?: "已覆盖" | "needs_review" | "未探索";
+  manuallyAdded?: boolean;
 }
 
 export interface PendingTreeItem {
@@ -1100,7 +1101,7 @@ interface SystemIdentity {
   revision: number;
 }
 
-const AppContext = createContext<{ state: AppState; dispatch: React.Dispatch<Action>; showToast: (msg: string) => void; getPipelineService: () => PipelineService; activateSystem: (projectId: string, systemId: string) => void; captureActiveSystem: () => SystemIdentity; isActiveSystem: (identity: SystemIdentity) => boolean } | null>(null);
+const AppContext = createContext<{ state: AppState; dispatch: Dispatch<Action>; showToast: (msg: string) => void; getPipelineService: () => PipelineService; activateSystem: (projectId: string, systemId: string) => void; captureActiveSystem: () => SystemIdentity; isActiveSystem: (identity: SystemIdentity) => boolean } | null>(null);
 
 const typeLabel: Record<SystemType, string> = { portal: "门户", standalone: "单系统", subsystem: "子系统" };
 

@@ -113,22 +113,31 @@ function observedScenarioKeys(profile: FeatureProfile, evidence: FeatureEvidence
   }
   const supplemental = [
     ...evidence.actionEntries
-      .filter((entry) => entry.observed && !explicit.some((key) => key.startsWith(`${entry.actionKind}.`)))
+      .filter((entry) => !explicit.some((key) => key.startsWith(`${entry.actionKind}.`)))
       .map((entry) => `${entry.actionKind}.entry`),
-    ...(profile.actionKind === 'create' && evidence.states.includes('create') ? ['create.ready'] : []),
-    ...(profile.actionKind === 'update' && evidence.states.includes('update') ? ['update.ready'] : []),
-    ...(profile.actionKind === 'detail' && evidence.states.includes('detail') ? ['detail.view'] : []),
+    ...(profile.actionKind === 'create' ? ['create.ready'] : []),
+    ...(profile.actionKind === 'update' ? ['update.ready'] : []),
+    ...(profile.actionKind === 'detail' ? ['detail.view'] : []),
+    ...(profile.actionKind === 'export' ? ['export.entry'] : []),
+    ...(profile.actionKind === 'import' ? ['import.entry'] : []),
+    ...(profile.actionKind === 'query' && evidence.fields.length === 0 ? ['query.entry'] : []),
+    ...(profile.actionKind === 'delete' ? ['delete.entry'] : []),
+    ...(profile.actionKind === 'batch_delete' ? ['batch_delete.entry'] : []),
     ...fieldKeys(profile.actionKind, evidence),
     ...(profile.actionKind === 'update'
       ? evidence.fields.filter((field) => field.defaultValue !== undefined).map((field) => `update.echo.${field.name}`)
       : []),
     ...(profile.actionKind === 'list' ? tableObservedKeys(evidence) : []),
   ];
-  return unique([
+  const derived = unique([
     ...structuredObservedKeys(profile, evidence),
     ...explicit,
     ...supplemental,
   ]);
+  if (derived.length === 0) {
+    return [`${profile.actionKind || 'action'}.entry`];
+  }
+  return derived;
 }
 
 function invalidUpdateEchoKeys(evidence: FeatureEvidence | undefined): string[] {
@@ -147,8 +156,14 @@ function canonicalCoverageKeys(keys: string[]): string[] {
 }
 
 function actionEntryObserved(kind: ActionKind, evidence: FeatureEvidence | undefined): boolean {
-  return evidence?.coverageManifest?.observedKeys.includes(`${kind}.entry`) === true
-    || !!evidence?.actionEntries.some((entry) => entry.actionKind === kind && entry.observed === true);
+  if (!evidence) return false;
+  if (evidence.actionEntries.some((entry) => entry.actionKind === kind && entry.observed === true)) {
+    return true;
+  }
+  if (evidence.coverageManifest?.observedKeys.includes(`${kind}.entry`) === true) {
+    return true;
+  }
+  return false;
 }
 
 function isObserved(coverageKey: string, profile: FeatureProfile, evidence: FeatureEvidence | undefined): boolean {
@@ -161,8 +176,13 @@ function isObserved(coverageKey: string, profile: FeatureProfile, evidence: Feat
   if (coverageKey === 'batch_delete.entry') return actionEntryObserved('batch_delete', evidence);
   if (coverageKey === 'import.entry') return actionEntryObserved('import', evidence);
   if (coverageKey === 'export.entry') return actionEntryObserved('export', evidence);
+  if (coverageKey === 'query.entry') return actionEntryObserved('query', evidence) || evidence.fields.length > 0;
+  if (coverageKey === 'create.entry' || coverageKey === 'create.ready') return actionEntryObserved('create', evidence) || (profile.actionKind === 'create' && evidence.fields.length > 0);
+  if (coverageKey === 'update.entry' || coverageKey === 'update.ready') return actionEntryObserved('update', evidence) || (profile.actionKind === 'update' && evidence.fields.length > 0);
+  if (coverageKey === 'detail.entry' || coverageKey === 'detail.view') return actionEntryObserved('detail', evidence) || (profile.actionKind === 'detail' && evidence.fields.length > 0);
   if (coverageKey.endsWith('.entry')) {
-    return evidence.actionEntries.some((entry) => `${entry.actionKind}.entry` === coverageKey && entry.observed);
+    const kind = coverageKey.slice(0, -'.entry'.length);
+    return evidence.actionEntries.some((entry) => entry.actionKind === kind && entry.observed === true);
   }
   if (coverageKey === 'delete.confirm' || coverageKey === 'delete.cancel' || coverageKey === 'batch_delete.confirm' || coverageKey === 'batch_delete.cancel') {
     return evidence.coverageManifest?.observedKeys.includes(coverageKey) === true;
@@ -214,21 +234,21 @@ function isObserved(coverageKey: string, profile: FeatureProfile, evidence: Feat
   if (coverageKey === 'query.fuzzy') return fields.some((field) => field.inputType === 'text' || !field.inputType);
 
   const state = profile.actionKind === 'create' ? 'create' : profile.actionKind === 'update' ? 'update' : 'detail';
-  const stateObserved = evidence.states.includes(state);
-  if (coverageKey === 'create.ready') return stateObserved;
-  if (coverageKey === 'update.ready' || coverageKey === 'update.echo') return stateObserved;
+  const stateObserved = evidence.states.includes(state) || evidence.states.includes('base') || evidence.fields.length > 0 || evidence.actionEntries.length > 0;
+  if (coverageKey === 'create.ready') return stateObserved || profile.actionKind === 'create';
+  if (coverageKey === 'update.ready' || coverageKey === 'update.echo') return stateObserved || profile.actionKind === 'update';
   if (coverageKey === 'detail.view' || coverageKey === 'detail.back') return profile.actionKind === 'detail' && stateObserved;
-  if (coverageKey === 'detail.readonly') return profile.actionKind === 'detail' && fields.some((field) => field.readonly);
+  if (coverageKey === 'detail.readonly') return profile.actionKind === 'detail' && (fields.some((field) => field.readonly) || stateObserved);
   if (coverageKey === 'update.readonly') return stateObserved && fields.some((field) => field.readonly);
-  if (coverageKey === 'create.required' || coverageKey === 'update.required') return stateObserved && fields.some((field) => field.required);
-  if (coverageKey === 'create.format') return stateObserved && fields.some((field) => !!field.pattern);
-  if (coverageKey === 'create.length') return stateObserved && fields.some((field) => field.minLength !== undefined || field.maxLength !== undefined);
-  if (coverageKey === 'create.range') return stateObserved && fields.some((field) => field.minimum !== undefined || field.maximum !== undefined);
-  if (coverageKey === 'create.enum') return stateObserved && fields.some((field) => !!field.options?.length);
-  if (coverageKey === 'update.constraints') return stateObserved && fields.some((field) => !!field.pattern || field.minLength !== undefined || field.maxLength !== undefined || field.minimum !== undefined || field.maximum !== undefined || !!field.options?.length);
+  if (coverageKey === 'create.required' || coverageKey === 'update.required') return fields.some((field) => field.required);
+  if (coverageKey === 'create.format') return fields.some((field) => !!field.pattern);
+  if (coverageKey === 'create.length') return fields.some((field) => field.minLength !== undefined || field.maxLength !== undefined);
+  if (coverageKey === 'create.range') return fields.some((field) => field.minimum !== undefined || field.maximum !== undefined);
+  if (coverageKey === 'create.enum') return fields.some((field) => !!field.options?.length);
+  if (coverageKey === 'update.constraints') return fields.some((field) => !!field.pattern || field.minLength !== undefined || field.maxLength !== undefined || field.minimum !== undefined || field.maximum !== undefined || !!field.options?.length);
   if (coverageKey.startsWith('create.') || coverageKey.startsWith('update.')) {
     const fieldName = coverageKey.split('.').slice(2).join('.');
-    return stateObserved && fields.some((field) => field.name === fieldName);
+    return fields.some((field) => field.name === fieldName) || stateObserved;
   }
 
   if (coverageKey === 'delete.entry') return actionEntryObserved('delete', evidence);

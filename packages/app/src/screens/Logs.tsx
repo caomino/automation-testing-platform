@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button, Card, Table, ConfirmDialog } from "../components";
 import { useApp } from "../context";
-import type { LogFileView } from "./services/dataApi";
+import type { LogFileView } from "../services/dataApi";
 
 export function Logs() {
   const {

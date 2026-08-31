@@ -176,7 +176,7 @@ function checkFrontendBuild() {
 function buildLibraries() {
   log('Building library packages (contracts/engine/infra/stages)...', 'info');
   try {
-    execSync('pnpm build', {
+    execSync('npx pnpm build', {
       cwd: ROOT,
       encoding: 'utf-8',
       stdio: 'inherit',
@@ -193,7 +193,7 @@ function buildLibraries() {
 function buildFrontend() {
   log('Building frontend app...', 'info');
   try {
-    execSync('pnpm --filter @test-platform/app build', {
+    execSync('npx pnpm --filter @test-platform/app build', {
       cwd: ROOT,
       encoding: 'utf-8',
       stdio: 'inherit',
@@ -227,7 +227,7 @@ async function buildAll() {
 
 function startBackendServer() {
   log('Starting backend API server...', 'info');
-  const child = spawn('pnpm', ['--filter', '@test-platform/orchestrator', 'run', 'server'], {
+  const child = spawn('npx', ['pnpm', '--filter', '@test-platform/orchestrator', 'run', 'server'], {
     cwd: ROOT,
     stdio: 'inherit',
     shell: true,

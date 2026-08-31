@@ -18,6 +18,7 @@
 
 import { createLogger, type Logger, type LoggerConfig, type LogFileInfo } from '@test-platform/infra-logger';
 import { createStore, type ProjectStore } from '@test-platform/infra-store';
+import { createCredentialStore, type CredentialStore } from '@test-platform/infra-cred';
 import type { McpEngine, EngineConfig, PlaywrightStorageState, SemanticNode } from '@test-platform/engine-mcp';
 import { createEngine } from '@test-platform/engine-mcp';
 
@@ -193,9 +194,10 @@ function isUsableAIProvider(config: AIProviderConfig | undefined): config is AIP
 export interface OrchestratorConfig {
   loggerConfig?: LoggerConfig;
   engineConfig?: EngineConfig;
-  /** 复用已有 Logger/Store/Engine（用于依赖注入或测试） */
+  /** 复用已有 Logger/Store/Engine/CredStore（用于依赖注入或测试） */
   logger?: Logger;
   store?: ProjectStore;
+  credStore?: CredentialStore;
   engineFactory?: (config: EngineConfig) => McpEngine;
 }
 
@@ -235,6 +237,7 @@ export interface PipelineInput {
 export class PipelineOrchestrator {
   private logger: Logger;
   private store: ProjectStore;
+  private credStore: CredentialStore;
   private engineFactory: (config: EngineConfig) => McpEngine;
   private engineConfig: EngineConfig;
   /** 当前会话的 Storage State（用于跨 engine 实例复用） */
@@ -243,8 +246,96 @@ export class PipelineOrchestrator {
   constructor(config: OrchestratorConfig = {}) {
     this.logger = config.logger ?? createLogger(config.loggerConfig ?? { dir: './logs', retentionDays: 30 });
     this.store = config.store ?? createStore();
+    this.credStore = config.credStore ?? createCredentialStore({
+      dir: process.env.TEST_PLATFORM_CRED_DIR || './data/credentials',
+      masterKey: process.env.TEST_PLATFORM_MASTER_KEY || 'dev-insecure-master-key',
+    });
     this.engineConfig = config.engineConfig ?? { headless: true };
     this.engineFactory = config.engineFactory ?? ((cfg) => createEngine(cfg));
+  }
+
+  /** 测试用例阶段 AI 客户端解析（支持从 store 持久化配置中获取并解密密钥） */
+  private async resolveCaseAiClient(
+    aiConfig?: { enabled?: boolean; configId?: string },
+  ): Promise<AIClient | undefined> {
+    if (aiConfig?.enabled !== true) {
+      return undefined;
+    }
+
+    let providerConfig: AIProviderConfig | undefined;
+    const targetId = aiConfig.configId?.trim();
+
+    // 1. 尝试按 targetId 从 store 中获取已保存的 AI 配置
+    if (targetId && targetId !== 'default') {
+      const record = await this.store.getAIConfig(targetId).catch(() => null);
+      if (record) {
+        let apiKey = '';
+        if (record.apiKeyRef) {
+          const cred = await this.credStore.get(record.apiKeyRef).catch(() => null);
+          apiKey = cred?.password || record.apiKeyRef;
+        }
+        providerConfig = {
+          id: record.id,
+          name: record.name,
+          vendor: (record.vendor as AIVendor) || 'custom',
+          baseUrl: record.baseUrl,
+          apiKeyRef: apiKey,
+          model: record.model,
+          enabled: record.enabled,
+          temperature: record.temperature,
+          maxTokens: record.maxTokens,
+        };
+      }
+    }
+
+    // 2. 若未按 ID 命中，尝试获取 store 中的默认配置或首个启用的配置
+    if (!providerConfig) {
+      const list = await this.store.listAIConfigs().catch(() => []);
+      const matched = (targetId && targetId !== 'default')
+        ? list.find((c) => c.id === targetId)
+        : (list.find((c) => c.isDefault && c.enabled) || list.find((c) => c.enabled));
+
+      if (matched) {
+        let apiKey = '';
+        if (matched.apiKeyRef) {
+          const cred = await this.credStore.get(matched.apiKeyRef).catch(() => null);
+          apiKey = cred?.password || matched.apiKeyRef;
+        }
+        providerConfig = {
+          id: matched.id,
+          name: matched.name,
+          vendor: (matched.vendor as AIVendor) || 'custom',
+          baseUrl: matched.baseUrl,
+          apiKeyRef: apiKey,
+          model: matched.model,
+          enabled: matched.enabled,
+          temperature: matched.temperature,
+          maxTokens: matched.maxTokens,
+        };
+      }
+    }
+
+    // 3. 兼容 fallback：从 infra-ai 内存 registry 读取（支持单测和外部 mock）
+    if (!providerConfig) {
+      const memoryCfg = targetId ? getProvider(targetId) : getDefault();
+      if (memoryCfg) {
+        providerConfig = memoryCfg;
+      }
+    }
+
+    if (!isUsableAIProvider(providerConfig)) {
+      throw new stageCase.CaseGenerationBlockedError(
+        `测试用例 AI 已开启但未配置有效模型${targetId ? `（${targetId}）` : '（无默认配置）'}，请在生成前配置后再试`,
+      );
+    }
+
+    try {
+      return createAIClient(providerConfig);
+    } catch (e) {
+      throw new stageCase.CaseGenerationBlockedError(
+        `测试用例 AI 客户端构建失败: ${e instanceof Error ? e.message : e}`,
+      );
+    }
   }
 
   /** 探索 AI 配置（与 case 阶段同级；受应用层 AI 开关门控） */
@@ -436,6 +527,9 @@ export class PipelineOrchestrator {
       }
       try {
         const result = await engine.evaluate<{ clicked: boolean; reason?: string; tag?: string }>(`(args) => {
+          var __name = function(t, v) { return t; };
+          if (typeof window !== 'undefined') { window.__name = __name; }
+          if (typeof globalThis !== 'undefined') { globalThis.__name = __name; }
           const { name } = args;
           const norm = (v) => (v || '').replace(/\\s+/g, ' ').trim();
           const DANGEROUS = /提交|保存|删除|移除|导入|导出|发布|审核|重置|清空|注销|退出|approve|reject|submit|save|delete|remove|import|export|publish|reset/i;
@@ -610,6 +704,24 @@ export class PipelineOrchestrator {
       } catch (e) {
         this.logger.warn('orchestrator', `case: click-by-name failed for "${name}": ${e instanceof Error ? e.message : e}`);
       }
+      }
+      if (!evidence[featureId]) {
+        try {
+          const curUrl = await engine.getCurrentUrl().catch(() => undefined);
+          const explored = await exploreFeatureEvidence(engine, {
+            featureId,
+            systemId,
+            featureRevision,
+            actionKind: sorted[0]?.actionKind ?? 'other',
+            pageUrl: curUrl ?? baseUrl,
+            pageEntry: curUrl ?? baseUrl,
+          });
+          evidence[featureId] = explored.evidence;
+          all.push(...explored.raw);
+          this.logger.info('orchestrator', `case: collected ${explored.raw.length} elements from current page for feature ${featureId}`);
+        } catch (e) {
+          this.logger.warn('orchestrator', `case: current-page evidence fallback failed for feature ${featureId}: ${e instanceof Error ? e.message : e}`);
+        }
       }
     }
     this.logger.info('orchestrator', `case fallback by feature names: ${all.length} elements from ${targets.length} feature-bound names`);
@@ -862,21 +974,7 @@ export class PipelineOrchestrator {
           : undefined,
       };
       // AI 双模：任务级依赖注入（spec §6.5 / §10）。启用但无有效配置 → 生成前阻断，不静默回退无 AI。
-      const caseAiEnabled = input.case?.aiConfig?.enabled === true;
-      let caseAiClient: AIClient | undefined;
-      if (caseAiEnabled) {
-        const cfg = input.case?.aiConfig?.configId ? getProvider(input.case.aiConfig.configId) : getDefault();
-        if (!isUsableAIProvider(cfg)) {
-          throw new stageCase.CaseGenerationBlockedError(
-            `测试用例 AI 已开启但未配置有效模型${input.case?.aiConfig?.configId ? `（${input.case.aiConfig.configId}）` : '（无默认配置）'}，请在生成前配置后再试`,
-          );
-        }
-        try {
-          caseAiClient = createAIClient(cfg);
-        } catch (e) {
-          throw new stageCase.CaseGenerationBlockedError(`测试用例 AI 客户端构建失败: ${e instanceof Error ? e.message : e}`);
-        }
-      }
+      const caseAiClient = await this.resolveCaseAiClient(input.case?.aiConfig);
       const caseOutput = await stageCase.run(caseInput, { aiClient: caseAiClient });
       this.logger.info('orchestrator', `[4/6] case finished: sheets=${caseOutput.caseWorkbook.length}`);
 
@@ -1218,21 +1316,7 @@ export class PipelineOrchestrator {
         const systemUrl: string | undefined = rawInput.systemUrl;
 
         // AI 双模：任务级依赖注入（spec §6.5 / §10）。启用但无有效配置 → 生成前阻断，不静默回退无 AI。
-        const aiEnabled = rawInput.aiConfig?.enabled === true;
-        let aiClient: AIClient | undefined;
-        if (aiEnabled) {
-          const cfg = rawInput.aiConfig?.configId ? getProvider(rawInput.aiConfig.configId) : getDefault();
-          if (!isUsableAIProvider(cfg)) {
-            throw new stageCase.CaseGenerationBlockedError(
-              `测试用例 AI 已开启但未配置有效模型${rawInput.aiConfig?.configId ? `（${rawInput.aiConfig.configId}）` : '（无默认配置）'}，请在生成前配置后再试`,
-            );
-          }
-          try {
-            aiClient = createAIClient(cfg);
-          } catch (e) {
-            throw new stageCase.CaseGenerationBlockedError(`测试用例 AI 客户端构建失败: ${e instanceof Error ? e.message : e}`);
-          }
-        }
+        const aiClient = await this.resolveCaseAiClient(rawInput.aiConfig);
 
         // 二次探索（Playwright MCP）：无 exploredElements 时，按 featurePaths 探索选中模块；
         // featurePaths 缺失/无效时，重跑探索重建 featurePaths，仍失败则按功能点名称在页面找对应功能。

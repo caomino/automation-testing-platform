@@ -9,11 +9,11 @@ import type { ModuleNode } from '../types/ModuleNode';
 import { SessionHandleSchema } from './LoginSchema';
 import { ActionKindSchema } from './TestDesignSchema';
 
-export const ModuleNodeSchema: z.ZodType<ModuleNode> = z.lazy(() =>
+export const ModuleNodeSchema: any = z.lazy(() =>
   z.object({
     id: z.string(),
     label: z.string(),
-    parentId: z.union([z.string(), z.null()]),
+    parentId: z.string().nullable(),
     subsystemId: z.string(),
     type: z.enum(['system', 'module', 'page', 'action']),
     status: z.enum(['covered', 'needs_review', 'unexplored']),
@@ -77,8 +77,8 @@ export const ExploreOutputSchema = z.object({
 });
 
 export function validateExploreInput(v: unknown): ExploreInput {
-  return ExploreInputSchema.parse(v);
+  return ExploreInputSchema.parse(v) as ExploreInput;
 }
 export function validateExploreOutput(v: unknown): ExploreOutput {
-  return ExploreOutputSchema.parse(v);
+  return ExploreOutputSchema.parse(v) as ExploreOutput;
 }

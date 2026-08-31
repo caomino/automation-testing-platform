@@ -106,13 +106,23 @@ describe('orchestrator runStage("case") — 生成测试用例模块 (feature-dr
     vi.mocked(getDefault).mockReturnValue(undefined);
     vi.mocked(getProvider).mockReturnValue(undefined);
     vi.mocked(createAIClient).mockImplementation(() => ({
-      complete: async () => ({
-        // 安全门 hasCandidateOrEvidenceAnchor 要求润色文本至少含一个锚点（候选/证据/ctx 业务词）。
-        text: JSON.stringify({
-          operation: '1. 进入【检查室】的【查询】页面\n2. 在 【关键字】 输入页面允许的有效查询条件并执行查询',
-          expected: '查询结果与该查询条件匹配。',
-        }),
-      }),
+      complete: async (req: { prompt: string }) => {
+        const match = req.prompt.match(/现有操作步骤：\n([\s\S]*?)\n现有预期结果：\n([\s\S]*?)\n/);
+        if (match) {
+          return {
+            text: JSON.stringify({
+              operation: match[1],
+              expected: match[2],
+            }),
+          };
+        }
+        return {
+          text: JSON.stringify({
+            operation: '1. 进入【检查室】的【查询】页面\n2. 在 【关键字】 输入页面允许的有效查询条件并执行查询',
+            expected: '查询结果与该查询条件匹配。',
+          }),
+        };
+      },
     }));
   });
 
@@ -837,6 +847,7 @@ describe('orchestrator runStage("case") — 生成测试用例模块 (feature-dr
 
   // === T6 保存闭环：runStage('case') 必须持久化 caseWorkbook 与生成批次元数据 ===
   it('T6 闭环：携带 systemId 生成后落盘 workbook 与 generation，可从 store 复读', async () => {
+    const sysId = `sys-t6-${Date.now()}`;
     const input = {
       featureTable: [
         [
@@ -854,7 +865,7 @@ describe('orchestrator runStage("case") — 生成测试用例模块 (feature-dr
       ],
       scope: 'all',
       metaConfig: meta,
-      systemId: 'sys-t6',
+      systemId: sysId,
       featureRevision: 'rev-t6',
       aiConfig: { configId: 'default', enabled: false },
       featureProfiles: [prof('QYYX_PZ_JCX_01', '查询', 'query')],
@@ -873,9 +884,9 @@ describe('orchestrator runStage("case") — 生成测试用例模块 (feature-dr
       featureEvidence: {
         QYYX_PZ_JCX_01: {
           ...ev('QYYX_PZ_JCX_01', 'query', ['关键字']),
-          systemId: 'sys-t6',
+          systemId: sysId,
           featureRevision: 'rev-t6',
-          pageEntry: 'sys-t6',
+          pageEntry: sysId,
         },
       },
     } satisfies CaseInput & { systemId: string };
@@ -883,13 +894,13 @@ describe('orchestrator runStage("case") — 生成测试用例模块 (feature-dr
     const store = orchestrator.getStore();
 
     // ① 用例工作簿落盘（spec §12 / §17.8：刷新不丢失）
-    const stored = await store.getCaseTable('sys-t6');
+    const stored = await store.getCaseTable(sysId);
     expect(stored).not.toBeNull();
     expect(stored![0].rows[0].caseNo).toBe('QYYX_PZ_JCX_01');
     expect(stored![0].rows[0].featureId).toBe('QYYX_PZ_JCX_01');
 
     // ② 生成批次元数据落盘（batchId / mode 可追溯，§6.5 / §17.7）
-    const gens = await store.getCaseGenerations('sys-t6');
+    const gens = await store.getCaseGenerations(sysId);
     expect(gens).toHaveLength(1);
     expect(gens[0].mode).toBe('no_ai');
     expect(gens[0].batchId).toBe(out.generation?.batchId);
