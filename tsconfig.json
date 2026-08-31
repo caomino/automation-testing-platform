@@ -1,0 +1,83 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false,
+    "module": "ESNext",
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "allowJs": true,
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": [
+        "./*"
+      ],
+      "@test-platform/contracts": [
+        "./packages/contracts/src/index.ts"
+      ],
+      "@test-platform/engine-mcp": [
+        "./packages/engine-mcp/src/index.ts"
+      ],
+      "@test-platform/infra-ai": [
+        "./packages/infra-ai/src/index.ts"
+      ],
+      "@test-platform/infra-cred": [
+        "./packages/infra-cred/src/index.ts"
+      ],
+      "@test-platform/infra-logger": [
+        "./packages/infra-logger/src/index.ts"
+      ],
+      "@test-platform/infra-store": [
+        "./packages/infra-store/src/index.ts"
+      ],
+      "@test-platform/orchestrator": [
+        "./packages/orchestrator/src/index.ts"
+      ],
+      "@test-platform/stage-case": [
+        "./packages/stage-case/src/index.ts"
+      ],
+      "@test-platform/stage-defect": [
+        "./packages/stage-defect/src/index.ts"
+      ],
+      "@test-platform/stage-execute": [
+        "./packages/stage-execute/src/index.ts"
+      ],
+      "@test-platform/stage-explore": [
+        "./packages/stage-explore/src/index.ts"
+      ],
+      "@test-platform/stage-feature": [
+        "./packages/stage-feature/src/index.ts"
+      ],
+      "@test-platform/stage-login": [
+        "./packages/stage-login/src/index.ts"
+      ]
+    },
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": [
+    "src",
+    "packages",
+    "server.ts",
+    "vite.config.ts"
+  ],
+  "exclude": [
+    "**/__tests__/**",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.test.js",
+    "**/verify/**",
+    "**/vitest.config.*",
+    "**/vitest.verify.config.*",
+    "packages/orchestrator/src/example.ts",
+    "dist",
+    "node_modules"
+  ]
+}

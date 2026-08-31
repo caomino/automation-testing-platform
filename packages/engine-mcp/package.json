@@ -1,0 +1,37 @@
+{
+  "name": "@test-platform/engine-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0",
+    "test": "vitest run --passWithNoTests --no-cache",
+    "verify": "vitest run --config vitest.verify.config.ts --passWithNoTests"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@playwright/mcp": "^0.0.42",
+    "@test-platform/contracts": "workspace:*",
+    "@test-platform/infra-ai": "workspace:*",
+    "playwright": "^1.49.0",
+    "zod": "^3.23.8",
+    "axios": "^1.7.2",
+    "cheerio": "^1.0.0",
+    "@google/genai": "^2.4.0"
+  },
+  "devDependencies": {
+    "jsdom": "30.0.1",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

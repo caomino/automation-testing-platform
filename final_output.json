@@ -1,0 +1,515 @@
+Sending request to generate cases with AI...
+{
+  "ok": true,
+  "data": {
+    "caseWorkbook": [
+      {
+        "sheetName": "DEFAULT",
+        "meta": {
+          "precondition": ""
+        },
+        "rows": [
+          {
+            "caseNo": "WZH6_WZH6_X_01",
+            "content": "KnowledgeFlow",
+            "step": "Step 1",
+            "operation": "进入对应页面，查看【KnowledgeFlow】入口及其影响范围，不执行写入操作。",
+            "expected": "【KnowledgeFlow】入口可见，操作范围与当前功能证据一致。",
+            "firstResult": "\\",
+            "regressionResult": "\\",
+            "conclusion": "\\",
+            "id": "WZH6_WZH6_X_01__other.entry",
+            "featureId": "WZH6_WZH6_X_01",
+            "targetTestPoint": "KnowledgeFlow",
+            "scenarioId": "WZH6_WZH6_X_01__other.entry",
+            "scenarioName": "KnowledgeFlow入口",
+            "priority": "P0",
+            "coverageKeys": [
+              "other.entry"
+            ],
+            "evidenceLevel": "observed",
+            "needsReview": false,
+            "origin": "system_generated",
+            "confidence": 1,
+            "batchId": "batch_39358b20-42be-4eb0-a9e7-40cc9e2a1198",
+            "featureFingerprint": "fp_5ba55a6f",
+            "generationMode": "ai",
+            "aiConfigId": "5ce032bc-2246-44fc-b878-a07a3a283b6f"
+          },
+          {
+            "caseNo": "WZH6_WZH6_X_02",
+            "content": "智能学习",
+            "step": "Step 1",
+            "operation": "1. 进入【智能学习】页面；2. 查看【智能学习】入口展示及其影响范围，不执行写入操作。",
+            "expected": "【智能学习】入口可见，操作范围与当前功能证据一致。",
+            "firstResult": "\\",
+            "regressionResult": "\\",
+            "conclusion": "\\",
+            "id": "WZH6_WZH6_X_02__other.entry",
+            "featureId": "WZH6_WZH6_X_02",
+            "targetTestPoint": "智能学习",
+            "scenarioId": "WZH6_WZH6_X_02__other.entry",
+            "scenarioName": "智能学习入口",
+            "priority": "P0",
+            "coverageKeys": [
+              "other.entry"
+            ],
+            "evidenceLevel": "observed",
+            "needsReview": false,
+            "origin": "system_generated",
+            "confidence": 1,
+            "batchId": "batch_39358b20-42be-4eb0-a9e7-40cc9e2a1198",
+            "featureFingerprint": "fp_c08891e3",
+            "generationMode": "ai",
+            "aiConfigId": "5ce032bc-2246-44fc-b878-a07a3a283b6f"
+          },
+          {
+            "caseNo": "WZH6_WZH6_X_03",
+            "content": "学习计划",
+            "step": "Step 1",
+            "operation": "进入【学习计划】页面，查看入口及影响范围，不执行写入操作。",
+            "expected": "【学习计划】入口可见，操作范围与现有功能证据一致。",
+            "firstResult": "\\",
+            "regressionResult": "\\",
+            "conclusion": "\\",
+            "id": "WZH6_WZH6_X_03__other.entry",
+            "featureId": "WZH6_WZH6_X_03",
+            "targetTestPoint": "学习计划",
+            "scenarioId": "WZH6_WZH6_X_03__other.entry",
+            "scenarioName": "学习计划入口",
+            "priority": "P0",
+            "coverageKeys": [
+              "other.entry"
+            ],
+            "evidenceLevel": "observed",
+            "needsReview": false,
+            "origin": "system_generated",
+            "confidence": 1,
+            "batchId": "batch_39358b20-42be-4eb0-a9e7-40cc9e2a1198",
+            "featureFingerprint": "fp_e1431e9c",
+            "generationMode": "ai",
+            "aiConfigId": "5ce032bc-2246-44fc-b878-a07a3a283b6f"
+          },
+          {
+            "caseNo": "WZH6_WZH6_X_04",
+            "content": "练习测试",
+            "step": "Step 1",
+            "operation": "1. 进入【练习测试】页面\n2. 查看【练习测试】入口及其影响范围，不执行写入操作",
+            "expected": "【练习测试】入口可见，操作范围与当前功能证据一致",
+            "firstResult": "\\",
+            "regressionResult": "\\",
+            "conclusion": "\\",
+            "id": "WZH6_WZH6_X_04__other.entry",
+            "featureId": "WZH6_WZH6_X_04",
+            "targetTestPoint": "练习测试",
+            "scenarioId": "WZH6_WZH6_X_04__other.entry",
+            "scenarioName": "练习测试入口",
+            "priority": "P0",
+            "coverageKeys": [
+              "other.entry"
+            ],
+            "evidenceLevel": "observed",
+            "needsReview": false,
+            "origin": "system_generated",
+            "confidence": 1,
+            "batchId": "batch_39358b20-42be-4eb0-a9e7-40cc9e2a1198",
+            "featureFingerprint": "fp_432c203f",
+            "generationMode": "ai",
+            "aiConfigId": "5ce032bc-2246-44fc-b878-a07a3a283b6f"
+          },
+          {
+            "caseNo": "WZH6_WZH6_X_05",
+            "content": "资源管理",
+            "step": "Step 1",
+            "operation": "1. 打开资源管理页面；2. 检查资源管理入口的可见性及其影响范围，仅做查看，不执行任何写入操作。",
+            "expected": "资源管理入口可正常展示，操作范围与当前功能证据保持一致。",
+            "firstResult": "\\",
+            "regressionResult": "\\",
+            "conclusion": "\\",
+            "id": "WZH6_WZH6_X_05__other.entry",
+            "featureId": "WZH6_WZH6_X_05",
+            "targetTestPoint": "资源管理",
+            "scenarioId": "WZH6_WZH6_X_05__other.entry",
+            "scenarioName": "资源管理入口",
+            "priority": "P0",
+            "coverageKeys": [
+              "other.entry"
+            ],
+            "evidenceLevel": "observed",
+            "needsReview": false,
+            "origin": "system_generated",
+            "confidence": 1,
+            "batchId": "batch_39358b20-42be-4eb0-a9e7-40cc9e2a1198",
+            "featureFingerprint": "fp_41564aec",
+            "generationMode": "ai",
+            "aiConfigId": "5ce032bc-2246-44fc-b878-a07a3a283b6f"
+          },
+          {
+            "caseNo": "WZH6_WZH6_X_06",
+            "content": "设置",
+            "step": "Step 1",
+            "operation": "1. 进入对应模块的【设置】页面\n2. 检查【设置】入口的可见性及所涉及的操作范围，仅查看不执行任何写入操作",
+            "expected": "【设置】入口正常显示，其操作范围与当前功能允许的证据一致",
+            "firstResult": "\\",
+            "regressionResult": "\\",
+            "conclusion": "\\",
+            "id": "WZH6_WZH6_X_06__other.entry",
+            "featureId": "WZH6_WZH6_X_06",
+            "targetTestPoint": "设置",
+            "scenarioId": "WZH6_WZH6_X_06__other.entry",
+            "scenarioName": "设置入口",
+            "priority": "P0",
+            "coverageKeys": [
+              "other.entry"
+            ],
+            "evidenceLevel": "observed",
+            "needsReview": false,
+            "origin": "system_generated",
+            "confidence": 1,
+            "batchId": "batch_39358b20-42be-4eb0-a9e7-40cc9e2a1198",
+            "featureFingerprint": "fp_18d4efab",
+            "generationMode": "ai",
+            "aiConfigId": "5ce032bc-2246-44fc-b878-a07a3a283b6f"
+          }
+        ],
+        "colWidths": [
+          18,
+          16,
+          8,
+          34,
+          34,
+          14,
+          14,
+          12
+        ]
+      }
+    ],
+    "caseRows": [
+      [
+        {
+          "caseNo": "WZH6_WZH6_X_01",
+          "content": "KnowledgeFlow",
+          "step": "Step 1",
+          "operation": "进入对应页面，查看【KnowledgeFlow】入口及其影响范围，不执行写入操作。",
+          "expected": "【KnowledgeFlow】入口可见，操作范围与当前功能证据一致。",
+          "firstResult": "\\",
+          "regressionResult": "\\",
+          "conclusion": "\\",
+          "id": "WZH6_WZH6_X_01__other.entry",
+          "featureId": "WZH6_WZH6_X_01",
+          "targetTestPoint": "KnowledgeFlow",
+          "scenarioId": "WZH6_WZH6_X_01__other.entry",
+          "scenarioName": "KnowledgeFlow入口",
+          "priority": "P0",
+          "coverageKeys": [
+            "other.entry"
+          ],
+          "evidenceLevel": "observed",
+          "needsReview": false,
+          "origin": "system_generated",
+          "confidence": 1,
+          "batchId": "batch_39358b20-42be-4eb0-a9e7-40cc9e2a1198",
+          "featureFingerprint": "fp_5ba55a6f",
+          "generationMode": "ai",
+          "aiConfigId": "5ce032bc-2246-44fc-b878-a07a3a283b6f"
+        },
+        {
+          "caseNo": "WZH6_WZH6_X_02",
+          "content": "智能学习",
+          "step": "Step 1",
+          "operation": "1. 进入【智能学习】页面；2. 查看【智能学习】入口展示及其影响范围，不执行写入操作。",
+          "expected": "【智能学习】入口可见，操作范围与当前功能证据一致。",
+          "firstResult": "\\",
+          "regressionResult": "\\",
+          "conclusion": "\\",
+          "id": "WZH6_WZH6_X_02__other.entry",
+          "featureId": "WZH6_WZH6_X_02",
+          "targetTestPoint": "智能学习",
+          "scenarioId": "WZH6_WZH6_X_02__other.entry",
+          "scenarioName": "智能学习入口",
+          "priority": "P0",
+          "coverageKeys": [
+            "other.entry"
+          ],
+          "evidenceLevel": "observed",
+          "needsReview": false,
+          "origin": "system_generated",
+          "confidence": 1,
+          "batchId": "batch_39358b20-42be-4eb0-a9e7-40cc9e2a1198",
+          "featureFingerprint": "fp_c08891e3",
+          "generationMode": "ai",
+          "aiConfigId": "5ce032bc-2246-44fc-b878-a07a3a283b6f"
+        },
+        {
+          "caseNo": "WZH6_WZH6_X_03",
+          "content": "学习计划",
+          "step": "Step 1",
+          "operation": "进入【学习计划】页面，查看入口及影响范围，不执行写入操作。",
+          "expected": "【学习计划】入口可见，操作范围与现有功能证据一致。",
+          "firstResult": "\\",
+          "regressionResult": "\\",
+          "conclusion": "\\",
+          "id": "WZH6_WZH6_X_03__other.entry",
+          "featureId": "WZH6_WZH6_X_03",
+          "targetTestPoint": "学习计划",
+          "scenarioId": "WZH6_WZH6_X_03__other.entry",
+          "scenarioName": "学习计划入口",
+          "priority": "P0",
+          "coverageKeys": [
+            "other.entry"
+          ],
+          "evidenceLevel": "observed",
+          "needsReview": false,
+          "origin": "system_generated",
+          "confidence": 1,
+          "batchId": "batch_39358b20-42be-4eb0-a9e7-40cc9e2a1198",
+          "featureFingerprint": "fp_e1431e9c",
+          "generationMode": "ai",
+          "aiConfigId": "5ce032bc-2246-44fc-b878-a07a3a283b6f"
+        },
+        {
+          "caseNo": "WZH6_WZH6_X_04",
+          "content": "练习测试",
+          "step": "Step 1",
+          "operation": "1. 进入【练习测试】页面\n2. 查看【练习测试】入口及其影响范围，不执行写入操作",
+          "expected": "【练习测试】入口可见，操作范围与当前功能证据一致",
+          "firstResult": "\\",
+          "regressionResult": "\\",
+          "conclusion": "\\",
+          "id": "WZH6_WZH6_X_04__other.entry",
+          "featureId": "WZH6_WZH6_X_04",
+          "targetTestPoint": "练习测试",
+          "scenarioId": "WZH6_WZH6_X_04__other.entry",
+          "scenarioName": "练习测试入口",
+          "priority": "P0",
+          "coverageKeys": [
+            "other.entry"
+          ],
+          "evidenceLevel": "observed",
+          "needsReview": false,
+          "origin": "system_generated",
+          "confidence": 1,
+          "batchId": "batch_39358b20-42be-4eb0-a9e7-40cc9e2a1198",
+          "featureFingerprint": "fp_432c203f",
+          "generationMode": "ai",
+          "aiConfigId": "5ce032bc-2246-44fc-b878-a07a3a283b6f"
+        },
+        {
+          "caseNo": "WZH6_WZH6_X_05",
+          "content": "资源管理",
+          "step": "Step 1",
+          "operation": "1. 打开资源管理页面；2. 检查资源管理入口的可见性及其影响范围，仅做查看，不执行任何写入操作。",
+          "expected": "资源管理入口可正常展示，操作范围与当前功能证据保持一致。",
+          "firstResult": "\\",
+          "regressionResult": "\\",
+          "conclusion": "\\",
+          "id": "WZH6_WZH6_X_05__other.entry",
+          "featureId": "WZH6_WZH6_X_05",
+          "targetTestPoint": "资源管理",
+          "scenarioId": "WZH6_WZH6_X_05__other.entry",
+          "scenarioName": "资源管理入口",
+          "priority": "P0",
+          "coverageKeys": [
+            "other.entry"
+          ],
+          "evidenceLevel": "observed",
+          "needsReview": false,
+          "origin": "system_generated",
+          "confidence": 1,
+          "batchId": "batch_39358b20-42be-4eb0-a9e7-40cc9e2a1198",
+          "featureFingerprint": "fp_41564aec",
+          "generationMode": "ai",
+          "aiConfigId": "5ce032bc-2246-44fc-b878-a07a3a283b6f"
+        },
+        {
+          "caseNo": "WZH6_WZH6_X_06",
+          "content": "设置",
+          "step": "Step 1",
+          "operation": "1. 进入对应模块的【设置】页面\n2. 检查【设置】入口的可见性及所涉及的操作范围，仅查看不执行任何写入操作",
+          "expected": "【设置】入口正常显示，其操作范围与当前功能允许的证据一致",
+          "firstResult": "\\",
+          "regressionResult": "\\",
+          "conclusion": "\\",
+          "id": "WZH6_WZH6_X_06__other.entry",
+          "featureId": "WZH6_WZH6_X_06",
+          "targetTestPoint": "设置",
+          "scenarioId": "WZH6_WZH6_X_06__other.entry",
+          "scenarioName": "设置入口",
+          "priority": "P0",
+          "coverageKeys": [
+            "other.entry"
+          ],
+          "evidenceLevel": "observed",
+          "needsReview": false,
+          "origin": "system_generated",
+          "confidence": 1,
+          "batchId": "batch_39358b20-42be-4eb0-a9e7-40cc9e2a1198",
+          "featureFingerprint": "fp_18d4efab",
+          "generationMode": "ai",
+          "aiConfigId": "5ce032bc-2246-44fc-b878-a07a3a283b6f"
+        }
+      ]
+    ],
+    "metaHeader": {
+      "precondition": ""
+    },
+    "qualityGateIssues": [
+      {
+        "caseRowId": "complexity_1",
+        "type": "泛化",
+        "message": "功能点数量较多（7 个）",
+        "blocking": false
+      },
+      {
+        "caseRowId": "WZH6_WZH6_X_05",
+        "type": "泛化",
+        "message": "功能点 WZH6_WZH6_X_05 operation：操作说明未使用方括号引用页面/字段/按钮",
+        "blocking": true
+      }
+    ],
+    "complexLogicDetected": true,
+    "featureResults": [
+      {
+        "featureId": "WZH6_WZH6_X_01",
+        "inputIndex": 0,
+        "featureFingerprint": "fp_5ba55a6f",
+        "coverageDecisions": {
+          "normal": "covered",
+          "boundary": "not_applicable",
+          "exception": "not_applicable",
+          "process": "not_applicable",
+          "permission": "not_applicable"
+        },
+        "reasons": [
+          "[normal] 已覆盖：other.entry"
+        ],
+        "status": "generated",
+        "generatedCaseGroup": true
+      },
+      {
+        "featureId": "WZH6_WZH6_X_02",
+        "inputIndex": 1,
+        "featureFingerprint": "fp_c08891e3",
+        "coverageDecisions": {
+          "normal": "covered",
+          "boundary": "not_applicable",
+          "exception": "not_applicable",
+          "process": "not_applicable",
+          "permission": "not_applicable"
+        },
+        "reasons": [
+          "[normal] 已覆盖：other.entry"
+        ],
+        "status": "generated",
+        "generatedCaseGroup": true
+      },
+      {
+        "featureId": "WZH6_WZH6_X_03",
+        "inputIndex": 2,
+        "featureFingerprint": "fp_e1431e9c",
+        "coverageDecisions": {
+          "normal": "covered",
+          "boundary": "not_applicable",
+          "exception": "not_applicable",
+          "process": "not_applicable",
+          "permission": "not_applicable"
+        },
+        "reasons": [
+          "[normal] 已覆盖：other.entry"
+        ],
+        "status": "generated",
+        "generatedCaseGroup": true
+      },
+      {
+        "featureId": "WZH6_WZH6_X_04",
+        "inputIndex": 3,
+        "featureFingerprint": "fp_432c203f",
+        "coverageDecisions": {
+          "normal": "covered",
+          "boundary": "not_applicable",
+          "exception": "not_applicable",
+          "process": "not_applicable",
+          "permission": "not_applicable"
+        },
+        "reasons": [
+          "[normal] 已覆盖：other.entry"
+        ],
+        "status": "generated",
+        "generatedCaseGroup": true
+      },
+      {
+        "featureId": "WZH6_WZH6_X_05",
+        "inputIndex": 4,
+        "featureFingerprint": "fp_41564aec",
+        "coverageDecisions": {
+          "normal": "covered",
+          "boundary": "not_applicable",
+          "exception": "not_applicable",
+          "process": "not_applicable",
+          "permission": "not_applicable"
+        },
+        "reasons": [
+          "[normal] 已覆盖：other.entry"
+        ],
+        "status": "generated",
+        "generatedCaseGroup": true
+      },
+      {
+        "featureId": "WZH6_WZH6_X_06",
+        "inputIndex": 5,
+        "featureFingerprint": "fp_18d4efab",
+        "coverageDecisions": {
+          "normal": "covered",
+          "boundary": "not_applicable",
+          "exception": "not_applicable",
+          "process": "not_applicable",
+          "permission": "not_applicable"
+        },
+        "reasons": [
+          "[normal] 已覆盖：other.entry"
+        ],
+        "status": "generated",
+        "generatedCaseGroup": true
+      },
+      {
+        "featureId": "WZH6_WZH6_X_07",
+        "inputIndex": 6,
+        "featureFingerprint": "fp_751d4086",
+        "coverageDecisions": {
+          "normal": "not_applicable",
+          "boundary": "not_applicable",
+          "exception": "not_applicable",
+          "process": "not_applicable",
+          "permission": "not_applicable"
+        },
+        "reasons": [
+          "未观察到 other.entry 所需的安全页面或设计证据",
+          "无可生成的覆盖场景"
+        ],
+        "status": "needs_review",
+        "generatedCaseGroup": false
+      }
+    ],
+    "generation": {
+      "batchId": "batch_39358b20-42be-4eb0-a9e7-40cc9e2a1198",
+      "systemId": "04afc96b-5ea0-4108-9104-6e91363039a2",
+      "featureRevision": "rev_sha256:fa2551af2bca00dc033b511a4eb361868c061148267d96112e6b6b99bd1684ac",
+      "orderedFeatureIds": [
+        "WZH6_WZH6_X_01",
+        "WZH6_WZH6_X_02",
+        "WZH6_WZH6_X_03",
+        "WZH6_WZH6_X_04",
+        "WZH6_WZH6_X_05",
+        "WZH6_WZH6_X_06",
+        "WZH6_WZH6_X_07"
+      ],
+      "evidenceDigest": "sha256:8793745bd2f0f406d23f3341c91aa80bc0c54af8cec0e0a68af31d7de50a195d",
+      "styleVersion": "v1",
+      "taskId": "task_mtgsd5pu_ccpvqf",
+      "mode": "ai",
+      "aiConfigId": "5ce032bc-2246-44fc-b878-a07a3a283b6f",
+      "scope": "all",
+      "regenerateSelected": false
+    }
+  }
+}

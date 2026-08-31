@@ -1,0 +1,161 @@
+Sending request to generate cases...
+{
+  "ok": true,
+  "data": {
+    "caseWorkbook": [],
+    "caseRows": [],
+    "metaHeader": {
+      "precondition": ""
+    },
+    "qualityGateIssues": [
+      {
+        "caseRowId": "complexity_1",
+        "type": "泛化",
+        "message": "功能点数量较多（7 个）",
+        "blocking": false
+      }
+    ],
+    "complexLogicDetected": true,
+    "featureResults": [
+      {
+        "featureId": "WZH6_WZH6_X_01",
+        "inputIndex": 0,
+        "featureFingerprint": "fp_5ba55a6f",
+        "coverageDecisions": {
+          "normal": "not_applicable",
+          "boundary": "not_applicable",
+          "exception": "not_applicable",
+          "process": "not_applicable",
+          "permission": "not_applicable"
+        },
+        "reasons": [
+          "无当前功能点专属证据"
+        ],
+        "status": "evidence_missing",
+        "generatedCaseGroup": false
+      },
+      {
+        "featureId": "WZH6_WZH6_X_02",
+        "inputIndex": 1,
+        "featureFingerprint": "fp_c08891e3",
+        "coverageDecisions": {
+          "normal": "not_applicable",
+          "boundary": "not_applicable",
+          "exception": "not_applicable",
+          "process": "not_applicable",
+          "permission": "not_applicable"
+        },
+        "reasons": [
+          "无当前功能点专属证据"
+        ],
+        "status": "evidence_missing",
+        "generatedCaseGroup": false
+      },
+      {
+        "featureId": "WZH6_WZH6_X_03",
+        "inputIndex": 2,
+        "featureFingerprint": "fp_e1431e9c",
+        "coverageDecisions": {
+          "normal": "not_applicable",
+          "boundary": "not_applicable",
+          "exception": "not_applicable",
+          "process": "not_applicable",
+          "permission": "not_applicable"
+        },
+        "reasons": [
+          "无当前功能点专属证据"
+        ],
+        "status": "evidence_missing",
+        "generatedCaseGroup": false
+      },
+      {
+        "featureId": "WZH6_WZH6_X_04",
+        "inputIndex": 3,
+        "featureFingerprint": "fp_432c203f",
+        "coverageDecisions": {
+          "normal": "not_applicable",
+          "boundary": "not_applicable",
+          "exception": "not_applicable",
+          "process": "not_applicable",
+          "permission": "not_applicable"
+        },
+        "reasons": [
+          "无当前功能点专属证据"
+        ],
+        "status": "evidence_missing",
+        "generatedCaseGroup": false
+      },
+      {
+        "featureId": "WZH6_WZH6_X_05",
+        "inputIndex": 4,
+        "featureFingerprint": "fp_41564aec",
+        "coverageDecisions": {
+          "normal": "not_applicable",
+          "boundary": "not_applicable",
+          "exception": "not_applicable",
+          "process": "not_applicable",
+          "permission": "not_applicable"
+        },
+        "reasons": [
+          "无当前功能点专属证据"
+        ],
+        "status": "evidence_missing",
+        "generatedCaseGroup": false
+      },
+      {
+        "featureId": "WZH6_WZH6_X_06",
+        "inputIndex": 5,
+        "featureFingerprint": "fp_18d4efab",
+        "coverageDecisions": {
+          "normal": "not_applicable",
+          "boundary": "not_applicable",
+          "exception": "not_applicable",
+          "process": "not_applicable",
+          "permission": "not_applicable"
+        },
+        "reasons": [
+          "无当前功能点专属证据"
+        ],
+        "status": "evidence_missing",
+        "generatedCaseGroup": false
+      },
+      {
+        "featureId": "WZH6_WZH6_X_07",
+        "inputIndex": 6,
+        "featureFingerprint": "fp_751d4086",
+        "coverageDecisions": {
+          "normal": "not_applicable",
+          "boundary": "not_applicable",
+          "exception": "not_applicable",
+          "process": "not_applicable",
+          "permission": "not_applicable"
+        },
+        "reasons": [
+          "无当前功能点专属证据"
+        ],
+        "status": "evidence_missing",
+        "generatedCaseGroup": false
+      }
+    ],
+    "generation": {
+      "batchId": "batch_293089a5-4300-4e2d-bfe5-86cc3dd1150b",
+      "systemId": "04afc96b-5ea0-4108-9104-6e91363039a2",
+      "featureRevision": "rev_sha256:fa2551af2bca00dc033b511a4eb361868c061148267d96112e6b6b99bd1684ac",
+      "orderedFeatureIds": [
+        "WZH6_WZH6_X_01",
+        "WZH6_WZH6_X_02",
+        "WZH6_WZH6_X_03",
+        "WZH6_WZH6_X_04",
+        "WZH6_WZH6_X_05",
+        "WZH6_WZH6_X_06",
+        "WZH6_WZH6_X_07"
+      ],
+      "evidenceDigest": "sha256:f6c2df7b8d967f4df70380e85734a6bd0933bf40e61e2e020c2e95e34f867445",
+      "styleVersion": "v1",
+      "taskId": "task_mtgyh4uh_n0pggj",
+      "mode": "no_ai",
+      "scope": "all",
+      "regenerateSelected": false
+    }
+  }
+}

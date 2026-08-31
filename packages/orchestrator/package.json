@@ -1,0 +1,41 @@
+{
+  "name": "@test-platform/orchestrator",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src --max-warnings 0",
+    "test": "vitest run --passWithNoTests --no-cache",
+    "verify": "vitest run --passWithNoTests --no-cache",
+    "server": "tsx server.ts"
+  },
+  "dependencies": {
+    "@test-platform/contracts": "workspace:*",
+    "@test-platform/engine-mcp": "workspace:*",
+    "@test-platform/infra-ai": "workspace:*",
+    "@test-platform/infra-cred": "workspace:*",
+    "@test-platform/infra-logger": "workspace:*",
+    "@test-platform/infra-store": "workspace:*",
+    "@test-platform/stage-case": "workspace:*",
+    "@test-platform/stage-defect": "workspace:*",
+    "@test-platform/stage-execute": "workspace:*",
+    "@test-platform/stage-explore": "workspace:*",
+    "@test-platform/stage-feature": "workspace:*",
+    "@test-platform/stage-login": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.12",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
