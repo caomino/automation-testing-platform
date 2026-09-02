@@ -55,27 +55,18 @@ const DANGEROUS_TEXT = new RegExp(DANGEROUS_SOURCE, 'i');
 
 /** 菜单容器候选（覆盖主流 UI 库与自研命名） */
 const MENU_CONTAINERS = [
-  'aside', 'nav',
-  '[class*="sidebar" i]', '[class*="menu" i]',
-  '[class*="nav" i]', '[class*="drawer" i]',
-  '[class*="layout-sider" i]', '[class*="side-panel" i]',
-  '[class*="left-panel" i]', '[class*="tree" i]',
-  '[role="menubar"]', '[role="navigation"]',
-  '[role="tree"]'
+  '[class*="sidebar"]', '[class*="menu"]', 'nav', 'aside',
+  '[role="menubar"]', '[role="navigation"]', '[class*="tree"]'
 ].join(',');
 
 /** 菜单项候选（含父菜单 submenu，才能 hover 展开发现折叠的子菜单；否则子菜单折叠时颗粒度缺失） */
 const MENU_ITEMS = [
   'a[href]', '[role="menuitem"]', '[role="treeitem"]',
-  '[class*="menu-item" i]', '[class*="menuItem" i]', '[class*="menu_item" i]',
-  '[class*="submenu" i]', '[class*="sub-menu" i]', '[class*="subMenu" i]',
-  '[class*="nav-item" i]', '[class*="navItem" i]', '[class*="nav_item" i]',
-  '[class*="sidebar-item" i]', '[class*="sidebarItem" i]',
-  '[class*="list-item" i]', '[class*="listItem" i]',
+  'li[class*="menu-item"]', 'li[class*="submenu"]', 'li[class*="menu-sub"]',
   '.el-menu-item', '.el-submenu',
   '.ant-menu-item', '.ant-menu-submenu',
   '.n-menu-item', '.n-submenu',
-  '.item'
+  '[class*="nav-item"]', '[class*="sidebar-item"]'
 ].join(',');
 
 /** 浏览器内收集导航项（含层级 parentSelector）；跨 frame 收集 */
@@ -139,23 +130,19 @@ const COLLECT_NAV_FN = `((args) => {
     }
     // 第二阶段：先算文本（去重用）
     var textOf = (el) => {
-      var clone = el.cloneNode(true);
-      var submenus = Array.from(clone.querySelectorAll('ul, ol, [role="menu"], [class*="submenu"], [class*="sub-menu"], [class*="children"], [class*="dropdown"], [class*="menu-list"]'));
-      for (var i = 0; i < submenus.length; i++) {
-        if (submenus[i].parentNode) submenus[i].parentNode.removeChild(submenus[i]);
-      }
+      var html = el;
       var t = '';
-      for (var n = 0; n < clone.childNodes.length; n++) {
-        var c = clone.childNodes[n];
+      for (var n = 0; n < html.childNodes.length; n++) {
+        var c = html.childNodes[n];
         if (c.nodeType === 3) t += (c.textContent || '');
       }
-      t = t.replace(/\\s+/g, ' ').trim();
+      t = t.replace(/\s+/g, ' ').trim();
       if (!t) {
-        t = (clone.innerText || clone.textContent || '').replace(/\\n/g, ' ').replace(/\\s+/g, ' ').trim();
+        var leaf = html.querySelector('a, span, [class*="title"], [class*="label"], [class*="text"]');
+        t = (leaf ? (leaf.textContent || '') : '').replace(/\s+/g, ' ').trim();
       }
-      if (t.length > 50) {
-        t = t.substring(0, 47) + '...';
-      }
+      if (!t) t = (html.textContent || '').replace(/\s+/g, ' ').trim().replace(/\s*\d+\s*$/, '').trim();
+      if (t.length > 50) t = t.substring(0, 47) + '...';
       return t;
     };
     var textCache = new Map();
