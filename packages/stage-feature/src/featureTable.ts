@@ -98,6 +98,7 @@ export function buildFeatureTable(
     mainModuleNode: ModuleNode | null;
     subModuleNode: ModuleNode | null;
     featureNode: ModuleNode | null;
+    resolvedUrl: string | undefined;
     prov: ReturnType<typeof deriveProvenance>;
   }
 
@@ -105,15 +106,22 @@ export function buildFeatureTable(
     const ancestors = moduleAncestors(node, parentOf);
     // ancestors 从叶子向上收集，因此根节点在末尾 (ancestors.length - 1)
     // 根据业务规则：
-    //   一级目录 = 主模块 (ancestors[length - 1])
-    //   二级目录 = 子模块 (ancestors[length - 2])
-    //   三级目录 = 功能点 (ancestors[length - 3])
-    //   如果某级不存在，则对应为 null
+    //   主模块永远是根节点 (ancestors[length - 1])
+    //   测试点永远是叶子节点 (node)
+    //   从底层向上推：离叶子最近的祖先 (ancestors[0]) 是功能点，再往上 (ancestors[1]) 是子模块
     const rootIndex = ancestors.length - 1;
     const mainModuleNode = rootIndex >= 0 ? ancestors[rootIndex] : null;
-    const subModuleNode = rootIndex >= 1 ? ancestors[rootIndex - 1] : null;
-    const featureNode = rootIndex >= 2 ? ancestors[rootIndex - 2] : null;
-    return { node, mainModuleNode, subModuleNode, featureNode, prov: deriveProvenance(node) };
+    
+    const featureNode = ancestors.length >= 2 ? ancestors[0] : null;
+    const subModuleNode = ancestors.length >= 3 ? ancestors[1] : null;
+
+    let resolvedUrl = node.url;
+    if (!resolvedUrl) {
+      const urlNode = ancestors.find(a => !!a.url);
+      if (urlNode) resolvedUrl = urlNode.url;
+    }
+
+    return { node, mainModuleNode, subModuleNode, featureNode, resolvedUrl, prov: deriveProvenance(node) };
   });
 
   // confirmedOnly：丢弃未确认（ai_generated）行，合并后过滤
@@ -189,12 +197,12 @@ export function buildFeatureTable(
       rows.push(row);
       featureIds.push(testPointId);
       // 根因解法：把模块树叶子节点的真实页面 URL 带出，供用例阶段按所选模块精准探索
-      if (r.node.url) featurePaths[testPointId] = r.node.url;
+      if (r.resolvedUrl) featurePaths[testPointId] = r.resolvedUrl;
       featureProfiles.push({
         featureId: testPointId,
         testPoint,
         actionKind: r.node.actionKind ?? 'other',
-        pageUrl: r.node.url,
+        pageUrl: r.resolvedUrl,
         clickSelector: r.node.actionSelector,
         parentModule: r.mainModuleNode?.label,
         subsystemId: r.node.subsystemId,

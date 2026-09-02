@@ -1462,12 +1462,24 @@ export class PlaywrightEngine implements CaptureEngine {
     return page.evaluate(`(() => {
       var g = globalThis;
       var out = [];
-      var keys = ['token', 'accessToken', 'authToken', 'Authorization'];
-      for (var i = 0; i < keys.length; i++) {
-        var key = keys[i];
-        var v = (g.localStorage && g.localStorage.getItem(key)) || (g.sessionStorage && g.sessionStorage.getItem(key));
-        if (v) out.push(key + '=' + v);
-      }
+      try {
+        if (g.localStorage) {
+          for (var i = 0; i < g.localStorage.length; i++) {
+            var k = g.localStorage.key(i);
+            var v = g.localStorage.getItem(k);
+            if (v && k) out.push('L|' + k + '=' + v);
+          }
+        }
+      } catch (e) {}
+      try {
+        if (g.sessionStorage) {
+          for (var i = 0; i < g.sessionStorage.length; i++) {
+            var k = g.sessionStorage.key(i);
+            var v = g.sessionStorage.getItem(k);
+            if (v && k) out.push('S|' + k + '=' + v);
+          }
+        }
+      } catch (e) {}
       return out;
     })()`);
   }
@@ -1493,11 +1505,15 @@ export class PlaywrightEngine implements CaptureEngine {
         var g = globalThis;
         for (var i = 0; i < tkns.length; i++) {
           var t = tkns[i];
+          var target = 'both';
+          if (t.indexOf('L|') === 0) { target = 'local'; t = t.slice(2); }
+          else if (t.indexOf('S|') === 0) { target = 'session'; t = t.slice(2); }
           var idx = t.indexOf('=');
           var k = idx >= 0 ? t.slice(0, idx) : t;
           var v = idx >= 0 ? t.slice(idx + 1) : '';
           try {
-            if (g.localStorage) g.localStorage.setItem(k, v);
+            if ((target === 'both' || target === 'local') && g.localStorage) g.localStorage.setItem(k, v);
+            if ((target === 'both' || target === 'session') && g.sessionStorage) g.sessionStorage.setItem(k, v);
           } catch (e) {}
         }
       })(${JSON.stringify(tokens)})`);

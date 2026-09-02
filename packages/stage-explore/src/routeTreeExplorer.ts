@@ -84,6 +84,45 @@ export function getSpaRouteProbeScript(): string {
         }
       }
     } catch (e) {}
+    try {
+      // Angular Router 降级探测：通过 DOM 中的 routerLink 收集路由表（很多 Angular 生产环境会剥离全局变量，这是最稳妥的启发式提取）
+      const ngLinks = Array.from(document.querySelectorAll('[routerLink], [routerlink], [ng-reflect-router-link]'));
+      for (const link of ngLinks) {
+        const path = link.getAttribute('routerLink') || link.getAttribute('routerlink') || link.getAttribute('ng-reflect-router-link');
+        if (path && typeof path === 'string' && path !== '*' && path !== '/') {
+          const title = link.textContent.trim().slice(0, 50) || path;
+          discovered.push({ path, title, type: 'angular_router' });
+        }
+      }
+    } catch (e) {}
+    try {
+      // React Router v4/v5 Fiber 探测：遍历 React 根节点的 Fiber 树寻找路由配置对象
+      const reactRoot = document.querySelector('#root') || document.querySelector('#app') || document.body;
+      const fiberKey = Object.keys(reactRoot).find(k => k.startsWith('__reactContainer$') || k.startsWith('__reactRoot$'));
+      if (fiberKey) {
+        const queue = [reactRoot[fiberKey]];
+        while (queue.length > 0 && queue.length < 1000) {
+          const curr = queue.shift();
+          if (!curr) continue;
+          if (curr.memoizedProps && Array.isArray(curr.memoizedProps.routes)) {
+            const flatten = (routes, parentPath) => {
+              for (const r of routes) {
+                const full = (parentPath + '/' + (r.path || '')).replace(/\\/\\/+/g, '/');
+                if (full && full !== '*' && full !== '/') {
+                  discovered.push({ path: full, title: (r.title || r.name || full), type: 'react_fiber_router' });
+                }
+                if (Array.isArray(r.children)) flatten(r.children, full);
+                if (Array.isArray(r.routes)) flatten(r.routes, full);
+              }
+            };
+            flatten(curr.memoizedProps.routes, '');
+            break; // 找到顶层路由表即可退出遍历
+          }
+          if (curr.child) queue.push(curr.child);
+          if (curr.sibling) queue.push(curr.sibling);
+        }
+      }
+    } catch (e) {}
     return discovered;
   })()
   `;
@@ -129,16 +168,27 @@ export async function extractRoutesRuntime(
 /** 从单段 JS 源码静态正则提取路由定义（参考项目 extractRoutesFromJavascriptCode 思路，含 :param） */
 function collectJsRoutes(jsCode: string, out: RawRoute[], seen: Set<string>): void {
   if (!jsCode || jsCode.length < 50) return;
-  const re =
-    /(?:path|routePath)\s*:\s*['"]([^'"]+)['"]\s*,\s*(?:name|title|meta\s*:\s*\{\s*title)\s*:\s*['"]([^'"]+)['"]/g;
+  // 优化正则：允许 path 和 title/name 之间存在其他属性（如 component, icon 等），最大跨度 300 字符，中间不能包含嵌套的闭合括号 }
+  // 注意：JavaScript 混淆后属性顺序不可控，所以采取两步法匹配大括号块，或者使用更宽容的非贪婪匹配
+  
+  // 匹配形如 {...} 的路由配置块（只要里面包含 path: "..." 即可提取）
+  const blockRe = /\{[^{}]*?(?:path|routePath)\s*:\s*['"]([^'"]+)['"][^{}]*?\}/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(jsCode)) !== null) {
+  while ((m = blockRe.exec(jsCode)) !== null) {
+    const block = m[0];
     const path = m[1];
-    const title = m[2];
-    if (!path || !title) continue;
+    
+    // 在这个块内，寻找 name 或 title（包括 meta 里的 title）
+    const titleRe = /(?:name|title|meta\s*:\s*\{\s*title)\s*:\s*['"]([^'"]+)['"]/;
+    const tm = titleRe.exec(block);
+    const title = tm ? tm[1] : path.split('/').pop() || path; // 如果实在没提取到标题，用 path 末段兜底
+    
+    if (!path || path === '*' || path === '/') continue;
+    
     const norm = path.startsWith('/') ? path : '/' + path;
     if (seen.has(norm)) continue;
     seen.add(norm);
+    
     out.push({
       path: norm,
       title: title.trim().slice(0, 60),

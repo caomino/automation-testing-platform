@@ -55,18 +55,27 @@ const DANGEROUS_TEXT = new RegExp(DANGEROUS_SOURCE, 'i');
 
 /** 菜单容器候选（覆盖主流 UI 库与自研命名） */
 const MENU_CONTAINERS = [
-  '[class*="sidebar"]', '[class*="menu"]', 'nav', 'aside',
-  '[role="menubar"]', '[role="navigation"]', '[class*="tree"]',
+  'aside', 'nav',
+  '[class*="sidebar" i]', '[class*="menu" i]',
+  '[class*="nav" i]', '[class*="drawer" i]',
+  '[class*="layout-sider" i]', '[class*="side-panel" i]',
+  '[class*="left-panel" i]', '[class*="tree" i]',
+  '[role="menubar"]', '[role="navigation"]',
+  '[role="tree"]'
 ].join(',');
 
 /** 菜单项候选（含父菜单 submenu，才能 hover 展开发现折叠的子菜单；否则子菜单折叠时颗粒度缺失） */
 const MENU_ITEMS = [
   'a[href]', '[role="menuitem"]', '[role="treeitem"]',
-  'li[class*="menu-item"]', 'li[class*="submenu"]', 'li[class*="menu-sub"]',
+  '[class*="menu-item" i]', '[class*="menuItem" i]', '[class*="menu_item" i]',
+  '[class*="submenu" i]', '[class*="sub-menu" i]', '[class*="subMenu" i]',
+  '[class*="nav-item" i]', '[class*="navItem" i]', '[class*="nav_item" i]',
+  '[class*="sidebar-item" i]', '[class*="sidebarItem" i]',
+  '[class*="list-item" i]', '[class*="listItem" i]',
   '.el-menu-item', '.el-submenu',
   '.ant-menu-item', '.ant-menu-submenu',
   '.n-menu-item', '.n-submenu',
-  '[class*="nav-item"]', '[class*="sidebar-item"]',
+  '.item'
 ].join(',');
 
 /** 浏览器内收集导航项（含层级 parentSelector）；跨 frame 收集 */
@@ -130,18 +139,23 @@ const COLLECT_NAV_FN = `((args) => {
     }
     // 第二阶段：先算文本（去重用）
     var textOf = (el) => {
-      var html = el;
+      var clone = el.cloneNode(true);
+      var submenus = Array.from(clone.querySelectorAll('ul, ol, [role="menu"], [class*="submenu"], [class*="sub-menu"], [class*="children"], [class*="dropdown"], [class*="menu-list"]'));
+      for (var i = 0; i < submenus.length; i++) {
+        if (submenus[i].parentNode) submenus[i].parentNode.removeChild(submenus[i]);
+      }
       var t = '';
-      for (var n = 0; n < html.childNodes.length; n++) {
-        var c = html.childNodes[n];
+      for (var n = 0; n < clone.childNodes.length; n++) {
+        var c = clone.childNodes[n];
         if (c.nodeType === 3) t += (c.textContent || '');
       }
       t = t.replace(/\\s+/g, ' ').trim();
       if (!t) {
-        var leaf = html.querySelector('a, span, [class*="title"], [class*="label"], [class*="text"]');
-        t = (leaf ? (leaf.textContent || '') : '').replace(/\\s+/g, ' ').trim();
+        t = (clone.innerText || clone.textContent || '').replace(/\\n/g, ' ').replace(/\\s+/g, ' ').trim();
       }
-      if (!t) t = (html.textContent || '').replace(/\\s+/g, ' ').trim().replace(/\\s*\\d+\\s*$/, '').trim();
+      if (t.length > 50) {
+        t = t.substring(0, 47) + '...';
+      }
       return t;
     };
     var textCache = new Map();
@@ -613,6 +627,40 @@ export async function exploreViaMenus(
   page.on('popup', onPopup);
 
   try {
+    // ----------------------------------------------------------------------
+    // 自动清场机制 (Auto-Dismiss)
+    // 目标：解决 Sentinel DB 360 等系统在登录后弹出“新手引导 (Tour)”或“全屏公告 (Modal)”，
+    // 导致真实的菜单 DOM 被遮挡或被引擎误判提取为菜单项的问题。
+    // ----------------------------------------------------------------------
+    try {
+      console.log('[menu-explorer] 执行探索前置清场 (Auto-Dismiss) - 按下 Escape 键并寻找跳过按钮');
+      await page.keyboard.press('Escape').catch(() => {});
+      await page.waitForTimeout(300);
+
+      // 扫描常见的新手引导/公告关闭按钮特征
+      const dismissKeywords = ['skip', 'close', 'dismiss', 'got it', '跳过', '关闭', '我知道了'];
+      const buttons = await page.$$('button, a, [role="button"], .close, .skip, [class*="close"], [class*="skip"]');
+      let cleared = false;
+      for (const btn of buttons) {
+        const isVis = await btn.isVisible().catch(() => false);
+        if (!isVis) continue;
+        const text = (await btn.textContent().catch(() => '') || '').toLowerCase().trim();
+        if (dismissKeywords.some(k => text.includes(k))) {
+          console.log(`[menu-explorer] 发现并点击疑似引导/弹窗关闭按钮: "${text}"`);
+          await btn.click({ timeout: 1000 }).catch(() => {});
+          cleared = true;
+          await page.waitForTimeout(300);
+        }
+      }
+      if (cleared) {
+        console.log('[menu-explorer] 引导弹窗清理完毕，等待 DOM 稳定');
+        await page.waitForTimeout(500);
+      }
+    } catch (e) {
+      console.warn('[menu-explorer] 自动清场过程出错 (非致命):', e);
+    }
+    // ----------------------------------------------------------------------
+
     const state: ExploreState = {
       clicked: 0,
       actionsByKey: new Map(),
@@ -621,7 +669,18 @@ export async function exploreViaMenus(
       allItems: new Map(),
     };
 
-    const topItems = await collectNavAll(page);
+    console.log('[menu-explorer] 等待页面初始渲染...');
+    await waitSettled(page, cfg.settleMs * 2);
+
+    let topItems = await collectNavAll(page);
+    
+    // 如果一次没抽到，可能是还没渲染完，再等等试试
+    if (topItems.length === 0) {
+      console.log('[menu-explorer] 未抽到导航，额外等待 3s...');
+      await page.waitForTimeout(3000);
+      topItems = await collectNavAll(page);
+    }
+
     for (const it of topItems) state.allItems.set(it.selector, it);
 
     await exploreNavTree(page, topItems, cfg, ctx, state, 0, startUrl);
