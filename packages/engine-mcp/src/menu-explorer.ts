@@ -141,7 +141,7 @@ const COLLECT_NAV_FN = `((args) => {
         var leaf = html.querySelector('a, span, [class*="title"], [class*="label"], [class*="text"]');
         t = (leaf ? (leaf.textContent || '') : '').replace(/\\s+/g, ' ').trim();
       }
-      if (!t) t = (html.textContent || '').replace(/\\s+/g, ' ').trim().replace(/\s*\d+\s*$/, '').trim();
+      if (!t) t = (html.textContent || '').replace(/\\s+/g, ' ').trim().replace(/\\s*\\d+\\s*\$/, '').trim();
       if (t.length > 50) t = t.substring(0, 47) + '...';
       return t;
     };
