@@ -250,8 +250,9 @@ export function Workbench() {
   const isLoggedIn = system.loginStatus === "logged_in";
   const hasValidSession = () => {
     if (system.credentialMode === 'no-login' || system.loginMode === 'no-login') return true;
-    const cookies = system.sessionState?.cookies;
-    return !!(cookies && cookies.length > 0);
+    // 已登录即视为会话有效：后端复用活浏览器 / storageState 做权威校验，
+    // 不再以前端 cookie 快照为空误判失效（兼容 OA 等 Token/SPA 形态）。
+    return system.loginStatus === 'logged_in';
   };
   const hasFeature = featureConfirmed;
   const execDone = execModules.length > 0 && execModules.every((m) => !m.pending && m.pass !== undefined);

@@ -84,45 +84,6 @@ export function getSpaRouteProbeScript(): string {
         }
       }
     } catch (e) {}
-    try {
-      // Angular Router 降级探测：通过 DOM 中的 routerLink 收集路由表（很多 Angular 生产环境会剥离全局变量，这是最稳妥的启发式提取）
-      const ngLinks = Array.from(document.querySelectorAll('[routerLink], [routerlink], [ng-reflect-router-link]'));
-      for (const link of ngLinks) {
-        const path = link.getAttribute('routerLink') || link.getAttribute('routerlink') || link.getAttribute('ng-reflect-router-link');
-        if (path && typeof path === 'string' && path !== '*' && path !== '/') {
-          const title = link.textContent.trim().slice(0, 50) || path;
-          discovered.push({ path, title, type: 'angular_router' });
-        }
-      }
-    } catch (e) {}
-    try {
-      // React Router v4/v5 Fiber 探测：遍历 React 根节点的 Fiber 树寻找路由配置对象
-      const reactRoot = document.querySelector('#root') || document.querySelector('#app') || document.body;
-      const fiberKey = Object.keys(reactRoot).find(k => k.startsWith('__reactContainer$') || k.startsWith('__reactRoot$'));
-      if (fiberKey) {
-        const queue = [reactRoot[fiberKey]];
-        while (queue.length > 0 && queue.length < 1000) {
-          const curr = queue.shift();
-          if (!curr) continue;
-          if (curr.memoizedProps && Array.isArray(curr.memoizedProps.routes)) {
-            const flatten = (routes, parentPath) => {
-              for (const r of routes) {
-                const full = (parentPath + '/' + (r.path || '')).replace(/\\/\\/+/g, '/');
-                if (full && full !== '*' && full !== '/') {
-                  discovered.push({ path: full, title: (r.title || r.name || full), type: 'react_fiber_router' });
-                }
-                if (Array.isArray(r.children)) flatten(r.children, full);
-                if (Array.isArray(r.routes)) flatten(r.routes, full);
-              }
-            };
-            flatten(curr.memoizedProps.routes, '');
-            break; // 找到顶层路由表即可退出遍历
-          }
-          if (curr.child) queue.push(curr.child);
-          if (curr.sibling) queue.push(curr.sibling);
-        }
-      }
-    } catch (e) {}
     return discovered;
   })()
   `;
@@ -168,27 +129,16 @@ export async function extractRoutesRuntime(
 /** 从单段 JS 源码静态正则提取路由定义（参考项目 extractRoutesFromJavascriptCode 思路，含 :param） */
 function collectJsRoutes(jsCode: string, out: RawRoute[], seen: Set<string>): void {
   if (!jsCode || jsCode.length < 50) return;
-  // 优化正则：允许 path 和 title/name 之间存在其他属性（如 component, icon 等），最大跨度 300 字符，中间不能包含嵌套的闭合括号 }
-  // 注意：JavaScript 混淆后属性顺序不可控，所以采取两步法匹配大括号块，或者使用更宽容的非贪婪匹配
-  
-  // 匹配形如 {...} 的路由配置块（只要里面包含 path: "..." 即可提取）
-  const blockRe = /\{[^{}]*?(?:path|routePath)\s*:\s*['"]([^'"]+)['"][^{}]*?\}/g;
+  const re =
+    /(?:path|routePath)\s*:\s*['"]([^'"]+)['"]\s*,\s*(?:name|title|meta\s*:\s*\{\s*title)\s*:\s*['"]([^'"]+)['"]/g;
   let m: RegExpExecArray | null;
-  while ((m = blockRe.exec(jsCode)) !== null) {
-    const block = m[0];
+  while ((m = re.exec(jsCode)) !== null) {
     const path = m[1];
-    
-    // 在这个块内，寻找 name 或 title（包括 meta 里的 title）
-    const titleRe = /(?:name|title|meta\s*:\s*\{\s*title)\s*:\s*['"]([^'"]+)['"]/;
-    const tm = titleRe.exec(block);
-    const title = tm ? tm[1] : path.split('/').pop() || path; // 如果实在没提取到标题，用 path 末段兜底
-    
-    if (!path || path === '*' || path === '/') continue;
-    
+    const title = m[2];
+    if (!path || !title) continue;
     const norm = path.startsWith('/') ? path : '/' + path;
     if (seen.has(norm)) continue;
     seen.add(norm);
-    
     out.push({
       path: norm,
       title: title.trim().slice(0, 60),
@@ -274,11 +224,12 @@ const normalizePath = (p: string): string =>
   (p.startsWith('/') ? p : '/' + p).replace(/\/+$/, '');
 
 /**
- * 将逆向出的路由映射为 ModuleNode 树（module → page → action 层级）。
+ * 将逆向出的路由映射为 ModuleNode 树（module → page 层级，**不含 action**）。
  * - 非参数路由：按路径段构建 module/page 层级，page.url 补全 origin，运行时来源标 covered，
  *   静态来源标 needs_review 并注明「降级自运行时探测」。
- * - 参数路由（/user/edit/:id）：作为父列表页的 action 子节点（needs_review），
- *   说明「动态参数路由无法实导航验证，需人工确认对应编辑/详情功能」。
+ * - 参数路由（/user/edit/:id）：作为父页面下的「子页面」节点（needs_review），
+ *   说明「动态参数路由无法实导航验证，需人工确认」——动作级功能点不在本阶段产出
+ *   （边界裁定 2026-09-20：第一次探索只到菜单子目录/功能页，动作级归用例阶段详细探索）。
  */
 export function routesToModuleNodes(
   routes: RawRoute[],
@@ -349,7 +300,10 @@ export function routesToModuleNodes(
     }
   }
 
-  // 2) 参数路由 → 父列表页的 action 子节点（needs_review）
+  // 2) 参数路由 → 父页面的「子页面」节点（needs_review）
+  // 边界（用户裁定 2026-09-18 / 09-20 重申）：第一次探索只到「菜单子目录/功能页」粒度，
+  // **不产出动作级（action）功能点**。参数路由（/user/edit/:id）本质仍是"页面"，
+  // 只是缺具体 id 无法实导航，故按 page 落树并标 needs_review，动作级探索由用例阶段负责。
   for (const r of routes.filter((x) => x.hasParam)) {
     const path = normalizePath(r.path);
     const segs = path.split('/').filter(Boolean);
@@ -366,23 +320,23 @@ export function routesToModuleNodes(
       parentPath = '/' + pSegs.slice(0, -1).join('/');
     }
     const parentPage = nodeByPath.get(parentPath);
-    const actionLabel = deriveParamActionLabel(r.title, path);
-    const actionNode: ModuleNode = {
-      id: `rt_act_${subsystemId}_${path}`,
-      label: actionLabel,
+    const paramPageLabel = deriveParamActionLabel(r.title, path);
+    const paramPage: ModuleNode = {
+      id: `rt_page_${subsystemId}_${path}`,
+      label: paramPageLabel,
       parentId: parentPage ? parentPage.id : null,
       subsystemId,
-      type: 'action',
+      type: 'page',
       status: 'needs_review',
       children: [],
       depth: parentPage ? parentPage.depth + 1 : 1,
       url: origin + path,
       reviewReason:
-        `动态参数路由（${path}）无法实导航验证（缺少具体 id 参数），故作为「${actionLabel}」功能点挂于父页面并标记待确认；` +
-        `该路由定义来自前端产物（不受 RBAC 裁剪），低权限账号亦可发现，但需人工确认对应编辑/详情功能`,
+        `动态参数路由（${path}）无法实导航验证（缺少具体 id 参数），作为「${paramPageLabel}」页面挂于父页面并标记待确认；` +
+        `该路由定义来自前端产物（不受 RBAC 裁剪），低权限账号亦可发现；页面内的具体操作（新增/修改/查询等）由用例阶段详细探索负责`,
     };
     if (parentPage) {
-      parentPage.children.push(actionNode);
+      parentPage.children.push(paramPage);
     } else {
       const parentNode = ensureNode(parentPath || '/', 'page', 0);
       if (!parentNode.label) {
@@ -390,9 +344,9 @@ export function routesToModuleNodes(
       }
       parentNode.status = 'needs_review';
       parentNode.reviewReason = `降级来源：仅发现其子路由（${path}）为动态参数路由，父页面未在路由树/菜单中直接注册，需人工确认`;
-      parentNode.children.push(actionNode);
-      actionNode.parentId = parentNode.id;
-      actionNode.depth = parentNode.depth + 1;
+      parentNode.children.push(paramPage);
+      paramPage.parentId = parentNode.id;
+      paramPage.depth = parentNode.depth + 1;
     }
   }
 

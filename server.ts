@@ -802,6 +802,11 @@ async function startServer() {
     }
   });
 
+  // 避免浏览器自动请求 /favicon.ico 产生 404 控制台报错（非功能性，仅消除噪音）
+  app.get('/favicon.ico', (_req: Request, res: Response) => {
+    res.status(204).end();
+  });
+
   // ===== 前端静态资源与 Vite 中间件 =====
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

@@ -1461,8 +1461,19 @@ export function useApp() {
         const out = await svc.runStageLogin(input ?? {});
         if (!isActiveSystem(identity)) return null;
         dispatch({ type: "SET_LOGIN_STATUS", id: identity.systemId, status: out.loginStatus === 'ok' ? 'logged_in' as const : 'logged_out' as const });
-        if (out.loginStatus === 'ok' && out.cookies && out.cookies.length > 0) {
-          const sessionState = { cookies: out.cookies, headers: out.sessionHandle?.headers, tokens: out.sessionHandle?.tokens };
+        // 根因修复：只要登录成功即记录会话状态，不再以 cookies 非空为前置条件。
+        // OA 等 Token/SPA 形态登录态常落在 localStorage（tokens）而非 document.cookie，
+        // cookies/tokens/headers 任一非空即视为有效会话，避免「已登录却报会话失效」。
+        if (out.loginStatus === 'ok') {
+          const sessionState = {
+            cookies: out.cookies ?? [],
+            headers: out.sessionHandle?.headers ?? {},
+            tokens: out.sessionHandle?.tokens ?? [],
+          };
+          const hasSessionMaterial =
+            sessionState.cookies.length > 0 ||
+            sessionState.tokens.length > 0 ||
+            Object.keys(sessionState.headers).length > 0;
           dispatch({ type: "SET_SESSION_STATE", id: identity.systemId, sessionState });
           try {
             // 登录后浏览器所在的应用页 URL 一并持久化为 capturedUrl：
@@ -1480,9 +1491,10 @@ export function useApp() {
           } catch (persistErr) {
             console.warn('Failed to persist session state:', persistErr);
           }
-        } else if (out.loginStatus === 'ok' && state.system.credentialMode !== 'no-login') {
-          console.warn('[pipeline] Login succeeded but no valid cookies captured');
-          showToast("警告：登录成功但未获取到有效会话，探索功能可能需要重新登录");
+          if (!hasSessionMaterial && state.system.credentialMode !== 'no-login') {
+            // 仅告警，不阻断：后端将复用活浏览器 / storageState 做权威校验
+            console.warn('[pipeline] Login succeeded but no cookies/tokens/headers captured');
+          }
         }
         if (!isActiveSystem(identity)) return null;
         dispatch({ type: "ADD_ACTIVITY", item: { id: "p-" + Date.now(), time: new Date().toLocaleTimeString(), text: `登录完成: ${out.loginStatus}${out.sessionHandle?.detectionReason ? ` - ${out.sessionHandle.detectionReason}` : ''}` } });

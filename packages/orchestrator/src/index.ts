@@ -480,11 +480,36 @@ export class PipelineOrchestrator {
 
     // 子模块名索引：供「先进入子模块页再找页面内按钮」的二级定位（从入口按路径进入，不直接打开 URL）
     const subModuleNameById = new Map<string, string>();
+    // 主模块名索引（一级目录）：RuoYi 等 SPA 的子菜单在父菜单未展开时不可见，
+    // 必须先点击主模块展开，否则按子模块名点击必然落空。
+    const mainModuleNameById = new Map<string, string>();
     for (const r of featureTable.flat()) {
       const id = r[FC.testPointId] ?? '';
       const sub = (r[FC.subModule] ?? '').trim();
+      const main = (r[FC.mainModule] ?? '').trim();
       if (id && sub) subModuleNameById.set(id, sub);
+      if (id && main) mainModuleNameById.set(id, main);
     }
+    // 判断某个名称在当前页面是否存在「可见」的可点击元素（用于避免重复展开/误收起父菜单）
+    const isNodeVisible = async (query: string): Promise<boolean> => {
+      if (!query || typeof engine.evaluate !== 'function') return false;
+      try {
+        const r = await engine.evaluate<{ visible: boolean }>(`(args) => {
+          const norm = (v) => (v || '').replace(/\\s+/g, ' ').trim();
+          const q = norm(args.name);
+          if (!q) return { visible: false };
+          for (const el of Array.from(document.querySelectorAll('a, button, li'))) {
+            if (el.offsetParent === null) continue;
+            const t = norm(el.textContent);
+            if (t === q || t.includes(q) || (q.includes(t) && t.length >= 2)) return { visible: true };
+          }
+          return { visible: false };
+        }`, { name: query });
+        return r?.visible === true;
+      } catch {
+        return false;
+      }
+    };
     // 从功能名/测试点提取核心名词（如「新增用户」→「用户」、「查询角色列表」→「角色」），
     // 供多级菜单进入：父菜单展开后按名词点击匹配的子页面菜单（RuoYi 等「父菜单→子页面→按钮」层级）。
     const extractNoun = (text: string): string | undefined => {
@@ -536,11 +561,10 @@ export class PipelineOrchestrator {
           const queryName = norm(name);
           if (!queryName) return { clicked: false, reason: '空文本' };
           if (DANGEROUS.test(queryName)) return { clicked: false, reason: '危险动作文本，只读探索不点击: ' + queryName.slice(0, 20) };
-          const iter = document.evaluate("//*[contains(text(), '" + queryName + "')]", document.body, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+          const iter = Array.from(document.querySelectorAll('a, button, li'));
           let best = null;
           let bestScore = 0;
-          for (let i = 0; i < iter.snapshotLength; i++) {
-            const el = iter.snapshotItem(i);
+          for (const el of iter) {
             if (!el || el.offsetParent === null) continue;
             const t = norm(el.textContent);
             if (!t || t.length < 1 || t.length > 60) continue;
@@ -579,6 +603,7 @@ export class PipelineOrchestrator {
     for (const [featureId, featureTargets] of targetsByFeature) {
       const sorted = featureTargets.slice().sort((a, b) => b.name.length - a.name.length);
       const subModuleName = subModuleNameById.get(featureId);
+      const mainModuleName = mainModuleNameById.get(featureId);
       // 只在离开入口时回入口一次；同文档（SPA hash 路由）不 reload，避免首页无限刷新
       try {
         if (baseUrl && isSafeNavigationUrl(baseUrl)) {
@@ -601,7 +626,18 @@ export class PipelineOrchestrator {
         const name = targetInfo.name;
         try {
         let target = findTargetInDom(await engine.extractSemanticDom().catch(() => [] as SemanticNode[]), name);
-        // 二级：入口页找不到功能名时，先按子模块名进入页面，再找页面内按钮（支持 RuoYi 等「页面内新增/查询」，
+        // 按「主模块(一级目录) → 子模块(二级目录) → 页面内功能按钮」逐级进入（spec §6.3）。
+        // RuoYi 等 SPA 的子菜单在父菜单未展开时不可见（offsetParent === null），
+        // 必须先展开主模块，否则按子模块名点击必然落空。已展开时不再点击，避免误收起。
+        if (!target && mainModuleName) {
+          const alreadyOpen = await isNodeVisible(subModuleName || name);
+          if (!alreadyOpen) {
+            await clickNodeByName(mainModuleName);
+            await engine.waitForTimeout(500);
+            target = findTargetInDom(await engine.extractSemanticDom().catch(() => [] as SemanticNode[]), name);
+          }
+        }
+        // 二级：主模块展开后，按子模块名进入页面，再找页面内按钮（支持 RuoYi 等「页面内新增/查询」，
         // 从入口按路径进入而非直接打开目标 URL，避免落在登录页/首页）。
         if (!target && subModuleName) {
           const entered = await clickNodeByName(subModuleName);
@@ -621,7 +657,27 @@ export class PipelineOrchestrator {
             }
           }
         }
-        if (!target) continue;
+        if (!target) {
+          // 不得静默跳过：未定位到入口必须落 needs_review 并写明具体原因（spec §13）
+          evidence[featureId] = {
+            featureId,
+            ...(systemId ? { systemId } : {}),
+            ...(featureRevision ? { featureRevision } : {}),
+            pageEntry: baseUrl,
+            actionKind: targetInfo.actionKind ?? 'other',
+            states: [],
+            fields: [],
+            tables: [],
+            actionEntries: [],
+            containers: [],
+            evidenceLevel: 'needs_review',
+            coverageKeys: [],
+            needsReview: true,
+            reviewReason: `未定位到功能点入口：主模块「${mainModuleName ?? '无'}」→ 子模块「${subModuleName ?? '无'}」→ 功能「${name}」逐级进入后仍无可见可点击入口`,
+            uncovered: [{ kind: 'no_safe_sample', reason: `entry_not_found: ${name}` }],
+          };
+          continue;
+        }
         const matchedTarget = target;
         if (!engine.runReadOnlyClick) {
           this.logger.warn('orchestrator', `case: click-by-name skipped for "${name}"; engine lacks read-only click capability`);
@@ -1232,6 +1288,10 @@ export class PipelineOrchestrator {
         if (takeoverEngine) {
           this.logger.info('orchestrator', `runStage: explore reusing login browser for ${systemId}`);
           engine = takeoverEngine;
+          // 复用接管浏览器时顺手持久化 storageState：人工接管（验证码）登录成功不回传 ok 的场景
+          // 否则永远没有 storageState 落盘（OA 实测：storage_states/sessions 均无记录），
+          // 导致接管浏览器一过期就必须重新人工登录、且无法离线复现会话。
+          await this.persistStorageStateFromEngine(systemId);
           // 登录浏览器已带活跃会话：engineHasActiveSession=true 使 stage-explore
           // 跳过 ensureSession/applySession（旧会话快照注入会覆盖浏览器内最新有效会话导致登出）
           const output = await stageExplore.run(finalInput as ExploreInput, engine, {
@@ -1265,22 +1325,39 @@ export class PipelineOrchestrator {
             finalInput = { ...rawInput, sessionHandle: { ...(rawInput.sessionHandle ?? {}), systemId } };
           } else {
             // 兜底：cookie-only applySession（旧路径，SPA 可能判定未登录）
+            // 关键：前端传入的 sessionHandle 可能是「空壳」——OA/SPA 的登录态未暴露在
+            // document.cookie 时，前端仅知道「已登录」而无任何凭证内容。此时注入空壳是
+            // 假成功：applySession 什么也不写入，探索会静默落在登录页。故凭证为空时必须
+            // 回退到后端 store 的真实会话快照（登录成功时由 saveSession 落盘）。
             let sessionToUse: SessionHandle | undefined;
-            if (rawInput.sessionHandle && rawInput.sessionHandle.expiresAt > Date.now()) {
-              sessionToUse = rawInput.sessionHandle as SessionHandle;
-            } else if (rawInput.systemId) {
-              const stored = await this.tryReuseSession(rawInput.systemId);
-              if (stored) sessionToUse = stored;
+            const incoming = rawInput.sessionHandle as SessionHandle | undefined;
+            const hasSessionMaterial = (s?: SessionHandle): boolean =>
+              !!s &&
+              ((s.cookies?.length ?? 0) > 0 ||
+                (s.tokens?.length ?? 0) > 0 ||
+                Object.keys(s.headers ?? {}).length > 0);
+            if (incoming && hasSessionMaterial(incoming) && incoming.expiresAt > Date.now()) {
+              sessionToUse = incoming;
+            } else {
+              if (incoming && !hasSessionMaterial(incoming)) {
+                this.logger.warn('orchestrator', `runStage: explore incoming sessionHandle is empty-shell, falling back to stored session for ${systemId}`);
+              }
+              if (rawInput.systemId) {
+                const stored = await this.tryReuseSession(rawInput.systemId);
+                if (stored) sessionToUse = stored;
+              }
             }
             if (sessionToUse) {
               if (rawInput.systemUrl) await engine.navigate(rawInput.systemUrl);
               await engine.applySession({
-                cookies: sessionToUse.cookies,
+                cookies: sessionToUse.cookies ?? [],
                 headers: sessionToUse.headers,
                 tokens: sessionToUse.tokens,
               });
               this.logger.info('orchestrator', `runStage: explore session applied for ${sessionToUse.systemId}`);
               finalInput = { ...rawInput, sessionHandle: sessionToUse };
+            } else {
+              this.logger.warn('orchestrator', `runStage: explore has no restorable session for ${systemId}, exploration may hit login page`);
             }
           }
         } catch (e) {

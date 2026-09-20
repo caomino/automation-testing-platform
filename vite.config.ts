@@ -7,6 +7,11 @@ export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
     resolve: {
+      // React 单实例（关键）：根入口 src/main.tsx 解析到根 node_modules/react(19)，
+      // 而 packages/app 自带 node_modules/react(18) → 两套 React 同时进包，
+      // 运行时报 Minified React error #525（渲染了另一份 React 的 Element）→ 整页空白。
+      // dedupe 强制统一解析到单一副本，避免重复实例。
+      dedupe: ['react', 'react-dom', 'react/jsx-runtime', 'react-dom/client'],
       alias: {
         '@': path.resolve(__dirname, '.'),
         '@test-platform/contracts': path.resolve(__dirname, 'packages/contracts/src/index.ts'),

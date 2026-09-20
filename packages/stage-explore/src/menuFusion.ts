@@ -24,7 +24,8 @@ import {
   type DegradationNote,
   type RawRoute,
 } from './routeTreeExplorer.js';
-import { extractPageActions } from './pageActionExplorer.js';
+// 注：pageActionExplorer.extractPageActions 已按「探索/用例阶段边界」停止在探索阶段调用
+//（动作级探索移交用例阶段），模块保留供用例阶段与单测复用。
 
 /** 安全取当前 URL（兼容 stub：取不到返回空） */
 async function safeGetCurrentUrl(engine: McpEngine): Promise<string> {
@@ -204,38 +205,22 @@ export async function buildModuleTreeViaDegradation(
     tree = [];
   }
 
-  // —— P3/P4 逐页面采集「具体功能点（添加/修改/列表/删除/导出/导入…）」 —— //
-  // 不依赖引擎菜单遍历是否降级：直接对每页实导航 + engine.evaluate 抽 in-page 按钮，
-  // 用完整动作词表转为 type:'action' 子节点挂到 page 下；引擎已给足功能点的页跳过，避免重复下潜。
-  const allPages: ModuleNode[] = [];
-  const collectPages = (nodes: ModuleNode[]): void => {
-    for (const n of nodes) {
-      if (n.type === 'page') allPages.push(n);
-      if (n.children.length) collectPages(n.children);
-    }
-  };
-  collectPages(tree);
+  // —— P3/P4 动作级功能点采集：按设计边界移交「生成测试用例」阶段 —— //
+  // 边界（用户裁定 2026-09-18）：第一次探索（本管线）颗粒度只到「菜单子目录/功能页」，
+  // **不进入页面采集按钮级功能点**；按钮级「非常详细」的探索由用例阶段
+  // （orchestrator.featureEvidenceExplorer，按 featurePaths 逐页导航 + 只读点击）负责。
+  // 因此此处不再对每页实导航抽 in-page 按钮（原先 P3/P4 的行为），仅保留页面级 URL 采集。
+  degradations.push({
+    level: 'P3/P4',
+    from: '逐页面采集动作级功能点（新增/修改/查询…）',
+    to: '移交用例阶段详细探索',
+    reason:
+      '按设计边界：第一次探索只到菜单子目录/功能页粒度，不点击页面内具体按钮；' +
+      '动作级功能点由生成测试用例阶段的按功能点隔离证据采集（featureEvidenceExplorer）负责',
+  });
 
-  const cap = Math.min(allPages.length, 60);
-  let explored = 0;
-  for (let i = 0; i < cap; i++) {
-    const page = allPages[i];
-    const existing = page.children.filter((c) => c.type === 'action');
-    if (existing.length >= 3) continue; // 引擎已给足，跳过去重下潜
-    const actions = await extractPageActions(engine, page, subsystemId);
-    const seen = new Set(existing.map((c) => `${c.type}:${c.label}`));
-    for (const a of actions) {
-      const key = `${a.type}:${a.label}`;
-      if (!seen.has(key)) {
-        a.parentId = page.id;
-        page.children.push(a);
-        seen.add(key);
-      }
-    }
-    explored++;
-  }
-  // 验证后恢复起点（避免把浏览器留在末页）
-  if (baseUrl && explored > 0) {
+  // 恢复起点（避免把浏览器留在末页）
+  if (baseUrl) {
     try {
       await engine.navigate(baseUrl);
     } catch {

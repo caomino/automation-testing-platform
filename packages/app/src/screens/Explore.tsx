@@ -163,14 +163,11 @@ export function Explore() {
       toast("请先登录系统");
       return;
     }
-    // 第一优先级：检查会话有效性
-    const isNoLoginMode = system.credentialMode === 'no-login' || system.loginMode === 'no-login';
+    // 会话有效性以「已登录」为主判据：登录后浏览器保持打开，探索阶段由后端复用
+    // 活浏览器 / 持久化 storageState 做权威校验（落在登录页时后端返回会话失效并优雅兜底）。
+    // 不再以前端 sessionState.cookies 为空就误判失效——OA 等 SPA/Token 形态的登录态
+    // 常落在 localStorage 而非 document.cookie，但活浏览器仍持有有效会话。
     const cookies = system.sessionState?.cookies;
-    const hasValidCookies = cookies && cookies.length > 0;
-    if (!isNoLoginMode && !hasValidCookies) {
-      toast("登录会话失效，请返回工作台重新登录");
-      return;
-    }
     const sessionHandle = {
       sessionId: system.id,
       systemId: system.id,

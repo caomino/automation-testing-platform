@@ -98,7 +98,9 @@ function assembleFeatureRows(
     const expected = refined?.expected ?? c.expected;
     return {
       caseNo: item.featureId,
-      content: item.featureName || item.testPoint, // 功能点作为用例表的测试点
+      // 文档 §字段映射（核心）：功能点表「测试点」→ 用例「测试内容」。
+      // 质量闸门会校验 content == targetTestPoint，不一致将判为阻断级"缺证据"。
+      content: item.testPoint || item.featureName,
       step: c.step,
       operation,
       expected,

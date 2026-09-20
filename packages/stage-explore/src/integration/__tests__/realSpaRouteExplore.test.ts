@@ -266,35 +266,40 @@ describe('真实 SPA 路由逆向（P1a 运行时探测）精准度', () => {
     expect(flat).toContain('新增角色');
     expect(flat).toContain('文章管理');
     expect(flat).toContain('新增文章');
-    // 页面级（非 action）标签应唯一，避免结构重复；action 标签（如「编辑」）在不同父页下重复属正常
-    const pageLabels = flatNodes.filter((n) => n.type === 'page').map((n) => n.label);
-    expect(new Set(pageLabels).size).toBe(pageLabels.length);
+    // 去重判据用「页面 URL 唯一」：同名子页（不同父页下的「编辑」）属正常，
+    // 结构性重复（同一路由被收两次）才是要防的（边界 2026-09-20：参数路由按 page 落树）
+    const pageUrls = flatNodes.filter((n) => n.type === 'page' && n.url).map((n) => n.url);
+    expect(new Set(pageUrls).size).toBe(pageUrls.length);
+    // 树中不得出现 action 级功能点（第一次探索只到菜单子目录/功能页粒度）
+    expect(flatNodes.some((n) => n.type === 'action')).toBe(false);
   });
 
-  it(':param 编辑路由作为「编辑」action 挂在父列表页下，标 needs_review 且说明降级原因', async () => {
+  it(':param 编辑路由作为「编辑」子页面挂在父列表页下，标 needs_review 且说明降级原因（不产出 action）', async () => {
     const { engine } = makeEngine({ startUrl: ORIGIN + '/sys/user' });
     const tree = await exploreNonAi(engine, { subsystemId: 'sys1', startUrl: ORIGIN + '/sys/user' });
     const userPage = flatten(tree).find((n) => n.label === '用户管理');
     expect(userPage).toBeDefined();
-    // 编辑 action 必须是「用户管理」的直接子节点（挂在列表页，而非凭空生成 phantom 父页）
-    const editAction = userPage!.children.find((c) => c.type === 'action' && c.label === '编辑');
-    expect(editAction).toBeDefined();
-    expect(editAction!.parentId).toBe(userPage!.id);
-    expect(editAction!.status).toBe('needs_review');
-    expect(editAction!.reviewReason).toMatch(/动态参数路由/);
+    // 编辑页必须是「用户管理」的直接子节点（挂在列表页，而非凭空生成 phantom 父页）
+    const editPage = userPage!.children.find((c) => c.label === '编辑');
+    expect(editPage).toBeDefined();
+    // 边界（2026-09-20）：第一次探索不产出 action —— 参数路由按「子页面」落树
+    expect(editPage!.type).toBe('page');
+    expect(editPage!.parentId).toBe(userPage!.id);
+    expect(editPage!.status).toBe('needs_review');
+    expect(editPage!.reviewReason).toMatch(/动态参数路由/);
 
     const rolePage = flatten(tree).find((n) => n.label === '角色管理');
-    const roleEdit = rolePage!.children.find((c) => c.type === 'action' && c.label === '编辑');
+    const roleEdit = rolePage!.children.find((c) => c.label === '编辑');
     expect(roleEdit).toBeDefined();
 
-    // 文章管理【没有】编辑路由 → 绝不应出现「编辑」action（证明不误报）
+    // 文章管理【没有】编辑路由 → 绝不应出现「编辑」节点（证明不误报）
     const articlePage = flatten(tree).find((n) => n.label === '文章管理');
     expect(
-      articlePage!.children.some((c) => c.type === 'action' && c.label === '编辑'),
+      articlePage!.children.some((c) => c.label === '编辑'),
     ).toBe(false);
   });
 
-  it('P3/P4 实导航后采集的真实功能点并入页面（新增/删除），由 inject 按钮驱动', async () => {
+  it('边界裁定（2026-09-20）：P3/P4 动作级采集已移除 —— 注入的页面按钮不再变成 action 节点', async () => {
     const { engine } = makeEngine({
       startUrl: ORIGIN + '/sys/user',
       actionButtons: [
@@ -303,11 +308,13 @@ describe('真实 SPA 路由逆向（P1a 运行时探测）精准度', () => {
       ],
     });
     const tree = await exploreNonAi(engine, { subsystemId: 'sys1', startUrl: ORIGIN + '/sys/user' });
-    const createPage = flatten(tree).find((n) => n.label === '新增用户');
-    const labels = createPage!.children.map((c) => c.label);
-    expect(labels).toEqual(expect.arrayContaining(['新增', '删除']));
-    // 实采功能点标 covered（非推断的 needs_review）
-    expect(createPage!.children.some((c) => c.label === '新增' && c.status === 'covered')).toBe(true);
+    const all = flatten(tree);
+    // 第一次探索只到菜单子目录/功能页粒度：树中不得出现 action 级功能点
+    expect(all.some((n) => n.type === 'action')).toBe(false);
+    const createPage = all.find((n) => n.label === '新增用户');
+    expect(createPage).toBeDefined();
+    expect(createPage!.type).toBe('page');
+    expect(createPage!.children).toHaveLength(0);
   });
 
   it('降级原因对运行时可见：P5（后端 API 嗅探显式跳过 + 无权限主源说明）始终记录', async () => {

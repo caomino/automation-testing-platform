@@ -6,7 +6,8 @@
  *   - 不依赖引擎菜单遍历是否降级，直接用 engine.evaluate 在浏览器内抽取「页面内真实按钮」；
  *   - 用完整动作词表把按钮文字归类为 create/update/delete/query/export/import/detail/batch_delete/auth；
  *   - 转为 ModuleNode(type:'action') 挂在对应 page 节点下，实现「精确到具体功能」；
- *   - DOM 实采为空、且标题像 CRUD 模块时，按标题推断一组功能点并标 needs_review（诚实、不造假）。
+ *   - DOM 实采为空时诚实留空（2026-09-17 用户裁定：不再按标题推断 CRUD 假功能点），
+ *     由颗粒度闸门标 needs_review；inferActionsFromTitle 保留仅供显式调用方/单测使用。
  *
  * 红线：不 import engine-mcp 内部；只用 engine 公共方法（evaluate/navigate）；不改 contracts。
  */
@@ -114,7 +115,7 @@ const CRUD_NOUNS = [
 /**
  * 抽取单个页面的「具体功能点」：
  *   1) 导航到页面 → engine.evaluate 抽 in-page 按钮 → 按动作词表分类成 action 节点；
- *   2) 实采为空且标题像 CRUD 模块 → 按标题推断一组功能点并标 needs_review。
+ *   2) 实采为空时返回空数组（默认不生成推断型功能点，由调用方按 needs_review 标注）。
  * 失败（导航/脚本异常）时返回空数组，由调用方决定兜底。
  */
 export async function extractPageActions(
@@ -122,12 +123,14 @@ export async function extractPageActions(
   page: { id: string; url?: string; label: string; depth: number; children: ModuleNode[] },
   subsystemId: string,
 ): Promise<ModuleNode[]> {
-  if (!page.url) return inferActionsFromTitle(page, subsystemId);
+  // 2026-09-17 用户裁定：默认不再按标题推断 CRUD 功能点（污染树）。
+  // 实采不到就诚实留空，由颗粒度闸门标 needs_review；inferActionsFromTitle 仅保留给显式调用方。
+  if (!page.url) return [];
   try {
     await engine.navigate(page.url);
     await engine.waitForTimeout?.(500);
   } catch {
-    return inferActionsFromTitle(page, subsystemId);
+    return [];
   }
 
   let raw: RawAction[] = [];
@@ -164,7 +167,8 @@ export async function extractPageActions(
   }
 
   if (actions.length > 0) return actions;
-  return inferActionsFromTitle(page, subsystemId);
+  // 实采为空：默认不生成推断型功能点（诚实留空，颗粒度闸门会标 needs_review）
+  return [];
 }
 
 /**

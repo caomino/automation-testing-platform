@@ -67,7 +67,7 @@ const CONTROLS: PageControl[] = [
 ];
 
 describe('exploreViaMenus（结构化）', () => {
-  it('产出模块树 + 正确父子 + 功能点挂载 + 回到起点（顶层=模块，不包 system 根）', async () => {
+  it('产出模块树 + 正确父子 + 页面 URL 采集 + 回到起点（顶层=模块，不包 system 根）', async () => {
     const { page, state } = makeFakePage(NAV, CONTROLS, true, 'https://demo.test/home');
     const tree = await exploreViaMenus(page, { subsystemId: 'sys1', systemId: 'SYS' });
 
@@ -84,10 +84,10 @@ describe('exploreViaMenus（结构化）', () => {
     const userLeaf = sysMod.children.find((c) => c.label === '用户管理')!;
     expect(userLeaf.type).toBe('page');
     expect(userLeaf.parentId).toBe(sysMod.id);
-    // 功能点已挂载为 action 子节点
-    const actionLabels = userLeaf.children.map((c) => c.label);
-    expect(actionLabels).toEqual(expect.arrayContaining(['列表', '新增', '修改', '删除', '查询']));
-    expect(userLeaf.children.every((c) => c.type === 'action' && c.parentId === userLeaf.id)).toBe(true);
+    // 边界（2026-09-18）：第一次探索只到菜单子目录/功能页，不采集动作级功能点
+    expect(userLeaf.children).toHaveLength(0);
+    // 但必须拿到真实落地 URL（供用例阶段按路径精准导航）
+    expect(userLeaf.url).toContain('#user');
 
     // 三个叶子均被点击
     expect(state.clicks).toEqual(expect.arrayContaining(['#user', '#role', '#report']));
@@ -122,7 +122,7 @@ describe('危险词黑名单收敛（P-A#3）', () => {
     const { page, state } = makeFakePage(NAV_WITH_BIZ, CONTROLS, true, 'https://demo.test/home');
     const tree = await exploreViaMenus(page, { subsystemId: 'sys1', systemId: 'SYS' });
 
-    // 业务功能页必须被点击并采集到 action 级功能点（这是用户要求的核心颗粒度）
+    // 业务功能页必须被点击进入（页面级探索）
     expect(state.clicks).toEqual(expect.arrayContaining(['#delmgr', '#disabled']));
     // 破坏性入口绝不点击
     expect(state.clicks).not.toContain('#logout');
@@ -130,9 +130,9 @@ describe('危险词黑名单收敛（P-A#3）', () => {
 
     const sysMod = tree.find((c) => c.label === '系统管理')!;
     const delPage = sysMod.children.find((c) => c.label === '删除记录管理')!;
-    expect(delPage.children.map((c) => c.label)).toEqual(
-      expect.arrayContaining(['列表', '新增', '修改', '删除', '查询']),
-    );
+    expect(delPage.type).toBe('page');
+    // 边界（2026-09-18）：不再产出 action 子节点，动作级探索归用例阶段
+    expect(delPage.children).toHaveLength(0);
   });
 });
 
@@ -217,7 +217,10 @@ describe('递归 DFS 菜单遍历（T1.5）', () => {
     expect(tree[0].children.map((c) => c.label)).toEqual(['用户管理', '角色管理']);
 
     const userLeaf = tree[0].children.find((c) => c.label === '用户管理')!;
-    expect(userLeaf.children.map((c) => c.label)).toEqual(expect.arrayContaining(['列表', '新增', '修改', '删除', '查询']));
+    // 边界（2026-09-18）：页面级探索，不再挂 action 子节点
+    expect(userLeaf.type).toBe('page');
+    expect(userLeaf.children).toHaveLength(0);
+    expect(userLeaf.url).toContain('#user');
 
     // 父菜单被点击展开，子菜单叶子也被点击
     expect(state.clicks).toContain('#sys');
@@ -280,8 +283,9 @@ describe('selector 失效 fallback（T1.6）', () => {
     const tree = await exploreViaMenus(page, { subsystemId: 'sys1', systemId: 'SYS' });
     const sysMod = tree.find((c) => c.label === '系统管理')!;
     const userLeaf = sysMod.children.find((c) => c.label === '用户管理')!;
-    expect(userLeaf.children.map((c) => c.label)).toEqual(expect.arrayContaining(['列表', '新增', '修改', '删除', '查询']));
+    // 文本兜底点击成功 + 页面级节点被保留（不再断言 action 子节点）
     expect(state.clicks).toContain('fallback-text');
+    expect(userLeaf.type).toBe('page');
   });
 });
 
@@ -306,16 +310,24 @@ describe('外链/外部菜单处理（T1.8）', () => {
 });
 
 describe('点击落地校验（P-A#2）', () => {
-  it('点击后视图未变化 → 跳过控件采集，避免把上一页按钮串到本叶子', async () => {
+  it('点击后视图未变化且无子菜单 → 判定 UI 控件并从树中剔除（宁缺毋滥）', async () => {
     const { page } = makeFakePage(NAV, CONTROLS, true, 'https://demo.test/home');
-    // 让 click 不改变 URL/内容 → 模拟 selector 过期、点击无效
+    // 让 click 不改变 URL/内容 → 模拟点击到 UI 控件（全屏/便签/头像等）
     (page as unknown as { click: (s: string) => Promise<void> }).click = async () => {};
 
     const tree = await exploreViaMenus(page, { subsystemId: 'sys1', systemId: 'SYS' });
 
-    const sysMod = tree.find((c) => c.label === '系统管理')!;
-    const userLeaf = sysMod.children.find((c) => c.label === '用户管理')!;
-    // 未落地：不得挂任何 action 子节点（宁缺毋滥，交由粒度闸门标 needs_review）
-    expect(userLeaf.children).toHaveLength(0);
+    const labels: string[] = [];
+    const walk = (ns: typeof tree): void => {
+      for (const n of ns) {
+        labels.push(n.label);
+        walk(n.children);
+      }
+    };
+    walk(tree);
+    // 无落地且无子菜单的项不得进入结果（也不得挂 action）
+    expect(labels).not.toContain('用户管理');
+    expect(labels).not.toContain('角色管理');
+    expect(labels).not.toContain('报表');
   });
 });

@@ -67,14 +67,11 @@ describe('T2 extractPageActions 透传动作语义到 ModuleNode（根因#1）',
     expect(nodes.every((n) => n.type === 'action')).toBe(true);
   });
 
-  it('空实采 + 标题含 CRUD 名词 → 推断节点也带 actionKind（标 needs_review）', async () => {
+  it('实采为空 → 不再生成推断型功能点（2026-09-17 用户裁定：默认不造假）', async () => {
     const engine = stubEngine([]);
-    const page = basePage({ label: '用户管理', url: undefined });
+    const page = basePage({ label: '用户管理' }); // 带 url：走实采路径而非无 URL 短路
     const nodes = await extractPageActions(engine, page, 's1');
-    const create = nodes.find((n) => n.label === '新增');
-    expect(create).toBeDefined();
-    expect(create!.actionKind).toBe('create');
-    expect(create!.status).toBe('needs_review');
+    expect(nodes).toHaveLength(0);
   });
 
   it('不同动作的 selector 互不串用（同页多个动作各自保留原始 selector）', async () => {

@@ -52,3 +52,29 @@ pnpm --filter @test-platform/stage-login test -- src/foo.test.ts   # one test fi
 ## Docs
 
 Design/PRD docs are in `docs/` (Chinese). No CI workflow present (no `.github`). Local task runner is the root `*.bat` scripts (`start.bat`, `stop.bat`, `check.bat`) which wrap `restart.mjs`.
+
+## Directory conventions (目录规范)
+
+**根目录只允许放「代码 / 原型 / 文档」三类内容；其余一律归位，禁止散落根目录。** 这是硬约束，新增任何文件前先判断类别。
+
+### 根目录合法项
+- 构建/配置：`package.json`、`pnpm-lock.yaml`、`pnpm-workspace.yaml`、`tsconfig*.json`、`eslint.config.js`、`.prettierrc.json`、`vite.config.ts`、`vitest.scripts.config.ts`、`playwright.config.ts`、`.env.example`、`.gitignore`
+- 入口：`index.html`（被 `server.ts` 的 Vite 中间件引用，`<script src="/src/main.tsx">`）、`src/`（**dev 模式前端源码，被 `server.ts` 直接服务，禁止移动**）、`server.ts`、`server.mjs`、`*.bat`
+- 代码包与资产：`packages/`（六阶段 + contracts/infra）、`prototype/`（HTML 原型）、`docs/`（唯一全局文档根）、`scripts/`、`config/`、`e2e/`、`tests/`、`logs/`、`dist/`（gitignored）、`node_modules/`
+- 隐藏运行时/工具目录：`.credentials/`、`.data/`、`.git/`、`.workbuddy/`、`.turbo/`、`.codegraph/`、`.omo/`、`.opencode/`、`.trae/`
+
+### 禁止出现在根目录（违规即清理）
+- 一次性诊断/调试脚本：`__*.cjs`、`_*.cjs`、`test-*.cjs`、`test-*.mjs`、`dump*.ts`、`_repro*.mts`、`_seed*.mjs`、`_send_case.mjs`、`run_*.ts`、`run_*.mjs`、`unified-test.mjs`
+- 调试数据转储：`_*.json`、`debug_*.json`、`final_output.json`、`_fa.json`、`batch.json`、`metadata.json`、各类 `*.log` / `.service-*.log`
+- 草稿笔记：`*.txt`（`fix-*.txt`、`test-module-*.txt`、`speed-test-brief.txt` 等）
+- 多余锁文件：`bun.lock`、`package-lock.json`（本项目只用 pnpm）
+- 运行产物目录：`shots/`、`test-screenshots/`、`test-results/`、`playwright-report/`
+
+### 去处
+- 临时/垃圾产物统一放 `D:\test-platform-smoke\`（或仓库内 `tmp/archive-YYYY-MM-DD/`，可随时删除），**不得提交、不得留在根目录**。
+- 设计/计划/审查类 `.md` 文档只许放 `docs/`（可建 `designs/`、`plans/`、`superpowers/` 子目录），根目录不得出现文档文件。
+- 凭证/运行时状态 `.credentials/`、`.data/` 保持原位，gitignored，禁止提交。
+
+### 红线
+- 代码进 `packages/*` 或对应包/src；文档进 `docs/`；原型进 `prototype/`；临时探索产物进 `tmp/` 或 `D:\test-platform-smoke\`。
+- 根目录出现 `__*` / `_*` / `*.log` / `dump*` / `test-*` 等即视为违规。

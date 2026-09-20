@@ -6,3 +6,25 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# 临时归档 / 运行产物（按 AGENTS.md 目录规范，不提交根目录）
+tmp/
+shots/
+test-screenshots/
+test-results/
+playwright-report/
+
+# 运行时 / IDE 垃圾（禁止提交，含密钥）
+.credentials/
+.workbuddy/
+.omo/
+.opencode/
+.trae/
+.codegraph/
+*.zip
+.service-pids.json
+
+# 临时探测脚本
+.tmp_storetest.mjs
+*_probe.mts
+*_explore_test.mts

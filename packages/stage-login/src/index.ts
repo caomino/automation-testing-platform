@@ -178,6 +178,14 @@ export function detectLoginState(params: { dom: SemanticNode[] }): LoginDetectio
 
   const hasMinimalContent = flat.filter((n) => n.text && n.text.trim().length > 0).length < 3;
 
+  // 【已登录优先判定】必须在「验证码/MFA」判定之前。
+  // 后台管理系统工作台页面常含「验证码管理」「MFA 设置」「扫码登录」等模块链接，
+  // 单纯文本匹配会把已登录的工作台误判为 barrier，导致用户在浏览器已完成登录却
+  // 反复被要求人工接管（确认登录按钮永远刷不过去，loginStatus 永远不更新为 logged_in）。
+  // 判定准则：页面无密码字段（已离开登录表单）+ 含已登录信号 → 必然已离开登录态 → ok。
+  if (!hasPasswordField && loggedInSignal) {
+    return { status: 'ok', reason: '已登录（无密码字段 + 含已登录信号）' };
+  }
   if (hasCaptcha || hasCaptchaInput || hasMfa) return { status: 'barrier', reason: '检测到验证码/MFA，需人工接管' };
   if (hasPasswordField && hasLoginError) return { status: 'failed', reason: '凭据错误，登录表单仍可见' };
   if (hasPasswordField && !loggedInSignal) return { status: 'barrier', reason: '登录表单仍可见，疑似需验证或未完成' };

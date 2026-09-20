@@ -62,6 +62,23 @@ function moduleAncestors(node: ModuleNode, parentOf: Map<string, ModuleNode | nu
   return result;
 }
 
+/**
+ * 功能点所在「可导航页面」URL。
+ * action 节点的 url 多为动作自身 href（javascript:void(0)），不能用于二次探索；
+ * 此时回退到最近的、带 http(s) URL 的祖先页面 —— 否则用例阶段拿不到页面地址，
+ * 只能退化为按名称点击（多匹配即被只读策略阻断）→ 证据缺失 → 用例 0 行。
+ */
+function resolvePageUrl(node: ModuleNode, parentOf: Map<string, ModuleNode | null>): string | undefined {
+  const usable = (u?: string): boolean => !!u && /^https?:\/\//i.test(u);
+  if (usable(node.url)) return node.url;
+  let cur = parentOf.get(node.id) ?? null;
+  while (cur) {
+    if (usable(cur.url)) return cur.url;
+    cur = parentOf.get(cur.id) ?? null;
+  }
+  return node.url;
+}
+
 export interface BuildResult {
   featureTable: FeatureRow[][];
   featureIds: string[];
@@ -97,31 +114,19 @@ export function buildFeatureTable(
     node: ModuleNode;
     mainModuleNode: ModuleNode | null;
     subModuleNode: ModuleNode | null;
-    featureNode: ModuleNode | null;
-    resolvedUrl: string | undefined;
     prov: ReturnType<typeof deriveProvenance>;
   }
 
   const resolved: Resolved[] = leaves.map((node) => {
     const ancestors = moduleAncestors(node, parentOf);
-    // ancestors 从叶子向上收集，因此根节点在末尾 (ancestors.length - 1)
-    // 根据业务规则：
-    //   主模块永远是根节点 (ancestors[length - 1])
-    //   测试点永远是叶子节点 (node)
-    //   从底层向上推：离叶子最近的祖先 (ancestors[0]) 是功能点，再往上 (ancestors[1]) 是子模块
-    const rootIndex = ancestors.length - 1;
-    const mainModuleNode = rootIndex >= 0 ? ancestors[rootIndex] : null;
-    
-    const featureNode = ancestors.length >= 2 ? ancestors[0] : null;
-    const subModuleNode = ancestors.length >= 3 ? ancestors[1] : null;
-
-    let resolvedUrl = node.url;
-    if (!resolvedUrl) {
-      const urlNode = ancestors.find(a => !!a.url);
-      if (urlNode) resolvedUrl = urlNode.url;
-    }
-
-    return { node, mainModuleNode, subModuleNode, featureNode, resolvedUrl, prov: deriveProvenance(node) };
+    // 业务映射（用户规则 + docs §5.3 + verify 契约树）：
+    //   ancestors 按「从叶子向上」收集：ancestors[0]=最近层级祖先(二级目录)，ancestors[1]=次近层级祖先(一级目录)
+    //   一级目录永远 = 主模块（ancestors[1]，如 系统管理/检查室管理）
+    //   二级目录 = 子模块（ancestors[0]，如 用户管理/检查室）
+    //   仅有一级目录时（首页/AI对话 顶层 page 直接挂 action）：主=该层、子=空 → RUOYI_SY_X_01
+    const mainModuleNode = ancestors[1] ?? ancestors[0] ?? null;
+    const subModuleNode = ancestors.length >= 2 ? ancestors[0] : null;
+    return { node, mainModuleNode, subModuleNode, prov: deriveProvenance(node) };
   });
 
   // confirmedOnly：丢弃未确认（ai_generated）行，合并后过滤
@@ -167,7 +172,6 @@ export function buildFeatureTable(
 
     const rows: FeatureRow[] = [];
     group.forEach((r, localIdx) => {
-      globalIndex += 1;
       let testPointId = `${base}_${pad2(localIdx + 1)}`;
       // 跨分组 base 碰撞时追加去重后缀，保证整表行内全局唯一（用例编号绑定键）
       if (usedTestPointIds.has(testPointId)) {
@@ -178,31 +182,35 @@ export function buildFeatureTable(
       }
       usedTestPointIds.add(testPointId);
 
-      // 业务规则：三级目录=功能点，无则为空
-      const featureName = r.featureNode?.label ?? '';
+      // 功能点 = 子模块（二级目录）标签；无子模块时回退为主模块（一级目录）标签。
+      // 与前端 moduleTreeToFeatureTable 的 feature=curPage||curModule 保持一致：
+      // 功能点==子模块 时，UI 显示层会把功能点列置空（只显示子模块），原始数据仍保留。
+      const featureName = r.subModuleNode?.label ?? r.mainModuleNode?.label ?? r.node.label;
       // 测试点 = 当前节点标签（具体测试动作）
       const testPoint = r.node.label;
 
       const row: FeatureRow = [
-        String(globalIndex),           // 序号（全局自增）
+        String(localIdx + 1),          // 序号
         TEST_TYPE_DEFAULT,             // 测试类型
         requirementSection,            // 需求章节（X.Y.Z 占位）
         systemName,                    // 系统名称
         r.mainModuleNode?.label ?? '', // 主模块（=一级目录）
         r.subModuleNode?.label ?? '',  // 子模块（=二级目录；无二级时留空）
-        featureName,                   // 功能点（=三级目录；无三级时留空）
+        featureName,                   // 功能点（子模块名，无则主模块名）
         testPoint,                     // 测试点（节点标签）
         testPointId,                   // 测试点标识（base_NN，行内全局唯一）
       ];
       rows.push(row);
       featureIds.push(testPointId);
-      // 根因解法：把模块树叶子节点的真实页面 URL 带出，供用例阶段按所选模块精准探索
-      if (r.resolvedUrl) featurePaths[testPointId] = r.resolvedUrl;
+      // 根因解法：把功能点所在「真实页面 URL」带出，供用例阶段按所选模块精准探索。
+      // action 节点自身 href 常为 javascript:，须回退到祖先页面 URL（见 resolvePageUrl）。
+      const pageUrl = resolvePageUrl(r.node, parentOf);
+      if (pageUrl) featurePaths[testPointId] = pageUrl;
       featureProfiles.push({
         featureId: testPointId,
         testPoint,
         actionKind: r.node.actionKind ?? 'other',
-        pageUrl: r.resolvedUrl,
+        pageUrl,
         clickSelector: r.node.actionSelector,
         parentModule: r.mainModuleNode?.label,
         subsystemId: r.node.subsystemId,

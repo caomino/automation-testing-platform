@@ -215,6 +215,37 @@ export function assertActionGranularity(
     (n) => n.type === 'action' && n.status === 'covered',
   ).length;
 
+  const pages = all.filter((n) => n.type === 'page');
+
+  // 边界（用户裁定 2026-09-18）：第一次探索只到「菜单子目录/功能页」粒度，
+  // 动作级功能点由「生成测试用例」阶段详细探索负责 —— 此时整棵树本就没有 action 节点，
+  // 不能再按"未采集到动作级功能点"判降级（否则菜单级探索会被全量误标 needs_review）。
+  // 改为校验「页面级可导航性」：拿下真实落地 URL 的页面视为已覆盖，缺失者才标 needs_review。
+  if (actionCount === 0) {
+    let flaggedPage = 0;
+    for (const page of pages) {
+      const u = page.url ?? '';
+      const navigable = /^https?:\/\//i.test(u) || u.startsWith('click:');
+      if (!navigable) {
+        page.status = 'needs_review';
+        page.reviewReason =
+          '该页面未采集到可导航 URL（未真实落地到页面），需人工确认入口；' +
+          '（本阶段只做菜单子目录粒度探索，动作级功能点由用例阶段详细探索负责）';
+        flaggedPage++;
+      }
+    }
+    if (flaggedPage > 0) {
+      console.error(
+        `[explore][GRANULARITY] 菜单级探索：${flaggedPage}/${pages.length} 个页面缺少可导航 URL → 已标记 needs_review`,
+      );
+    } else {
+      console.log(
+        `[explore][GRANULARITY] 菜单级探索：${pages.length} 个页面全部拿到可导航 URL（动作级功能点由用例阶段详细探索负责）`,
+      );
+    }
+    return { totalLeaves: pages.length, actionCount: 0, flagged: flaggedPage };
+  }
+
   const countCoveredActionsUnder = (node: ModuleNode): number =>
     node.children.reduce(
       (acc, c) =>
@@ -226,7 +257,6 @@ export function assertActionGranularity(
 
   // 按「页面」粒度判定：任一页面在其整棵子树内都未采集到实采确认功能点 → 该页标 needs_review。
   // 用子树计数可避免误伤「仅仅是容器页」：其子孙页若已采到功能点则不算缺失。
-  const pages = all.filter((n) => n.type === 'page');
   let flagged = 0;
   for (const page of pages) {
     if (countCoveredActionsUnder(page) === 0) {
@@ -542,18 +572,18 @@ export async function run(
 
       // 执行探索：按 AI 开关二选一（双模式隔离，运行时只走一条路径，绝不互相污染）
       console.log(`[stage-explore] 正在${opts?.ai ? 'AI 辅助' : '结构化'}探索模块树...`);
+      // 真实采集为唯一路径：原「优先动态 import engine-mcp/dist/autohub（fake 模板树）」分支已彻底移除
+      // —— 该分支在产物存在时会用硬编码假模板替换真实探索结果（数据造假红线）。
       moduleTree = opts?.ai
         ? await exploreWithAi(activeEngine, opts.ai, {
             subsystemId: validated.subsystemId,
             systemId: validated.subsystemId,
             startUrl: validated.systemUrl,
           })
-        : await (activeEngine.exploreModules
-            ? activeEngine.exploreModules()
-            : exploreNonAi(activeEngine, {
-                subsystemId: validated.subsystemId,
-                startUrl: validated.systemUrl,
-              }));
+        : await exploreNonAi(activeEngine, {
+            subsystemId: validated.subsystemId,
+            startUrl: validated.systemUrl,
+          });
       console.log(`[stage-explore] 探索完成，发现 ${moduleTree.length} 个节点`);
 
       if (moduleTree.length === 0) {
