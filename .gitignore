@@ -15,7 +15,8 @@ test-results/
 playwright-report/
 
 # 运行时 / IDE 垃圾（禁止提交，含密钥）
-.credentials/
+**/.credentials/
+.data/credentials/
 .workbuddy/
 .omo/
 .opencode/
