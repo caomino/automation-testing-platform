@@ -1,5 +1,71 @@
 # AGENTS.md — test-platform
 
+## ⛔ HARD RULE #0 — NEVER HARDCODE ！（永远不要写死代码）
+
+> **This is a commercial product that MUST adapt to ANY management system, for ANY client. Hardcoding a specific system is the single worst failure mode in this repo. It is a release blocker — no exceptions, no "just this once", no "temporary patch", no "will clean up later".**
+
+**写死 = 发布阻断项。遇到"某个系统不工作"时，唯一允许的修法是加通用判据，不是加这个系统的特征。**
+
+### ❌ 明令禁止（任一条出现即违规）
+
+1. **禁止**把某系统/框架的 **class 名、ID、裸标签** 当作识别判据写入白名单/黑名单。
+   已清除的历史违规（不得复活）：`#page-wrapper`、`.page-wrapper`、`.el-main`、`.ant-layout-content`、`*main-content`、`*page-container`、**裸 `nav`**、`top-links`、`navbar-right`、`navbar-top`、`top-bar`、`welcome-message`、`messages-menu|notifications-menu|tasks-menu|user-menu|user-panel|sidebar-toggle|logo|brand`。
+2. **禁止**把中英文 UI 文案当过滤清单（如按字面跳过 `全屏/锁屏/消息/在线/首页`）。文案只允许用于**通用语义**判断（危险操作拦截），不得当系统指纹。
+3. **禁止**在逻辑里出现 **系统名 / 域名 / 厂商名**（如 `ruoyi`、`adminlte`、`bpms`）的条件分支。
+4. **禁止**"哪个系统坏了就给哪个系统加一个 selector"的补丁式修复 —— **类名清单本身就是写死**，清单永远追不完。
+5. **禁止**为了通过某个系统的验收而放宽/绕过通用判据。
+
+### ✅ 唯一允许的判据类型（任何系统都成立的性质）
+
+| 维度 | 判据 | 权重 |
+|---|---|---|
+| **行为** | 点击后是否**真的导航**（主 URL 变化 / 内容区变化）或**新出下级项** | ★★★★★ |
+| **结构** | 层级深度 ≥2；同构兄弟项 ≥5；子项同级同 class 模式 | ★★★★ |
+| **几何** | 容器宽/高占视口比；是否贴边（侧栏窄、顶栏矮且横贯）；是否位于主体内容区 | ★★★ |
+| **语义** | 仅用于通用危险操作拦截（退出/删除/清空）——与系统无关的动词 | ★★ |
+
+> 反例（负分项，通用形态）：横向排布 ＋ 项数 ≤8 ＋ 无层级 ＋ icon-only/头像/铃铛 ⇒ 是部件条，不是菜单。
+
+### 为什么（2026-09-20 真实事故）
+
+为支持 OA，把**裸 `nav`** 列入菜单容器。结果：
+
+| 系统 | 顶栏 `<nav class="navbar …">` 里装什么 | 需要 |
+|---|---|---|
+| OA (AdminLTE) | **一级菜单**（我的办公 / 项目管理 …） | 必须**收** |
+| ruoyi | **部件**（文档 / 锁屏 / 全屏 / 消息 / 若依） | 必须**排** |
+
+**结构同构、语义相反** ⇒ "命中 nav 就收"必然在其中一个系统上出错。上一轮补丁瞄的是 `navbar-right` / `top-links`，而它们长在**内部 `ul`** 上、容器自身是 `navbar-static-top` ⇒ 补丁**静默失效**（时灵时不灵）。
+**结论：改好 A 就弄坏 B，是写死路线的必然结果，不是巧合。**
+
+### 验证门槛（未全绿不得宣称完成）
+
+必须在**真实项目上实跑**，覆盖：
+
+| # | 系统 | 形态 | 通过标准 |
+|---|---|---|---|
+| 1 | OA bpms | AdminLTE 顶栏一级菜单 + 侧栏 + iframe | 5 个一级菜单、URL 100%、部件 0 |
+| 2 | ruoyi | Vue2 侧栏纯菜单 + 顶栏部件 | 层级正确、**顶栏部件 0**、URL ≥95% |
+| 3 | fantastic-admin | Vue3 hash 路由 SPA | 四层嵌套、action 0、URL 100% |
+| 4 | 人大政务 | 自研 SPA | 无部件混入 |
+| 5 | 任意新/未知系统 | 占位自研 | 不降级、层级不塌缩 |
+
+另需逐项验证：**页面 / 按钮 / 数据（落库）/ 报错（日志与控制台）**。任一出现"部件混入"或"真实菜单缺失" = 不合格，继续排查。
+
+## ⛔ HARD RULE #1 — 交付纪律（提交 / 测试 / 实跑验证）
+
+> **每次改动都必须可追踪、可验证、可回滚。没有 commit、没有测试、没有实跑验证的改动，一律不得交付。**
+
+三条铁律（任一条缺失即违规）：
+
+1. **改动即提交**：每次完成一处改动（无论大小），都必须创建一个对应的 Git commit，commit message 需说明「改了什么、为什么」。目的：便于后续追踪与随时回滚。
+2. **改动即补测试**：每次改动后，都必须编写或更新相关测试（单元 / `vitest` / `playwright` e2e），保证改动被覆盖。无测试支撑的改动不得交付。
+3. **交付前必须实跑验证**：交付给用户前，必须实际运行项目，并**逐项验证**：页面（渲染正常）、按钮（可点击、行为正确）、数据（正确落库）、报错（服务日志与浏览器控制台无异常）。**只有全部通过，才能告知用户「任务完成」；否则继续排查，不得提前宣称完成。**
+
+> 与 HARD RULE #0 的「验证门槛」一致：探索类改动还要覆盖 OA / ruoyi / fantastic-admin / 人大政务 等验收矩阵；任何功能改动都要跑 `pnpm typecheck / lint / test / verify` 全绿。
+
+---
+
 pnpm monorepo (ESM, TypeScript strict, Node >=20, pnpm 9.15.9). A commercial automated-testing platform: a pipeline turns a logged-in system into feature tables, test cases, execution reports, and defect tables.
 
 ## Architecture (contracts-first, stages decoupled)
