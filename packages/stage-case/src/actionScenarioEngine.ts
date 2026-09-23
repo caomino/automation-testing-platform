@@ -472,7 +472,13 @@ function renderScenarioText(coverageKey: string, ctx: ActionScenarioContext, evi
   if (coverageKey.startsWith('api.response.')) return simple(`接口响应-${coverageKey.slice('api.response.'.length)}`, `查看结构化 API 证据中的响应码 ${coverageKey.slice('api.response.'.length)} 和响应结构`, `接口响应码 ${coverageKey.slice('api.response.'.length)} 的响应结构可追溯。`);
   if (coverageKey.startsWith('api.security.')) return simple('接口鉴权', `查看结构化 API 证据中的鉴权方案 ${coverageKey.slice('api.security.'.length)}`, '鉴权要求和无权限响应规则可追溯。');
   if (coverageKey.startsWith('api.field.')) return simple('接口参数约束', `查看接口参数 [${coverageKey.slice('api.field.'.length)}] 的结构化约束`, '参数约束与 API 设计证据一致。');
-  return simple('结构化证据覆盖', `查看 [${ctx.testPoint}] 的结构化设计证据（${coverageKey}）及关联对象`, `该结构化证据与 [${ctx.testPoint}] 的观察点可追溯。`);
+  // 兜底：无安全页面或设计证据时，必须诚实标注证据缺失并待人工复核，不得伪装成可执行的完整用例（设计文档 §9 禁止假完整用例、§13 要求 evidence_missing/needs_review）。
+  return simple(
+    `证据缺失·${coverageKey}`,
+    `【${ctx.testPoint}】证据缺失：${coverageKey} —— 只读探索未采集到该覆盖点所需的安全页面或设计证据，标记为待人工复核（evidence_missing）。`,
+    `因 ${coverageKey} 无安全页面或设计证据，本场景不得伪造成可完成用例；待人工补充该系统真实信息后重新生成。`,
+    'P1',
+  );
 }
 
 function draftFor(coverageKey: string, profile: FeatureProfile, evidence: FeatureEvidence | undefined, ctx: ActionScenarioContext): ScenarioDraft {

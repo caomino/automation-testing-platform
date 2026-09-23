@@ -954,9 +954,10 @@ export class PipelineOrchestrator {
             selectedModuleIds,
             scope,
             input.login.systemUrl,
-            missingFeatureIds,
-            input.login.systemId,
-            input.case?.featureRevision,
+          missingFeatureIds,
+          input.login.systemId,
+          input.case?.featureRevision,
+          { crossPathNavigation: 'entry_only' },
           );
           featureEvidence = mergeFeatureEvidence(
             caseFeatureArtifact.featureEvidence,
@@ -1508,8 +1509,8 @@ export class PipelineOrchestrator {
                 if (hasUsablePaths) {
                   const coll = await this.exploreFeatureEvidenceMap(
                     engine, resolvedPaths, resolvedTable, resolvedProfiles, selectedModuleIds, scope, entryUrl, missingFeatureIds,
-                    systemId, rawInput.featureRevision,
-                    );
+                    systemId, rawInput.featureRevision, { crossPathNavigation: 'entry_only' },
+                  );
                   evidenceMap = mergeFeatureEvidence(evidenceMap, retainConcreteEvidence(coll.evidence), existingV2?.featureProfiles, resolvedProfiles);
                 }
 

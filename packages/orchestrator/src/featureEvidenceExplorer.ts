@@ -358,6 +358,7 @@ export async function exploreFeatureEvidence(engine: McpEngine, opts: FeatureEvi
     const remaining = deadline - Date.now();
     return remaining > 0 ? withTimeout(operation, remaining) : Promise.reject(new Error(`timeout after ${timeout}ms`));
   };
+  const actionKind = opts.actionKind ?? 'other';
   try {
     // ① 进入目标页（只读进入，不写）
     if (opts.url) {
@@ -374,7 +375,11 @@ export async function exploreFeatureEvidence(engine: McpEngine, opts: FeatureEvi
       }
     } else if (opts.clickSelector) {
       const currentElements = await timed(engine.extractPageElements());
-      if (!isSafeReadOnlyOpener(opts.clickSelector) || !isSafeCurrentNode(findCurrentElement(currentElements, opts.clickSelector), 'action')) {
+      // 打开只读表单/详情页（create/detail）属于只读进入：即便 selector 不匹配 SAFE_READ_ONLY_OPENER，
+      // 也允许走节点级 isSafeCurrentNode 的 openerIntent 放行（新增/详情/查看…）。实际写操作（提交/保存/删除…）
+      // 由 isSafeCurrentNode 的硬危险词拦截，绝不误触。
+      const allowOpen = actionKind === 'create' || actionKind === 'detail' || isSafeReadOnlyOpener(opts.clickSelector);
+      if (!allowOpen || !isSafeCurrentNode(findCurrentElement(currentElements, opts.clickSelector), 'action')) {
         return needsReviewEvidence(opts, `clickSelector 未匹配当前安全语义节点，跳过点击以防误触: ${opts.clickSelector}`);
       }
       if (!engine.runReadOnlyClick) return needsReviewEvidence(opts, '引擎未提供只读点击能力，MCP/未知引擎不会执行点击');
@@ -388,7 +393,6 @@ export async function exploreFeatureEvidence(engine: McpEngine, opts: FeatureEvi
     const tables: TableSemantic[] = [];
     const containers = [] as FeatureEvidence['containers'];
     const uncovered: UncoveredItem[] = [];
-    const actionKind = opts.actionKind ?? 'other';
     const states: FeatureEvidence['states'] = [];
     const actionEntries: FeatureEvidence['actionEntries'] = [];
     const fingerprints = new Set<string>();
@@ -757,28 +761,53 @@ export async function exploreFeatureEvidenceMap(
       }
     }
 
+    // entry_only：跨路径且 profile 带点击选择器时，回到系统入口复用登录、再经菜单点击进入（只读打开），
+    // 避免直接打开 URL 落在登录页；无点击路径时回退直接导航（兼容无点击信息的系统）。
+    const entryOnly = crossPathNavigation === 'entry_only';
+    const clickSel = profile?.sourceSelector ?? profile?.clickSelector;
+    const crossPath = !loc.startsWith('click:') && !!nu && !!baseUrl && !sameDocUrl(baseUrl, nu);
+    const useClickEntry = entryOnly && crossPath && !!clickSel;
+
     // 同页面（同 origin+path，仅 hash 可能不同）复用当前页，不重复导航；不同页才导航（含跨路径）
-    const reusePage = !loc.startsWith('click:') && lastPageUrl !== '' && sameDocUrl(lastPageUrl, nu);
-    if (!reusePage && !loc.startsWith('click:') && nu) {
+    const reusePage = !loc.startsWith('click:') && !useClickEntry && lastPageUrl !== '' && sameDocUrl(lastPageUrl, nu);
+    if (!reusePage && !loc.startsWith('click:') && !useClickEntry && nu) {
       lastPageUrl = nu;
     }
 
     try {
+      let navUrl: string | undefined;
+      let clickSelector: string | undefined;
+      if (loc.startsWith('click:')) {
+        clickSelector = loc.slice('click:'.length);
+      } else if (useClickEntry) {
+        // entry_only：先回到系统入口复用登录会话，再经菜单点击进入（只读打开目标页）
+        if (lastPageUrl !== baseUrl) {
+          await engine.navigate(baseUrl);
+          lastPageUrl = baseUrl;
+        }
+        clickSelector = clickSel;
+      } else {
+        navUrl = reusePage ? undefined : nu;
+      }
       const res = await exploreFeatureEvidence(engine, {
         featureId: id,
         systemId,
         featureRevision,
         actionKind: profile?.actionKind,
         // 同页复用：不传 url（不重复导航，exploreFeatureEvidence 在当前页采集并恢复）；不同页：传 url 导航
-        url: loc.startsWith('click:') ? undefined : (reusePage ? undefined : nu),
-        clickSelector: loc.startsWith('click:') ? loc.slice('click:'.length) : undefined,
-        actionSelector: profile?.sourceSelector ?? profile?.clickSelector,
+        url: navUrl,
+        clickSelector,
+        actionSelector: clickSel,
         actionText: profile?.sourceLabel,
         pageUrl: loc.startsWith('click:') ? baseUrl : nu,
         pageEntry: loc,
         timeoutMs,
         budget,
       });
+      // entry_only：点击进入后复位到系统入口，保证下一功能点从干净菜单开始
+      if (useClickEntry && baseUrl) {
+        try { await engine.navigate(baseUrl); lastPageUrl = baseUrl; } catch { /* 复位失败忽略 */ }
+      }
       evidence[id] = res.evidence;
       elements.push(...res.raw);
     } catch (e) {

@@ -493,3 +493,88 @@ describe('exploreFeatureEvidenceMap 按 featureId 隔离', () => {
     expect(coll.evidence.timeout_01.reviewReason).toMatch(/timeout/i);
   });
 });
+
+describe('Fix-B create/detail 只读打开放行（不误拦新增/详情页）', () => {
+  const addBtn = {
+    ref: '#add-btn', selector: '#add-btn', tag: 'button', text: '新增用户', label: '新增用户',
+    interactive: true, isFormControl: false, role: 'button', suggestedAction: 'click',
+  } as unknown as ExploredElement;
+
+  function engineFor(btn: ExploredElement) {
+    return {
+      navigate: vi.fn().mockResolvedValue(undefined),
+      runStep: vi.fn().mockResolvedValue(undefined),
+      runReadOnlyClick: vi.fn().mockResolvedValue({ status: 'performed', beforeUrl: 'https://x.com/users', afterUrl: 'https://x.com/users/new' }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      extractPageElements: vi.fn().mockResolvedValue([btn]),
+      getCurrentUrl: vi.fn().mockResolvedValue('https://x.com/users'),
+      evaluate: vi.fn().mockResolvedValue(true),
+    } as unknown as McpEngine;
+  }
+
+  it('actionKind=create 且 clickSelector 非 SAFE_READ_ONLY_OPENER → 仍允许只读点击进入（修复前会被误拦）', async () => {
+    const engine = engineFor(addBtn);
+    const res = await exploreFeatureEvidence(engine, {
+      featureId: 'tp_create', actionKind: 'create', clickSelector: '#add-btn', actionText: '新增用户',
+    });
+    expect(engine.runReadOnlyClick).toHaveBeenCalledWith('#add-btn', 'action');
+    expect(res.evidence.needsReview).toBe(false);
+  });
+
+  it('actionKind=other 且 clickSelector 非 SAFE_READ_ONLY_OPENER → 维持原安全门拦截', async () => {
+    const engine = engineFor(addBtn);
+    const res = await exploreFeatureEvidence(engine, {
+      featureId: 'tp_other', actionKind: 'other', clickSelector: '#add-btn', actionText: '新增用户',
+    });
+    expect(engine.runReadOnlyClick).not.toHaveBeenCalled();
+    expect(res.evidence.needsReview).toBe(true);
+  });
+});
+
+describe('Fix-A entry_only 跨路径改由菜单点击进入（复用登录会话）', () => {
+  const addBtn = {
+    ref: '#add-btn', selector: '#add-btn', tag: 'button', text: '新增用户', label: '新增用户',
+    interactive: true, isFormControl: false, role: 'button', suggestedAction: 'click',
+  } as unknown as ExploredElement;
+  const baseUrl = 'https://x.com/home';
+  const featureUrl = 'https://x.com/cross/path';
+  const common = {
+    featurePaths: { tp_01: featureUrl } as Record<string, string>,
+    featureTable: buildFeatureTable(['tp_01']),
+    featureProfiles: [{ featureId: 'tp_01', actionKind: 'create', sourceSelector: '#add-btn', sourceLabel: '新增用户' }] as any,
+    selectedModuleIds: [] as string[],
+    scope: 'all' as const,
+    baseUrl,
+    featureIds: new Set(['tp_01']),
+    systemId: 'sys1',
+    featureRevision: 'rev1',
+  };
+
+  function recordingEngine() {
+    return {
+      navigate: vi.fn().mockResolvedValue(undefined),
+      runStep: vi.fn().mockResolvedValue(undefined),
+      runReadOnlyClick: vi.fn().mockResolvedValue({ status: 'performed', beforeUrl: baseUrl, afterUrl: baseUrl + '#new' }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      extractPageElements: vi.fn().mockResolvedValue([addBtn]),
+      getCurrentUrl: vi.fn().mockResolvedValue(baseUrl),
+      evaluate: vi.fn().mockResolvedValue(true),
+    } as unknown as McpEngine;
+  }
+
+  it('entry_only：跨路径功能点先回到系统入口，再经菜单点击进入（不直接打开目标 URL，避免落在登录页）', async () => {
+    const engine = recordingEngine();
+    await exploreFeatureEvidenceMap(engine, { ...common, crossPathNavigation: 'entry_only' });
+    const navCalls = (engine.navigate as any).mock.calls.map((c: string[]) => c[0]);
+    expect(navCalls).toContain(baseUrl);
+    expect(navCalls).not.toContain(featureUrl);
+    expect(engine.runReadOnlyClick).toHaveBeenCalledWith('#add-btn', 'action');
+  });
+
+  it('allow（默认兼容）：跨路径功能点仍直接打开目标 URL', async () => {
+    const engine = recordingEngine();
+    await exploreFeatureEvidenceMap(engine, { ...common, crossPathNavigation: 'allow' });
+    const navCalls = (engine.navigate as any).mock.calls.map((c: string[]) => c[0]);
+    expect(navCalls).toContain(featureUrl);
+  });
+});

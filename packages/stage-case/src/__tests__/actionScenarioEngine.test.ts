@@ -1096,3 +1096,33 @@ describe('frozen generation context', () => {
     expect(noAi.generation?.batchId).not.toBe(ai.generation?.batchId);
   });
 });
+
+describe('Fix-C 诚实证据缺失兜底（禁止假完整用例）', () => {
+  it('Given actionKind=other 且入口未被观察, When 生成用例, Then 渲染诚实「证据缺失」而非伪装的占位/可完成文案', () => {
+    const profile: FeatureProfile = { featureId: 'OTHER_01', testPoint: '某其他操作', actionKind: 'other' };
+    const unobserved: FeatureEvidence = {
+      featureId: 'OTHER_01',
+      actionKind: 'other',
+      states: ['base'],
+      fields: [],
+      tables: [],
+      // 入口未被观察（observed:false）→ 落入诚实兜底，而非旧版伪装的占位文本
+      actionEntries: [{ actionKind: 'other', ref: 'x', selector: '#x', text: '某操作', triggerable: false, observed: false }],
+      containers: [],
+      evidenceLevel: 'observed',
+      coverageKeys: [],
+      needsReview: false,
+      uncovered: [],
+    };
+    const ctx = { featureName: '系统', subModule: '模块', testPoint: '某其他操作' };
+    const candidates = generateActionScenarios(profile, unobserved, ctx);
+    const otherEntry = candidates.find((c) => c.coverageKey === 'other.entry');
+    expect(otherEntry).toBeDefined();
+    expect(otherEntry!.needsReview).toBe(true);
+    expect(otherEntry!.evidenceLevel).toBe('needs_review');
+    // 诚实标注「证据缺失」，符合设计文档 §9/§13
+    expect(otherEntry!.operation).toContain('证据缺失');
+    // 不得出现假占位 / 编造文案（如 theSelect / 占位 / 待补充）
+    expect(otherEntry!.operation).not.toMatch(/theSelect|占位|待补充|placeholder/i);
+  });
+});

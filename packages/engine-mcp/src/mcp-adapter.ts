@@ -208,7 +208,13 @@ export class McpPlaywrightAdapter implements McpEngine {
   }
 
   private extractLabel(entry: { description: string }): string | undefined {
-    const match = entry.description.match(/["'](.+?)["']/);
+    const desc = entry.description;
+    // 优先从「中文标签前置」模式提取真实文案（中文后台常见「标签文字 [控件]」「标签：控件」）。
+    // 通用判据，不依赖任何系统/框架；仅当存在中文标签前缀时使用，避免把 id/name 当成标签。
+    const cjkLabel = desc.match(/([\u4e00-\u9fff][\u4e00-\u9fff\w\s·•:：\-]*?)\s*(?:\[|:|：)\s*(?:textbox|searchbox|combobox|checkbox|radio|select|button|spinbutton|switch)/i);
+    if (cjkLabel) return cjkLabel[1].trim();
+    // 退化场景：取快照首个引号 token（可能是合成 id/name）；无引号则视为无标签（如实返回 undefined，不编造中文）。
+    const match = desc.match(/["'](.+?)["']/);
     return match ? match[1] : undefined;
   }
 
