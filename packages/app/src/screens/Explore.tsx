@@ -1,10 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button, Card, Modal, Table, Tag, Tree, ConfirmDialog } from "../components";
 import type { TreeItem } from "../components";
 import { useApp } from "../context";
-import type { ModuleNodeView } from "../context";
+import type { ModuleNodeView, PendingTreeItem } from "../context";
 import * as dataApi from "../services/dataApi";
 import { moduleTreeToFeatureTable, fromFeatureViewToTable } from "../services/pipeline";
+import { derivePendingHierarchy, orderForPromote } from "../services/pendingHierarchy";
 import { normalizeDisplayLabel } from "../services/abbr";
 
 function statusTone(s?: string) {
@@ -33,6 +34,20 @@ function removeNodesByIds(nodes: ModuleNodeView[], ids: Set<string>): ModuleNode
     .map((n) => ({ ...n, children: n.children ? removeNodesByIds(n.children, ids) : undefined }));
 }
 
+/** 契约 ModuleNode 树 → 前端 ModuleNodeView 树（字段映射；url/actionKind 一并带过来，避免 UI 丢数据） */
+function toModuleViewTree(nodes: any[]): ModuleNodeView[] {
+  return (nodes || []).map((n) => ({
+    id: String(n.id),
+    name: String(n.label ?? n.name ?? ""),
+    type: n.type,
+    status: n.status === "covered" ? "已覆盖" : n.status === "needs_review" ? "needs_review" : "未探索",
+    url: n.url,
+    pageTitle: n.pageTitle,
+    actionKind: n.actionKind,
+    children: toModuleViewTree(n.children || []),
+  }));
+}
+
 /** 判断录制/补录路径是否已存在于模块树（按路径末段功能名或完整路径比对，用于「已去重」标记） */
 function pathExistsInTree(path: string, nodes: ModuleNodeView[]): boolean {
   const trimmed = (path || "").trim();
@@ -44,6 +59,40 @@ function pathExistsInTree(path: string, nodes: ModuleNodeView[]): boolean {
       return n.children ? walk(n.children) : false;
     });
   return walk(nodes);
+}
+
+/**
+ * 待入树条目 → 契约 `ClickPath`（入树的唯一出口，两条入树路径共用，避免各写一份而漏字段）。
+ * 与 `ModuleNode` 对齐的字段（url / kind / parentMenu / actionSelector）必须全部带上，
+ * 否则入树节点会缺 URL，对后续「功能点 → 用例」失去价值。
+ */
+function pendingToClickPath(item: PendingTreeItem) {
+  return {
+    steps: [
+      {
+        selector: item.actionSelector || "",
+        text: item.label || item.path,
+        url: item.url || "",
+        timestamp: Date.now(),
+        kind: (item.kind === "action" ? "action" : "menu") as "menu" | "action",
+        parentMenu: item.parentMenu,
+      },
+    ],
+    inferredModule: item.module,
+    confidence: 1,
+    menuUrl: item.url,
+  };
+}
+
+/** 在树里按 label 找节点 id（入树响应未给出新增 id、或父条目已入树时的兜底）。
+ *  兼容契约节点（label）与前端视图节点（name）两种字段名。 */
+function findNodeIdByLabel(nodes: any[], label: string): string | undefined {
+  for (const n of nodes || []) {
+    if (String(n.label ?? n.name ?? "") === label) return String(n.id);
+    const hit = findNodeIdByLabel(n.children || [], label);
+    if (hit) return hit;
+  }
+  return undefined;
 }
 
 /** 模块树节点类型图标：目录📁 / 页面📄 / 功能🔘 / 系统🖥️ */
@@ -86,8 +135,9 @@ export function Explore() {
     exploreRemovePending,
     exploreUpdatePending,
     explorePromoteToTree,
-    explorePromoteAll,
     exploreAddPending,
+    exploreSetModuleTree,
+    exploreSetPendingTree,
     toast,
     addActivity,
     runPipelineExplore,
@@ -240,6 +290,108 @@ export function Explore() {
 
   const pendingCount = pendingTree.filter((p) => p.status === "待入树").length;
 
+  // ===== 入树的目标决策 =====
+  // 历史问题（三次迭代，都是用户实测反馈）：
+  //   v1 `disabled={!selectedModuleId}` → HTML 里 disabled 按钮不触发任何事件 ⇒ 点了毫无反应；
+  //   v2 只弹 toast 提示 → 提示一闪而过、且入树动作没发生 ⇒ 用户仍判为"没反应"；
+  //   v3 模块树为空时弹对话框 → 用户明确要求「**如果是空的就完全录入**」。
+  // 现版本：**任何情况下点击都会真的入树** —— 空树时直接按记录自身层级建到根级。
+  const [targetHint, setTargetHint] = useState(false);
+  /** 已入树条目 seq → 它在模块树里的真实节点 id。用于"先入父、后入子"的跨批次父子解析
+   *  （条目入树后会从待入树列表移除，届时 parentSeq 已指不到任何条目）。 */
+  const promotedIdBySeqRef = useRef<Map<number, string>>(new Map());
+
+  /**
+   * 决定「入树」的落点，**保证点击必有结果**：
+   *   ① 已在模块树选中行 → 落到选中行下方（拍板："落点以选中行为准"）
+   *   ② 未选行但模块树非空 → 默认落到第一个节点下方，并明确告知落点（可在树里拖拽调整）
+   *   ③ **模块树为空 → 直接建到根级**（`relativeToNodeId=null` + `end` ⇒ 契约里"追加到根"）
+   *      —— 用户的明确要求是"如果是空的就完全录入"，所以**不再弹任何对话框、也不要求先建节点**；
+   *      顶层条目建到根，带 parentSeq 的子条目再由 `resolveInsertTarget` 挂到父节点下。
+   */
+  const resolveFallback = (): { targetId: string | null; position: "below" | "end" } => {
+    if (selectedModuleId) return { targetId: selectedModuleId, position: "below" };
+    const first = moduleTree[0];
+    if (first) {
+      setTargetHint(true);
+      window.setTimeout(() => setTargetHint(false), 1800);
+      toast(`未选中目标行，已默认插入到「${first.name}」下方（可在模块树里拖拽调整位置）`);
+      return { targetId: first.id, position: "below" };
+    }
+    // 空树：直接建到根级（契约：relativeToNodeId 为 null ⇒ 追加到根）
+    return { targetId: null, position: "end" };
+  };
+
+  /**
+   * 解析条目的插入目标。**关键**：契约 `mergeManualSupplement` 里
+   * `above`/`below` 是"作为目标节点的**兄弟**插入"，只有 `end` 是"追加为目标的**子节点**"。
+   * 因此：
+   *   · 有父且能在树里找到父 → `end` + 父 id ⇒ **成为父的子节点**（这才是"入树自动建父子"）
+   *   · 顶层条目 → `below` + 选中行 ⇒ 与选中行**同级**、插在它下方（拍板："落点以选中行为准"）
+   *
+   * 父的定位按可靠性从高到低：
+   *   ① 父在**本次批量**里刚入树 → 用其真实节点 id
+   *   ② **`parentMenu`**（录制时记下的"这个按钮属于哪个菜单"）→ 树里按 label 找
+   *      （跨批次最可靠：父条目可能已入树并从列表移除，但按钮自身始终带着归属菜单名）
+   *   ③ 会话内历史映射（seq → 入树拿到的真实 id），覆盖"先单条入父、再单条入子"
+   *   ④ 父条目仍在列表 → 用其 label 在树里找
+   */
+  const resolveInsertTarget = (
+    item: PendingTreeItem,
+    tree: ModuleNodeView[],
+    idBySeq: Map<number, string>,
+    fallback: { targetId: string | null; position: "below" | "end" },
+  ): { relativeToNodeId: string | null; insertPosition: "above" | "below" | "end" } => {
+    const findParentId = (): string | undefined => {
+      const ps = item.parentSeq;
+      if (ps == null) return undefined;
+      const fromBatch = idBySeq.get(ps);
+      if (fromBatch) return fromBatch;
+      if (item.parentMenu) {
+        const byMenu = findNodeIdByLabel(tree, item.parentMenu);
+        if (byMenu) return byMenu;
+      }
+      const fromHistory = promotedIdBySeqRef.current.get(ps);
+      if (fromHistory) return fromHistory;
+      const parentLabel = pendingTree.find((p) => p.seq === ps)?.label;
+      return parentLabel ? findNodeIdByLabel(tree, parentLabel) : undefined;
+    };
+    const parentId = findParentId();
+    if (parentId) return { relativeToNodeId: parentId, insertPosition: "end" };
+    return { relativeToNodeId: fallback.targetId, insertPosition: fallback.position };
+  };
+
+  // ===== T6：待入树列表持久化（两段式要求它是"探索屏 body 上的**永久卡片**"）=====
+  // 进入某系统时从后端加载一次；之后列表任何变更立即写回 —— 刷新页面 / 重启后端都不丢。
+  // ⚠ 这里只能用「**加载完成**」才置位的标记（hydrated），绝不能用「**发起加载**」就置位的标记。
+  //   曾用后者导致严重丢数据：加载是异步的，而写回 effect 依赖 pendingTree 变化 —— 首帧
+  //   pendingTree 为 []、标记又已被同步置位 ⇒ 写回 effect 立刻把**空数组** PUT 到后端，
+  //   覆盖掉已存的待入树记录（实测：后端 2 条 → 打开页面后变 0 条）。
+  const pendingHydratedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!system?.id || pendingHydratedRef.current === system.id) return;
+    let cancelled = false;
+    dataApi
+      .getPendingTree(system.id)
+      .then((items) => {
+        if (cancelled) return;
+        if (Array.isArray(items)) exploreSetPendingTree(items as any);
+      })
+      .catch(() => {})
+      .finally(() => {
+        // 加载（成功或失败）结束后才允许写回，避免用初始空态覆盖后端
+        if (!cancelled) pendingHydratedRef.current = system.id;
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [system?.id, exploreSetPendingTree]);
+
+  useEffect(() => {
+    if (!system?.id || pendingHydratedRef.current !== system.id) return;
+    dataApi.savePendingTree(system.id, pendingTree as any).catch(() => {});
+  }, [pendingTree, system?.id]);
+
   const handleSaveEdit = async () => {
     if (editTarget) {
       exploreUpdateModule(editTarget.id, { name: editTarget.name });
@@ -348,31 +500,64 @@ export function Explore() {
     try {
       setManualStep("正在停止录制...");
       const data = await dataApi.stopRecording(recordingId);
-      const steps: Array<{ url?: string; selector?: string; text?: string; timestamp?: number }> = data.clickPath?.steps || [];
-      // 按页面 URL 分组：同一页面的连续点击用「 → 」连接成一条路径，跨页面拆成多条待入树
-      const groups: Array<{ url: string; texts: string[] }> = [];
-      for (const s of steps) {
-        const u = s.url || "";
-        const label = s.text || s.selector || "";
-        const last = groups[groups.length - 1];
-        if (last && last.url === u) {
-          if (label && last.texts[last.texts.length - 1] !== label) last.texts.push(label);
-        } else {
-          groups.push({ url: u, texts: label ? [label] : [] });
-        }
-      }
+      const steps: Array<{
+        url?: string;
+        selector?: string;
+        text?: string;
+        timestamp?: number;
+        kind?: "menu" | "action";
+        parentMenu?: string;
+        /** 与 ModuleNode.actionKind 对齐（录制器已按通用动词分类） */
+        actionKind?: string;
+        pageTitle?: string;
+        /** 录制器提供的结构信号：所在列表容器的嵌套层数（用于判父子，替代"点击顺序即层级"） */
+        domLevel?: number;
+      }> = data.clickPath?.steps || [];
       const baseSeq = Math.max(0, ...pendingTree.map((p) => p.seq));
       const moduleName = data.capturedTitle || system.name;
-      if (groups.length === 0) {
+      if (steps.length === 0) {
         const emptyLabel = `录制于 ${new Date().toLocaleTimeString()}`;
         exploreAddPending({ seq: baseSeq + 1, path: emptyLabel, module: moduleName, confidence: "0.95", status: "待入树" });
         addActivity({ id: `act-${Date.now()}`, time: new Date().toLocaleTimeString().slice(0, 5), text: `人工补充：${emptyLabel}` });
       } else {
-        groups.forEach((g, i) => {
-          const pathLabel = g.texts.length > 0 ? g.texts.join(" → ") : (g.url || "未命名路径");
-          const isDup = pathExistsInTree(pathLabel, moduleTree);
-          exploreAddPending({ seq: baseSeq + 1 + i, path: pathLabel, module: moduleName, confidence: "0.95", status: isDup ? "已去重" : "待入树" });
-          addActivity({ id: `act-${Date.now()}-${i}`, time: new Date().toLocaleTimeString().slice(0, 5), text: `人工补充：${pathLabel}` });
+        // 层级推导已抽到 `services/pendingHierarchy.ts`（纯函数 + 单测，见 pendingHierarchy.test.ts）。
+        //
+        // ⚠ 关键修正（用户反馈"列表层级与实际系统不符"）：**点击顺序 ≠ 层级关系**。
+        //   用户依次点顶栏几个**同级 tab**（首页/用户管理/角色管理/菜单管理）时，
+        //   "后一条挂前一条下"会串成 7 层深链 —— 与真实结构完全不符。
+        //   现只用**真实结构信号**判父子（任一成立才算子级，否则一律同级，宁缺勿造）：
+        //     ① 录制器的 `domLevel`（所在列表容器嵌套层数）严格更大
+        //     ② 本条 URL 是上一条的**严格前缀延续**（#/a → #/a/b）
+        //   页面按钮/功能（kind='action'）例外：语义上归属最近点过的菜单。
+        const derived = derivePendingHierarchy(steps, baseSeq, moduleName);
+        derived.forEach((d) => {
+          const isDup = pathExistsInTree(d.label, moduleTree);
+          exploreAddPending({
+            /* 列表态 */
+            seq: d.seq,
+            path: d.label,
+            module: d.module,
+            confidence: "0.95",
+            status: isDup ? "已去重" : "待入树",
+            /* 与模块树节点 ModuleNode 对齐（与模块所需参数一致，入树无损直传） */
+            label: d.label, // ≡ ModuleNode.label
+            nodeType: d.kind === "action" ? "action" : "page", // ≡ ModuleNode.type
+            url: d.url, // ≡ ModuleNode.url
+            pageTitle: d.pageTitle, // ≡ ModuleNode.pageTitle
+            actionKind: d.actionKind, // ≡ ModuleNode.actionKind
+            actionSelector: d.actionSelector, // ≡ ModuleNode.actionSelector
+            subsystemId: system.id, // ≡ ModuleNode.subsystemId
+            parentSeq: d.parentSeq, // → 入树时解析为 ModuleNode.parentId
+            depth: d.depth, // ≡ ModuleNode.depth
+            /* 录制态 */
+            kind: d.kind,
+            parentMenu: d.parentMenu,
+          });
+        });
+        addActivity({
+          id: `act-${Date.now()}`,
+          time: new Date().toLocaleTimeString().slice(0, 5),
+          text: `人工补充：录制 ${steps.length} 条（最小到按钮/功能）`,
         });
       }
       setRecordingId(null);
@@ -380,7 +565,7 @@ export function Explore() {
       setManualOpen(false);
       setManualForm({ path: "", module: "", confidence: "0.90" });
       setManualStep("");
-      toast(`录制完成：已采集 ${groups.length} 条，请在待入树列表中确认`);
+      toast(`录制完成：已采集 ${steps.length} 条，请在待入树列表中确认`);
     } catch (e: any) {
       toast(`停止录制失败：${e.message}`);
       setManualStep("");
@@ -411,24 +596,67 @@ export function Explore() {
   const handlePromoteToTree = async (seq: number) => {
     const item = pendingTree.find((p) => p.seq === seq);
     if (!item) return;
-    if (!selectedModuleId) {
-      toast("请先选择一个模块树目标位置");
-      return;
+    const fallback = resolveFallback();
+    try {
+      // T9：入树改走**后端契约** mergeManualSupplement ——
+      // 保证节点带 url/type/actionKind（与 ModuleNode 一致），并支持插入位置与去重。
+      // （旧实现是前端本地插入 `{id,name}`，会丢掉 URL，导致该节点对「功能点→用例」无价值。）
+      const { relativeToNodeId, insertPosition } = resolveInsertTarget(item, moduleTree, new Map(), fallback);
+      const res = await dataApi.promoteManual(system.id, {
+        clickPath: [pendingToClickPath(item)],
+        insertPosition,
+        relativeToNodeId,
+      });
+      exploreSetModuleTree(toModuleViewTree(res.moduleTree));
+      const newId = res.addedNodeIds?.[0] ?? findNodeIdByLabel(res.moduleTree, item.label || item.path);
+      if (newId) promotedIdBySeqRef.current.set(seq, newId);
+      exploreRemovePending(seq);
+      toast(`已入树：${item.label || item.path}（已带 URL）`);
+      addActivity({ id: `act-${Date.now()}`, time: new Date().toLocaleTimeString().slice(0, 5), text: `入树：${item.path}` });
+    } catch (e: any) {
+      toast(`入树失败：${e.message}`);
     }
-    explorePromoteToTree(seq);
-    toast(`已入树：插入到「${item.module}」下方`);
-    addActivity({ id: `act-${Date.now()}`, time: new Date().toLocaleTimeString().slice(0, 5), text: `入树：${item.path}` });
-    await saveModuleTreeToBackend();
   };
 
   const handlePromoteAll = async () => {
-    if (!selectedModuleId) {
-      toast("请先在左侧选择模块树目标位置");
+    const targets = pendingTree.filter((p) => p.status === "待入树");
+    if (targets.length === 0) {
+      toast("待入树列表为空，暂无可入树的记录");
       return;
     }
-    explorePromoteAll();
-    toast(`${pendingCount} 条已批量插入到选中行下方`);
-    await saveModuleTreeToBackend();
+    const fallback = resolveFallback();
+    try {
+      // 全部入树同样走**后端契约**（此前走 `explorePromoteAll` 的前端本地插入 —— 会丢 url/type）。
+      // 逐条合并的原因：子条目要挂到**父条目的真实节点 id** 下，而父节点的 id 只有它入树后才存在；
+      // 故用 orderForPromote 保证「父先于子」，并把每次新增的 id 记进 idBySeq 供子条目引用。
+      const ordered = orderForPromote(targets);
+      const idBySeq = new Map<number, string>();
+      let tree = moduleTree;
+      for (const t of ordered) {
+        const { relativeToNodeId, insertPosition } = resolveInsertTarget(t, tree, idBySeq, fallback);
+        const res = await dataApi.promoteManual(system.id, {
+          clickPath: [pendingToClickPath(t)],
+          insertPosition,
+          relativeToNodeId,
+        });
+        tree = toModuleViewTree(res.moduleTree);
+        const newId = res.addedNodeIds?.[0] ?? findNodeIdByLabel(res.moduleTree, t.label || t.path);
+        if (newId) {
+          idBySeq.set(t.seq, newId);
+          promotedIdBySeqRef.current.set(t.seq, newId);
+        }
+      }
+      exploreSetModuleTree(tree);
+      targets.forEach((p) => exploreRemovePending(p.seq));
+      toast(`已入树 ${targets.length} 条（均带 URL）`);
+      addActivity({
+        id: `act-${Date.now()}`,
+        time: new Date().toLocaleTimeString().slice(0, 5),
+        text: `全部入树 ${targets.length} 条`,
+      });
+    } catch (e: any) {
+      toast(`入树失败：${e.message}`);
+    }
   };
 
   const saveModuleTreeToBackend = async (nextTree?: ModuleNodeView[]) => {
@@ -453,11 +681,15 @@ export function Explore() {
       label: n.name,
       parentId,
       subsystemId: system.id,
+      // 根因修复：保留 url / pageTitle / actionKind，manuallyAdded 反映真实来源（见 pipeline.ts 同款修复）。
+      url: n.url,
+      pageTitle: n.pageTitle,
+      actionKind: n.actionKind,
+      manuallyAdded: n.manuallyAdded ?? false,
       type: (n.type ?? 'module') as 'system' | 'module' | 'page' | 'action',
       status: n.status === '已覆盖' ? 'covered' : n.status === 'needs_review' ? 'needs_review' : 'unexplored',
       children: n.children ? moduleTreeToContract(n.children, n.id, depth + 1) : [],
       depth,
-      manuallyAdded: true,
     }));
 
   return (
@@ -502,7 +734,15 @@ export function Explore() {
       </div>
 
       <div className="grid g2">
-        <Card title={`模块树（☑多选 · 选中父节点自动选中子节点 · 支持拖拽）`}>
+        <Card
+          title={`模块树（☑多选 · 选中父节点自动选中子节点 · 支持拖拽）`}
+          // 未选中目标行就点「入树」时高亮本卡片，把用户的注意力引到"要选哪儿"
+          style={
+            targetHint
+              ? { outline: "2px solid var(--pri)", outlineOffset: 2, boxShadow: "0 0 0 4px rgba(37,99,235,0.15)" }
+              : undefined
+          }
+        >
           <div className="row" style={{ marginBottom: 8, gap: 8 }}>
             <Button size="sm" onClick={exploreSelectAll}>全选</Button>
             <Button size="sm" onClick={exploreInvertSelection}>反选</Button>
@@ -594,8 +834,45 @@ export function Explore() {
           <Table
             columns={[
               { key: "seq", title: "#", width: 40 },
-              { key: "path", title: "录制路径", mono: true },
+              {
+                key: "path",
+                title: "菜单 / 功能",
+                mono: true,
+                // 按 depth 缩进呈现**父子层级**（对应拍板"入树时自动建父子"），
+                // 类型标签用 `nodeType`（≡ ModuleNode.type），与模块树节点保持同一套语义。
+                render: (r: any) => {
+                  const nt = r.nodeType ?? (r.kind === "action" ? "action" : "page");
+                  return (
+                    <span style={{ paddingLeft: (r.depth ?? 0) * 16, display: "inline-block" }}>
+                      {(r.depth ?? 0) > 0 && <span style={{ color: "var(--mut)" }}>└─ </span>}
+                      {r.path}
+                      <span style={{ marginLeft: 6 }}>
+                        <Tag tone={nt === "action" ? "info" : "gray"}>{nt === "action" ? "功能" : "页面"}</Tag>
+                      </span>
+                    </span>
+                  );
+                },
+              },
               { key: "module", title: "所在模块" },
+              {
+                key: "actionKind",
+                title: "动作",
+                // ≡ ModuleNode.actionKind（新增/查询/导出… 由录制器按通用动词分类）
+                render: (r: any) => (r.actionKind ? <Tag tone="info">{r.actionKind}</Tag> : <Tag tone="gray">—</Tag>),
+              },
+              {
+                key: "url",
+                title: "URL",
+                mono: true,
+                render: (r: any) =>
+                  r.url ? (
+                    <span style={{ fontSize: 11 }} title={String(r.url)}>
+                      {String(r.url).replace(/^https?:\/\//, "").slice(0, 44)}
+                    </span>
+                  ) : (
+                    <Tag tone="gray">—</Tag>
+                  ),
+              },
               {
                 key: "confidence",
                 title: "置信",
@@ -620,29 +897,57 @@ export function Explore() {
             <Button
               size="sm"
               variant="pri"
+              data-need-target={!selectedModuleId ? "1" : undefined}
+              style={!selectedModuleId ? { opacity: 0.6 } : undefined}
+              title={selectedModuleId ? "全部插入到选中行下方" : "未选目标行：默认插到第一个节点下；模块树为空时直接建到根级"}
               onClick={handlePromoteAll}
             >
               ✓ 全部入树
             </Button>
-            <Button size="sm" onClick={() => toast("已忽略")}>
+            <Button
+              size="sm"
+              variant="dng"
+              disabled={pendingTree.filter((p) => p.status === "待入树").length === 0}
+              onClick={() => {
+                const targets = pendingTree.filter((p) => p.status === "待入树");
+                if (targets.length === 0) return;
+                // T10：真正的「忽略」= 丢弃这些待入树条目（原先只是 toast 占位，点了没反应）
+                targets.forEach((p) => exploreRemovePending(p.seq));
+                addActivity({
+                  id: `act-${Date.now()}`,
+                  time: new Date().toLocaleTimeString().slice(0, 5),
+                  text: `忽略待入树 ${targets.length} 条`,
+                });
+                toast(`已忽略 ${targets.length} 条待入树记录`);
+              }}
+            >
               ✗ 忽略
             </Button>
             <span style={{ fontSize: 12, color: "var(--mut)", marginLeft: 8 }}>
-              {selectedModuleId ? `将插入到选中行下方` : `未选中模块树行时 [入树] 置灰；先在左侧选中目标位置`}
+              {selectedModuleId ? "将插入到选中行下方" : "未选目标行：默认插到第一个节点下；模块树为空时直接建到根级（按记录层级自动建树）"}
             </span>
           </div>
           {pendingTree.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <b>行操作：</b>
               {pendingTree.map((item) => (
-                <div key={item.seq} className="row" style={{ marginTop: 4, gap: 8 }}>
+                <div
+                  key={item.seq}
+                  className="row"
+                  style={{ marginTop: 4, gap: 8, paddingLeft: 8 + (item.depth ?? 0) * 16 }}
+                >
                   <span style={{ fontSize: 12, color: "var(--mut)" }}>#{item.seq}</span>
+                  {(item.depth ?? 0) > 0 && <span style={{ color: "var(--mut)" }}>└─</span>}
                   <span style={{ fontSize: 13 }}>{item.path}</span>
+                  {item.kind === "action" && <Tag tone="info">功能</Tag>}
                   {item.status === "待入树" && (
                     <>
                       <Button
                         size="sm"
                         variant="pri"
+                        data-need-target={!selectedModuleId ? "1" : undefined}
+                        style={!selectedModuleId ? { opacity: 0.6 } : undefined}
+                        title={selectedModuleId ? "插入到选中行下方" : "未选目标行：默认插到第一个节点下；模块树为空时直接建到根级"}
                         onClick={() => handlePromoteToTree(item.seq)}
                       >
                         入树

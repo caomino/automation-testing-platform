@@ -35,12 +35,22 @@ export const ClickStepSchema = z.object({
   text: z.string(),
   url: z.string(),
   timestamp: z.number(),
+  /**
+   * v1.1 新增（**可选**，向后兼容）：本次点击的类别。
+   * - `menu`   = 导航菜单项（决定"归属哪个菜单"）
+   * - `action` = 页面内的按钮/功能（人工补充的**最小颗粒度**）
+   */
+  kind: z.enum(['menu', 'action']).optional(),
+  /** v1.1 新增（可选）：`kind='action'` 时，该按钮/功能归属的菜单名 */
+  parentMenu: z.string().optional(),
 });
 
 export const ClickPathSchema = z.object({
   steps: z.array(ClickStepSchema),
   inferredModule: z.string(),
   confidence: z.number().min(0).max(1),
+  /** v1.1 新增（可选）：该菜单页自身的 URL（与 steps 内按钮的 url 区分开） */
+  menuUrl: z.string().optional(),
 });
 
 export const ManualSupplementSchema = z.object({

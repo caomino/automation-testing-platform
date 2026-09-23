@@ -195,15 +195,54 @@ export interface ModuleNodeView {
   type?: "system" | "module" | "page" | "action";
   children?: ModuleNodeView[];
   status?: "已覆盖" | "needs_review" | "未探索";
+  /** ≡ 契约 ModuleNode.url：页面/功能的导航地址（人工补录入树时必须保留，用例阶段靠它取证） */
+  url?: string;
+  /** ≡ 契约 ModuleNode.pageTitle */
+  pageTitle?: string;
+  /** ≡ 契约 ModuleNode.actionKind（动作语义：create/query/export…） */
+  actionKind?: string;
   manuallyAdded?: boolean;
 }
 
 export interface PendingTreeItem {
+  /* ===== 列表态（仅 UI 用，入树后不保留） ===== */
   seq: number;
+  /** 显示名（≡ ModuleNode.label） */
   path: string;
+  /** 归属模块（显示用；≡ 其父菜单名） */
   module: string;
   confidence: string;
+  /** 列表状态：待入树 / 已去重 */
   status: "待入树" | "已去重";
+
+  /* ===== 与模块树节点 `ModuleNode` 对齐（用户要求：与模块所需参数一致，入树**无损直传**）=====
+     ModuleNode 必需：label / type / parentId / subsystemId / status / children / depth
+     ModuleNode 可选：url / pageTitle / actionKind / actionSelector / actionText / manuallyAdded
+     此处以同名同义字段承载；parentId 暂以 parentSeq 表达，入树时解析为真实 parentId。 */
+  /** ≡ ModuleNode.label（节点显示名） */
+  label?: string;
+  /** ≡ ModuleNode.type：`page` = 菜单项/页面；`action` = 页面按钮/功能（最小颗粒度） */
+  nodeType?: "page" | "action";
+  /** ≡ ModuleNode.url（该次点击的真实落地地址，用例阶段靠它导航取证） */
+  url?: string;
+  /** ≡ ModuleNode.pageTitle（页面标题） */
+  pageTitle?: string;
+  /** ≡ ModuleNode.actionKind（动作语义：新增/查询/导出/删除…；仅 nodeType='action' 时有值） */
+  actionKind?: string;
+  /** ≡ ModuleNode.actionSelector（动作元素 selector） */
+  actionSelector?: string;
+  /** ≡ ModuleNode.subsystemId（所属子系统） */
+  subsystemId?: string;
+  /** ≡ ModuleNode.parentId：此处存父条目 seq，入树时解析为真实 parentId；null = 顶层 */
+  parentSeq?: number | null;
+  /** ≡ ModuleNode.depth（层级深度） */
+  depth?: number;
+
+  /* ===== 录制态（UI 标注 & 归属推断用） ===== */
+  /** 录制类别：菜单项 / 页面按钮·功能 */
+  kind?: "menu" | "action";
+  /** kind='action' 时归属的菜单名 */
+  parentMenu?: string;
 }
 
 export interface AiConfigView {
@@ -392,6 +431,8 @@ export type Action =
   | { type: "EXPLORE_ADD_MODULE"; parentId: string | null; module: ModuleNodeView }
   | { type: "EXPLORE_UPDATE_MODULE"; id: string; patch: Partial<ModuleNodeView> }
   | { type: "EXPLORE_REMOVE_MODULE"; id: string }
+  | { type: "EXPLORE_SET_MODULE_TREE"; tree: ModuleNodeView[] }
+  | { type: "EXPLORE_SET_PENDING_TREE"; items: PendingTreeItem[] }
   | { type: "EXPLORE_ADD_PENDING"; item: PendingTreeItem }
   | { type: "EXPLORE_REMOVE_PENDING"; seq: number }
   | { type: "EXPLORE_UPDATE_PENDING"; seq: number; patch: Partial<PendingTreeItem> }
@@ -908,6 +949,13 @@ export function reducer(state: AppState, action: Action): AppState {
         nodes.filter((n) => n.id !== action.id).map((n) => ({ ...n, children: n.children ? removeNode(n.children) : undefined }));
       return { ...state, moduleTree: removeNode(state.moduleTree) };
     }
+    case "EXPLORE_SET_MODULE_TREE":
+      // 入树走后端契约合并（mergeManualSupplement）后，用后端返回的整棵树替换本地，
+      // 保证入树节点字段（url/type/actionKind/manuallyAdded）与 ModuleNode 完全一致。
+      return { ...state, moduleTree: action.tree };
+    case "EXPLORE_SET_PENDING_TREE":
+      // T6：从后端加载待入树列表（持久化）——替换本地，保证刷新/重启后仍在
+      return { ...state, pendingTree: action.items };
     case "EXPLORE_ADD_PENDING":
       return { ...state, pendingTree: [...state.pendingTree, action.item] };
     case "EXPLORE_REMOVE_PENDING":
@@ -2110,6 +2158,8 @@ export function useApp() {
     exploreInvertSelection: () => dispatch({ type: "EXPLORE_INVERT_SELECTION" }),
     exploreMoveNode: (sourceId: string, targetId: string, position: "before" | "after" | "child") => dispatch({ type: "EXPLORE_MOVE_NODE", sourceId, targetId, position }),
     exploreAddPending: (item: PendingTreeItem) => dispatch({ type: "EXPLORE_ADD_PENDING", item }),
+    exploreSetModuleTree: (tree: ModuleNodeView[]) => dispatch({ type: "EXPLORE_SET_MODULE_TREE", tree }),
+    exploreSetPendingTree: (items: PendingTreeItem[]) => dispatch({ type: "EXPLORE_SET_PENDING_TREE", items }),
     exploreRemovePending: (seq: number) => dispatch({ type: "EXPLORE_REMOVE_PENDING", seq }),
     exploreUpdatePending: (seq: number, patch: Partial<PendingTreeItem>) => dispatch({ type: "EXPLORE_UPDATE_PENDING", seq, patch }),
     explorePromoteToTree: (seq: number) => dispatch({ type: "EXPLORE_PROMOTE_TO_TREE", seq }),

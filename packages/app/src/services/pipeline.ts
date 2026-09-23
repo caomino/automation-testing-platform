@@ -308,6 +308,12 @@ export function toModuleView(nodes: ModuleNode[]): ModuleNodeView[] {
     id: n.id,
     name: n.label ?? n.id,
     type: n.type,
+    // 根因修复：必须把 url / pageTitle / actionKind / manuallyAdded 一并透传到视图。
+    // 否则 UI 拿到的树无 url → 后续 feature / case 阶段无法按真实页面 URL 精准取证（全部退化按名点击）。
+    url: n.url,
+    pageTitle: n.pageTitle,
+    actionKind: n.actionKind,
+    manuallyAdded: n.manuallyAdded,
     status: n.status === 'covered' ? '已覆盖' : n.status === 'needs_review' ? 'needs_review' : '未探索',
     children: n.children ? toModuleView(n.children) : undefined,
   }));
@@ -385,10 +391,15 @@ export function fromModuleView(nodes: ModuleNodeView[], parentId: string | null 
     label: n.name,
     parentId,
     subsystemId,
+    // 根因修复：回传时须保留 url / pageTitle / actionKind，并让 manuallyAdded 反映真实来源
+    //（探索产物应为 false，人工补录才为 true）。硬编码 true 会让所有功能点被误判 source:'manual'。
+    url: n.url,
+    pageTitle: n.pageTitle,
+    actionKind: n.actionKind as ModuleNode['actionKind'],
+    manuallyAdded: n.manuallyAdded ?? false,
     status: n.status === '已覆盖' ? 'covered' : n.status === 'needs_review' ? 'needs_review' : 'unexplored',
     children: n.children ? fromModuleView(n.children, n.id, subsystemId, depth + 1) : [],
     depth,
-    manuallyAdded: true,
     type: (n.type ?? 'module') as 'system' | 'module' | 'page' | 'action',
   }));
 }

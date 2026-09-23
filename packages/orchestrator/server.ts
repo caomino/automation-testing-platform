@@ -18,6 +18,9 @@ import { validateNewProject } from './src/storeValidation.js';
 import type { ProjectStore, AIConfigRecord } from '@test-platform/infra-store';
 import { createCredentialStore } from '@test-platform/infra-cred';
 import { getTakeoverEngine } from '@test-platform/stage-login';
+// T5：复用已冻结契约的人工补录合并逻辑（支持 above/below/end + relativeToNodeId + 去重 + 带 url/type）
+import { mergeManualSupplement } from '@test-platform/stage-explore';
+import type { ManualSupplement } from '@test-platform/contracts';
 import {
   testConnection as testAIConnection,
   fetchRemoteModels,
@@ -271,6 +274,58 @@ async function handleStore(
       const systemId = query.get('systemId') ?? m[1];
       const tree = await store.getModuleTree(systemId);
       return jsonResponse(res, 200, true, tree);
+    }
+
+    /**
+     * T5：**仅合并**人工补录（不重新探索）—— 前端「入树」调用。
+     * 复用已冻结契约 `mergeManualSupplement`（above/below/end + relativeToNodeId + 去重 +
+     * 写 label/url/type/actionKind/manuallyAdded），落库后返回新树。
+     * ⇒ 入树不再是前端本地插入，**不会丢 URL**。
+     *
+     * ⚠ 路径不能放在 `/api/store/explore/` 下：index 里的分发明确把
+     * `/api/store/explore/*` 排除在 handleStore 之外（那段专供录制接口）。
+     */
+    m = pathname.match(/^\/api\/store\/promote-manual$/);
+    if (method === 'POST' && m) {
+      const { systemId, manualSupplement } = body as {
+        systemId?: string;
+        manualSupplement?: ManualSupplement;
+      };
+      if (!systemId || !manualSupplement) {
+        return jsonResponse(res, 400, false, undefined, 'systemId 与 manualSupplement 必填');
+      }
+      const current = ((await store.getModuleTree(systemId)) || []) as any[];
+      // 合并前先记下已有 id，合并后 diff 出**本次新增**的节点 id。
+      // 「全部入树」逐条合并时需要它：子条目要挂到父条目的真实 id 下，而父 id 只有它入树后才存在。
+      const idsOf = (ns: any[]): string[] => ns.flatMap((n) => [String(n.id), ...idsOf(n.children || [])]);
+      const beforeIds = new Set(idsOf(current));
+      const merged = mergeManualSupplement(current, manualSupplement, systemId);
+      const addedNodeIds = idsOf(merged).filter((id) => !beforeIds.has(id));
+      await store.saveModuleTree(systemId, merged);
+      console.log(
+        `[store] promote-manual: system=${systemId} paths=${manualSupplement.clickPath.length} ` +
+          `pos=${manualSupplement.insertPosition} -> nodes=${merged.length} added=${addedNodeIds.length}`,
+      );
+      return jsonResponse(res, 200, true, { moduleTree: merged, addedNodeIds });
+    }
+
+    // --- T6：待入树列表持久化（两段式第 3 步的"永久卡片"必须刷新/重启后仍在）---
+    // GET /api/store/pending-tree?systemId=xxx
+    m = pathname.match(/^\/api\/store\/pending-tree$/);
+    if (method === 'GET' && m) {
+      const systemId = query.get('systemId') ?? '';
+      if (!systemId) return jsonResponse(res, 400, false, undefined, 'systemId 必填');
+      const items = (await store.getPendingTree(systemId)) || [];
+      return jsonResponse(res, 200, true, items);
+    }
+    // PUT /api/store/pending-tree  body: { systemId, items }
+    if (method === 'PUT' && m) {
+      const { systemId, items } = body as { systemId?: string; items?: any[] };
+      if (!systemId || !Array.isArray(items)) {
+        return jsonResponse(res, 400, false, undefined, 'systemId 与 items 必填');
+      }
+      await store.savePendingTree(systemId, items);
+      return jsonResponse(res, 200, true, { count: items.length });
     }
 
     // PUT /api/store/projects/:id/meta-config → saveMetaConfig
@@ -596,7 +651,11 @@ const server = http.createServer(async (req, res) => {
             try { document.removeEventListener('click', window.__tpCapture, true); } catch (e) {}
           }
           window.__tpClicks = [];
-          var SEL = 'button,a[href],a[role="button"],[role="button"],input,select,textarea,[role="tab"],.ant-tabs-tab,.el-tabs__item,tr,.ant-list-item,[role="listitem"]';
+          window.__tpLastMenu = '';
+          // HARD RULE #0：可点击元素只用【标准元素 + ARIA role】，禁止框架类名。
+          // 历史违规已清除：.ant-tabs-tab / .el-tabs__item / .ant-list-item / [role="listitem"] / tr / select / textarea
+          // （人工补充只需要「菜单项 + 页面按钮/功能」，表格行与表单控件不是功能点）
+          var SEL = 'a[href],button,[role="button"],[role="tab"],[role="menuitem"],input[type="button"],input[type="submit"]';
           var isVisible = function(n){
             if(!n) return false;
             if(n.getAttribute && n.getAttribute('aria-hidden')==='true') return false;
@@ -627,12 +686,119 @@ const server = http.createServer(async (req, res) => {
             if(n.className && typeof n.className==='string' && n.className.trim()) return '.'+n.className.trim().split(/\\s+/).join('.');
             return n.tagName ? n.tagName.toLowerCase() : '';
           };
+          /**
+           * 导航区判定（几何，与自动探索 navZoneShape 同口径，零类名）：
+           * 侧栏=贴边竖向窄条；顶栏=贴顶横向矮条。命中 ⇒ 本次点击是「菜单项」，
+           * 否则是「页面按钮/功能」（人工补充的最小颗粒度）。
+           */
+          var inNavZone = function(el){
+            var vw = window.innerWidth || document.documentElement.clientWidth || 1;
+            var vh = window.innerHeight || document.documentElement.clientHeight || 1;
+            var p = el, d = 0;
+            while(p && p !== document.body && d < 8){
+              var r = p.getBoundingClientRect ? p.getBoundingClientRect() : null;
+              if(r && r.width > 0 && r.height > 0){
+                if((r.left <= vw*0.12 || r.right >= vw*0.88) && r.width <= vw*0.45 && r.height >= vh*0.08) return true;
+                if(r.top <= vh*0.12 && r.height <= vh*0.15 && r.width >= vw*0.35) return true;
+              }
+              p = p.parentElement; d++;
+            }
+            return false;
+          };
+          /**
+           * 动作语义分类（**通用业务动词**，与 contracts 的 ModuleNode.actionKind 同枚举；
+           * 不含任何系统/框架指纹，不违反 HARD RULE #0）。
+           * 目的：让待入树条目字段与「模块树节点所需参数」一致（用户要求），入树时无损直传。
+           */
+          var classifyAction = function(t){
+            t = (t||'').trim();
+            if(/新增|新建|添加|创建|add|create|new/i.test(t)) return 'create';
+            if(/编辑|修改|更新|edit|update/i.test(t)) return 'update';
+            if(/删除|移除|delete|remove/i.test(t)) return 'delete';
+            if(/查询|搜索|检索|search|query|filter/i.test(t)) return 'query';
+            if(/重置|清空|reset/i.test(t)) return 'reset';
+            if(/详情|查看|detail|view/i.test(t)) return 'detail';
+            if(/导入|上传|import|upload/i.test(t)) return 'import';
+            if(/导出|下载|export|download/i.test(t)) return 'export';
+            if(/列表|list/i.test(t)) return 'list';
+            return 'other';
+          };
+          /**
+           * DOM 层级（**判断父子关系的结构信号，与系统无关**）：
+           * 统计元素向上穿过的「列表容器」个数（ul/ol 或 role=menu/group/tree/menubar）。
+           * 同一容器内并列的菜单项 level 相同 ⇒ 同级；嵌套列表里的 level 更大 ⇒ 子级。
+           * 用途：修正「点击顺序 ≠ 层级」——依次点几个同级 tab 不应被串成深层链。
+           */
+          var domLevel = function(el){
+            var lvl = 0, p = el.parentElement, d = 0;
+            while(p && p !== document.body && d < 12){
+              var tag = p.tagName;
+              var role = (p.getAttribute && (p.getAttribute('role') || '').toLowerCase()) || '';
+              if(tag === 'UL' || tag === 'OL' || role === 'menu' || role === 'group' || role === 'tree' || role === 'menubar') lvl++;
+              p = p.parentElement; d++;
+            }
+            return lvl;
+          };
+          // DOM 祖先菜单链：向上收集"含子菜单的 li"的标题文本 —— 这是**真实层级**，
+          // 与点击顺序无关（用户跳跃点击、来回切换都不会再串链或拍平）。
+          // 只依赖 ul/li 标准列表结构（结构判据，非框架类名，符合 HARD RULE #0）。
+          var menuPath = function(el){
+            var path = [];
+            var li = el.closest ? el.closest('li') : null;
+            var guard = 0;
+            while (li && guard++ < 12) {
+              var outer = li.parentElement ? li.parentElement.closest('li') : null;
+              if (!outer) break;
+              // 祖先 li 的标题 = 其直接子节点中非 UL 部分的文本（不含子菜单内容）
+              var t = '';
+              for (var cn = outer.firstChild; cn; cn = cn.nextSibling) {
+                if (cn.nodeType === 1 && !/^UL$/i.test(cn.tagName)) t += ' ' + (cn.textContent || '');
+              }
+              t = t.replace(/\s+/g, ' ').trim();
+              if (t) path.unshift(t.slice(0, 40));
+              li = outer;
+            }
+            return path;
+          };
           var capture = function(e){
             var t = e.target;
             var el = (t && t.closest) ? t.closest(SEL) : null;
             if(!el || !isVisible(el)) return;
             if(el.tagName==='A' && isExternalLink(el)) return;
-            window.__tpClicks.push({ url: location.href, text: textOf(el||t), selector: describe(el||t), timestamp: Date.now() });
+            var text = textOf(el||t);
+            // 无文本的图标/装饰链接不是可入树的菜单项（实测 fantastic 首页会混入空文本项）
+            if(!text) return;
+            var kind = inNavZone(el) ? 'menu' : 'action';
+            var rec = {
+              url: location.href,           // 先入数组（不丢），URL 稍后修正为真实落地地址
+              text: text,
+              selector: describe(el||t),
+              timestamp: Date.now(),
+              kind: kind,
+              // 结构信号：所在列表容器的嵌套层数（供前端判定父子，替代"点击顺序即层级"）
+              domLevel: domLevel(el),
+              // **权威层级信号**：DOM 祖先菜单链（真实 ul/li 嵌套里的祖先菜单标题）。
+              // 前端按它建层级 ⇒ 与点击顺序完全无关（修正"层级拍平/串深链"两类问题）。
+              menuPath: kind === 'menu' ? menuPath(el) : undefined,
+              // 归属**只对「页面按钮/功能」有意义**（它属于最近一次点开的菜单）；
+              // 菜单项自身写 parentMenu 会造成语义混乱（实测暴露）。
+              parentMenu: kind === 'action' ? (window.__tpLastMenu || undefined) : undefined,
+              // 与 ModuleNode 对齐：动作语义分类（仅按钮/功能有值）
+              actionKind: kind === 'action' ? classifyAction(text) : undefined,
+            };
+            window.__tpClicks.push(rec);
+            if(kind === 'menu') window.__tpLastMenu = text;
+            // **关键修复**：click 事件里立即读 location.href 拿到的是「点击前」地址（SPA/hash/iframe 场景
+            // 会导致整段录制 url 全同 → 前端按 URL 分组后只剩一条）。延迟读取真实落地地址；
+            // 同时优先用该元素自身的 href 解析出目标地址（更贴近"这个菜单通向哪"）。
+            var href = (el.getAttribute && el.getAttribute('href')) || '';
+            setTimeout(function(){
+              var u = location.href;
+              if(href && !/^(javascript:|#)/i.test(href)){
+                try { var abs = new URL(href, location.href).href; if(/^https?:$/i.test(new URL(abs).protocol)) u = abs; } catch(err){}
+              }
+              rec.url = u;
+            }, 400);
           };
           window.__tpCapture = capture;
           document.addEventListener('click', capture, true);
@@ -708,6 +874,10 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  /**
+   * T5 的「仅合并」路由见上方 `/api/store/projects/:id/module-tree` 同作用域处
+   * （那里才有 store，`url ===` 作用域内无 store 变量）。
+   */
 
   if (req.method === 'POST' && url === '/api/stage') {
     try {

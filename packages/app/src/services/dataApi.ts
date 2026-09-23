@@ -403,6 +403,68 @@ export async function stopRecording(recordingId: string): Promise<{ recordingId:
   return json.data;
 }
 
+/**
+ * T9：人工补录入树 —— 走**后端契约** `mergeManualSupplement`（不重探索）。
+ * 返回**合并后的整棵模块树**，前端用它替换本地树，保证入树节点带 URL/类型/动作语义，
+ * 并支持插入位置（above/below/end）与去重。
+ */
+export async function promoteManual(
+  systemId: string,
+  manualSupplement: {
+    clickPath: Array<{
+      steps: Array<{
+        selector: string;
+        text: string;
+        url: string;
+        timestamp: number;
+        kind?: "menu" | "action";
+        parentMenu?: string;
+      }>;
+      inferredModule: string;
+      confidence: number;
+      menuUrl?: string;
+    }>;
+    insertPosition: "above" | "below" | "end";
+    relativeToNodeId: string | null;
+  },
+): Promise<{ moduleTree: any[]; addedNodeIds?: string[] }> {
+  const res = await fetch(`${API}/promote-manual`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ systemId, manualSupplement }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+  const json = await res.json();
+  return json.data;
+}
+
+// ===== Pending Tree（T6：待入树列表持久化，刷新/重启不丢）=====
+
+export async function getPendingTree(systemId: string): Promise<any[]> {
+  const res = await fetch(`${API}/pending-tree?systemId=${encodeURIComponent(systemId)}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+  const json = await res.json();
+  return json.data || [];
+}
+
+export async function savePendingTree(systemId: string, items: any[]): Promise<void> {
+  const res = await fetch(`${API}/pending-tree`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ systemId, items }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(err.error || `HTTP ${res.status}`);
+  }
+}
+
 // ===== Browser Capture (MCP 浏览器捕获) =====
 
 const CAPTURE_API = '/api/capture';

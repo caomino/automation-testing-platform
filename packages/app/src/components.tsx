@@ -13,6 +13,7 @@ export function Button({
   disabled,
   type,
   style,
+  "data-need-target": dataNeedTarget,
 }: {
   children: ReactNode;
   key?: any;
@@ -24,10 +25,21 @@ export function Button({
   disabled?: boolean;
   type?: "button" | "submit";
   style?: CSSProperties;
+  /** "待满足前置条件"标记（如"还没选目标行"）：**按钮仍可点**，点了会给出提示并引导。
+   *  刻意不用 `disabled`/`aria-disabled` —— 后者会让屏幕阅读器与自动化工具误判为不可操作。 */
+  "data-need-target"?: string;
 }) {
   const cls = ["btn", variant, size, className].filter(Boolean).join(" ");
   return (
-    <button type={type ?? "button"} className={cls} onClick={onClick} title={title} disabled={disabled} style={style}>
+    <button
+      type={type ?? "button"}
+      className={cls}
+      onClick={onClick}
+      title={title}
+      disabled={disabled}
+      style={style}
+      data-need-target={dataNeedTarget}
+    >
       {children}
     </button>
   );
