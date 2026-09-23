@@ -17,7 +17,7 @@
  */
 
 import http from 'node:http';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import { extname, join } from 'node:path';
 
 const MIME = {
@@ -53,16 +53,56 @@ function serveStatic(req, res, distDir) {
     return res.end('Forbidden');
   }
 
-  if (existsSync(filePath)) {
-    const ext = extname(filePath).toLowerCase();
+  // ⚠ 崩溃根修（2026-09-22 事故）：请求"存在的目录"（如 /assets/）时，existsSync 为 true，
+  //   createReadStream(目录) 会抛 EISDIR —— 而 ReadStream 的 'error' 事件若无监听会**直接崩掉整个进程**。
+  //   曾导致前端服务静默死亡（用户视角："页面打不开/点了没反应"）。
+  //   ⇒ 目录一律回落 index.html；所有 ReadStream 必须挂 error 监听。
+  let target = filePath;
+  try {
+    if (existsSync(target) && statSync(target).isDirectory()) target = join(distDir, 'index.html');
+  } catch {
+    target = join(distDir, 'index.html');
+  }
+
+  if (existsSync(target)) {
+    const ext = extname(target).toLowerCase();
     const contentType = MIME[ext] || 'application/octet-stream';
-    res.writeHead(200, { 'Content-Type': contentType });
-    createReadStream(filePath).pipe(res);
+    res.writeHead(200, { 'Content-Type': contentType, ...cacheHeadersFor(target) });
+    const stream = createReadStream(target);
+    // 绝不让流错误冒泡成进程崩溃
+    stream.on('error', () => {
+      try {
+        res.destroy();
+      } catch {}
+    });
+    stream.pipe(res);
   } else {
     const indexPath = join(distDir, 'index.html');
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    createReadStream(indexPath).pipe(res);
+    // SPA 入口必须每次校验：否则浏览器会启发式缓存 index.html，
+    // 用户刷新后仍引用**旧 hash 的前端资源** ⇒ 表现为"代码改了但页面行为没变"（实测踩过）。
+    res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache, must-revalidate' });
+    const stream = createReadStream(indexPath);
+    stream.on('error', () => {
+      try {
+        res.destroy();
+      } catch {}
+    });
+    stream.pipe(res);
   }
+}
+
+/**
+ * 静态资源缓存策略：
+ * · `index.html`（SPA 入口）→ `no-cache`：每次回源校验，保证发版后立刻生效
+ * · `/assets/*`（Vite 产物，文件名含内容 hash）→ 长缓存 + immutable：内容变则文件名变，可放心缓存
+ * · 其它（favicon 等）→ 短缓存
+ * @param {string} filePath
+ */
+function cacheHeadersFor(filePath) {
+  const p = filePath.replace(/\\/g, '/');
+  if (p.endsWith('/index.html')) return { 'Cache-Control': 'no-cache, must-revalidate' };
+  if (p.includes('/assets/')) return { 'Cache-Control': 'public, max-age=31536000, immutable' };
+  return { 'Cache-Control': 'public, max-age=300' };
 }
 
 /** API 请求前缀：命中即走代理，绝不进入 SPA fallback */

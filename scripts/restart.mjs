@@ -305,6 +305,63 @@ async function cmdStop() {
   stopAllServices();
 }
 
+/**
+ * 只重启**前端静态服务**：不重新构建、不碰后端。
+ *
+ * 用途：改了 `packages/app/src/**` 或 `scripts/frontend-server.mjs` 后刷新前端。
+ * 相比 `restart`：省掉根构建 + 库构建（数分钟），且**不会打断后端会话**（3001 保持运行）。
+ * 前提：`packages/app/dist` 已是最新（先跑 `npx pnpm --filter @test-platform/app build`）。
+ *
+ * ⚠ 与 `restart` 一样，本进程**常驻托管**前端服务（`await new Promise(() => {})` 不退出），
+ *   请以后台常驻方式启动（终端长期运行 / 工具的后台任务）。
+ */
+async function cmdFrontend() {
+  log('=== Restart Frontend Only ===', 'info');
+
+  const frontendPid = getPidByPort(CONFIG.frontendPort);
+  if (frontendPid) {
+    try {
+      execSync(`taskkill /F /PID ${frontendPid}`, { encoding: 'utf-8', timeout: 5000 });
+      log(`Stopped previous frontend (PID ${frontendPid})`, 'warn');
+    } catch {}
+  }
+  await waitForPortFree(CONFIG.frontendPort);
+
+  if (!existsSync(CONFIG.frontendDist)) {
+    log(`Frontend dist not found at ${CONFIG.frontendDist}.`, 'error');
+    log("Run 'npx pnpm --filter @test-platform/app build' first.", 'info');
+    process.exit(1);
+  }
+
+  const frontendServer = createFrontendServer({
+    distDir: CONFIG.frontendDist,
+    backendHost: '127.0.0.1',
+    backendPort: CONFIG.backendPort,
+  });
+  frontendServer.on('error', (err) => {
+    log(`Frontend listen failed: ${err.message}`, 'error');
+    process.exit(1);
+  });
+  frontendServer.listen(CONFIG.frontendPort, () => {
+    log(`Frontend running on http://localhost:${CONFIG.frontendPort}  (proxy /api -> 127.0.0.1:${CONFIG.backendPort})`, 'info');
+    log('Backend was NOT touched. Press Ctrl+C to stop.', 'info');
+  });
+
+  servicesRunning = true;
+  // ⚠ **不能复用 `setupCleanup`**：它的信号处理会调用 `stopAllServices()`，
+  //   那会把**后端一并杀掉**（实测踩过：本子命令退出时误杀了 3001 backend）。
+  //   这里只关自己的前端 server，绝不触碰后端。
+  const shutdown = () => {
+    try {
+      frontendServer.close();
+    } catch {}
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+  await new Promise(() => {});
+}
+
 async function cmdStatus() {
   log('=== Service Status ===', 'info');
   const backendPid = getPidByPort(CONFIG.backendPort);
@@ -335,12 +392,15 @@ async function main() {
     case 'stop':
       await cmdStop();
       break;
+    case 'frontend':
+      await cmdFrontend();
+      break;
     case 'status':
       await cmdStatus();
       break;
     default:
       log(`Unknown action: ${action}`, 'error');
-      log('Usage: node scripts/restart.mjs [build|restart|stop|status]', 'info');
+      log('Usage: node scripts/restart.mjs [build|restart|frontend|stop|status]', 'info');
       process.exit(1);
   }
 }
