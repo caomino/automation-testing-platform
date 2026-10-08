@@ -9,6 +9,7 @@
  */
 import type { FeatureProfile, ModuleNode, FeatureRow, FeatureProvenance } from '@test-platform/contracts';
 import { toAbbrToken, systemAbbrFromSubsystemId, toAbbrTokenWithLabel } from './abbreviation';
+import { classifyActionLabel } from './actionKind';
 import { deriveProvenance, makeProvenanceId } from './provenance';
 
 /** 默认测试类型（功能性测试；后续可由知识库/配置扩展） */
@@ -65,11 +66,21 @@ function moduleAncestors(node: ModuleNode, parentOf: Map<string, ModuleNode | nu
 /**
  * 功能点所在「可导航页面」URL。
  * action 节点的 url 多为动作自身 href（javascript:void(0)），不能用于二次探索；
- * 此时回退到最近的、带 http(s) URL 的祖先页面 —— 否则用例阶段拿不到页面地址，
+ * 此时回退到最近的、**可导航**的祖先页面 —— 否则用例阶段拿不到页面地址，
  * 只能退化为按名称点击（多匹配即被只读策略阻断）→ 证据缺失 → 用例 0 行。
+ *
+ * 可导航 = 绝对 http(s) URL 或站内相对路径（`/system/user`）。
+ * 仅排除 javascript:/mailto:/tel:/# 等动作自身伪地址 —— 保留相对路径是必需的：
+ * 多数后台模块树的 page.url 就是站内相对路径，此前因只认 http(s) 被整体丢弃，
+ * 导致 featurePaths 为空、二次探索主链路 early-return。
  */
 function resolvePageUrl(node: ModuleNode, parentOf: Map<string, ModuleNode | null>): string | undefined {
-  const usable = (u?: string): boolean => !!u && /^https?:\/\//i.test(u);
+  const usable = (u?: string): boolean => {
+    const v = (u ?? '').trim();
+    if (!v) return false;
+    if (/^(javascript|mailto|tel|data|about):/i.test(v)) return false;
+    return /^https?:\/\//i.test(v) || v.startsWith('/');
+  };
   if (usable(node.url)) return node.url;
   let cur = parentOf.get(node.id) ?? null;
   while (cur) {
@@ -159,9 +170,12 @@ export function buildFeatureTable(
     // 系统缩写：subsystemId 语义 id 优先；subsystemId 为 system 型时也接受中文 fallback（systemName）
     const systemAbbr = systemAbbrFromSubsystemId(rep.node.subsystemId, systemName);
     // 主模块缩写 = 一级目录 label；子模块缩写 = 二级目录 label（无二级时留空 → X 占位，保证 base 恒 3 段）
+    // 主模块缩写 = 一级目录 label；无一级目录（顶层 page 直接挂 action，如 首页/AI对话）时
+    // 回退到**节点自身 label**（首页→SY），而不是系统名（否则 systemName 与 systemAbbr 同源，
+    // 会产出 `<系统缩写>_<系统缩写>_X_01` 这类双段重复标识）。
     const mainAbbr = rep.mainModuleNode
       ? toAbbrTokenWithLabel(rep.mainModuleNode.id, rep.mainModuleNode.label)
-      : toAbbrTokenWithLabel(systemName, systemName);
+      : toAbbrTokenWithLabel(rep.node.id, rep.node.label);
     const subAbbr = rep.subModuleNode
       ? toAbbrTokenWithLabel(rep.subModuleNode.id, rep.subModuleNode.label)
       : 'X';
@@ -206,15 +220,21 @@ export function buildFeatureTable(
       // action 节点自身 href 常为 javascript:，须回退到祖先页面 URL（见 resolvePageUrl）。
       const pageUrl = resolvePageUrl(r.node, parentOf);
       if (pageUrl) featurePaths[testPointId] = pageUrl;
+      // 动作类型：探索阶段已写入则透传；缺失（AI 补全 / 人工补录 / 旧探索产物）时
+      // 按节点标签的**通用动词语义**兜底分类（见 actionKind.ts），避免功能点全量塌成 other。
+      const actionText = r.node.actionText ?? r.node.label;
+      const actionKind = r.node.actionKind ?? classifyActionLabel(actionText) ?? 'other';
       featureProfiles.push({
         featureId: testPointId,
         testPoint,
-        actionKind: r.node.actionKind ?? 'other',
+        actionKind,
         pageUrl,
         clickSelector: r.node.actionSelector,
         parentModule: r.mainModuleNode?.label,
         subsystemId: r.node.subsystemId,
-        sourceLabel: r.node.actionText,
+        // actionText 兜底为节点标签：二次探索需要「入口文本」在页面内按文本定位动作按钮
+        // （新增/详情等）。此前 actionText 恒为空 → 即便动作类型正确也无法定位按钮。
+        sourceLabel: actionText,
         sourceSelector: r.node.actionSelector,
         source: r.node.actionSelector?.startsWith('design:openapi:') ? 'openapi' : r.node.actionSelector?.startsWith('design:workflow:') ? 'workflow' : r.node.manuallyAdded ? 'manual' : 'web',
       });

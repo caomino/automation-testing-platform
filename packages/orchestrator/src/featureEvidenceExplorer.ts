@@ -24,6 +24,16 @@ import type {
 } from '@test-platform/contracts';
 import { DEFAULT_FEATURE_COLUMNS, FeatureEvidenceSchema } from '@test-platform/contracts';
 
+/**
+ * 判断字段标签是否疑似 DOM name/id token 泄漏（如 theSelect、btSelectItem、userName）。
+ * 规则：纯英文/数字标识符、无中文字符、长度适中 → 视为不可读 token，应在字段采集中跳过（而非泄漏进用例）。
+ * 仅当控件完全没有可读中文标签（aria-label/placeholder/关联 label 均缺失）时才命中，避免误伤带中文 placeholder 的正常字段。
+ */
+export function isLeakedToken(label: string | undefined): boolean {
+  if (!label) return false;
+  return /^[A-Za-z][A-Za-z0-9_]*$/.test(label) && label.length <= 40 && !/[\u4e00-\u9fff]/.test(label);
+}
+
 /** 日志器（结构类型，避免与具体 Logger 实现耦合；缺省静默） */
 export interface EvidenceLogger {
   info: (channel: string, message: string) => void;
@@ -166,6 +176,14 @@ export interface FeatureEvidenceOptions {
   url?: string;
   /** SPA 点击定位符（click: 之后的 selector），仅用于打开页面 */
   clickSelector?: string;
+  /**
+   * 本次点击是否为「页面进入」型菜单点击（只读导航）。
+   * 菜单项语义各异（有的是纯导航链接、有的是展开父菜单），不能按「动作 opener」白名单判定；
+   * 置 true 后放行 opener 语义校验，但**仍保留节点级安全校验**（命中提交/保存/删除等写操作词一律不点）。
+   */
+  entryClick?: boolean;
+  /** 系统入口 URL（entryClick 模式下重放菜单点击前先回到这里）；缺省时不重放 */
+  entryUrl?: string;
   /** 功能点自身的安全状态入口（在 base 页面采集后才使用） */
   actionSelector?: string;
   /** 原始入口文本，仅作为证据记录，不参与点击判断 */
@@ -319,6 +337,57 @@ async function restoreAndVerifyBase(engine: McpEngine, baseUrl: string | undefin
   }
 }
 
+/**
+ * 在系统入口页（baseUrl）上，按目标页面 URL 或菜单文本定位「进入该页面的菜单链接」选择器。
+ * 用于 entry_only 模式：复用登录会话、经菜单点击进入目标页（而非直接 navigate 深链 —— 深链在 SPA 下常因
+ * 会话未持久化而落在登录页）。优先按 href（普通路由 / hash 路由均可）精确匹配；否则按可见文本兜底。
+ * 返回可直接交给 runReadOnlyClick 的 CSS 选择器（如 `a[href="/system/user"]`），未命中返回 undefined。
+ */
+async function findMenuEntrySelector(
+  engine: McpEngine,
+  targetUrl: string,
+  label: string | undefined,
+): Promise<string | undefined> {
+  try {
+    return await engine.evaluate(
+      (args: { targetUrl: string; label?: string }): string | undefined => {
+        const g = globalThis as any;
+        const doc = g.document;
+        if (!doc) return undefined;
+        const anchors = Array.prototype.slice.call(doc.querySelectorAll('a[href]')) as any[];
+        const normalize = (raw: string): string => {
+          try {
+            const url = new g.URL(raw, doc.location.href);
+            return url.hash ? `${url.origin}${url.pathname}${url.hash}` : `${url.origin}${url.pathname}${url.search}`;
+          } catch {
+            return raw;
+          }
+        };
+        const target = normalize(args.targetUrl);
+        for (const anchor of anchors) {
+          const href = anchor.getAttribute('href') || '';
+          if (!href || /^javascript:/i.test(href) || href.startsWith('mailto:') || href.startsWith('tel:')) continue;
+          if (normalize(new g.URL(href, doc.location.href).href) === target) return `a[href="${href}"]`;
+        }
+        if (args.label) {
+          const norm = (value: string): string => value.replace(/\s+/g, '');
+          const expected = norm(args.label);
+          for (const anchor of anchors) {
+            if (norm(anchor.textContent || '') === expected) {
+              const href = anchor.getAttribute('href') || '';
+              return href ? `a[href="${href}"]` : undefined;
+            }
+          }
+        }
+        return undefined;
+      },
+      { targetUrl, label },
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 /** fail-safe：任何异常都返回 needsReview 证据，绝不抛出、绝不伪装覆盖 */
 function needsReviewEvidence(
   opts: FeatureEvidenceOptions,
@@ -358,7 +427,7 @@ export async function exploreFeatureEvidence(engine: McpEngine, opts: FeatureEvi
     const remaining = deadline - Date.now();
     return remaining > 0 ? withTimeout(operation, remaining) : Promise.reject(new Error(`timeout after ${timeout}ms`));
   };
-  const actionKind = opts.actionKind ?? 'other';
+  let actionKind = opts.actionKind ?? 'other';
   try {
     // ① 进入目标页（只读进入，不写）
     if (opts.url) {
@@ -366,7 +435,7 @@ export async function exploreFeatureEvidence(engine: McpEngine, opts: FeatureEvi
         return needsReviewEvidence(opts, `危险导航 URL，跳过访问以防触发写操作: ${opts.url}`);
       }
       await timed(engine.navigate(opts.url));
-      // SPA 页面导航后需等待渲染稳定（RuoYi 等重后台需 3-5s），否则表格/表单还未挂载、采到空页面
+      // SPA 页面导航后需等待渲染稳定（重后台首屏表格/表单挂载慢），否则会采到空页面
       await timed(engine.waitForTimeout(3000));
       // 通用：导航后验证是否落在登录页（会话失效）。不伪造证据、不反复自动登录。
       const afterNav = await currentUrl(engine);
@@ -378,8 +447,9 @@ export async function exploreFeatureEvidence(engine: McpEngine, opts: FeatureEvi
       // 打开只读表单/详情页（create/detail）属于只读进入：即便 selector 不匹配 SAFE_READ_ONLY_OPENER，
       // 也允许走节点级 isSafeCurrentNode 的 openerIntent 放行（新增/详情/查看…）。实际写操作（提交/保存/删除…）
       // 由 isSafeCurrentNode 的硬危险词拦截，绝不误触。
-      const allowOpen = actionKind === 'create' || actionKind === 'detail' || isSafeReadOnlyOpener(opts.clickSelector);
-      if (!allowOpen || !isSafeCurrentNode(findCurrentElement(currentElements, opts.clickSelector), 'action')) {
+      const allowOpen = opts.entryClick === true || actionKind === 'create' || actionKind === 'detail' || isSafeReadOnlyOpener(opts.clickSelector);
+      const entryNode = findCurrentElement(currentElements, opts.clickSelector, opts.actionText);
+      if (!allowOpen || !isSafeCurrentNode(entryNode, 'action')) {
         return needsReviewEvidence(opts, `clickSelector 未匹配当前安全语义节点，跳过点击以防误触: ${opts.clickSelector}`);
       }
       if (!engine.runReadOnlyClick) return needsReviewEvidence(opts, '引擎未提供只读点击能力，MCP/未知引擎不会执行点击');
@@ -418,6 +488,10 @@ export async function exploreFeatureEvidence(engine: McpEngine, opts: FeatureEvi
         containers.push(...(element.containers ?? []));
         for (const item of element.uncovered ?? []) addUncovered(uncovered, item);
         if (element.isFormControl) {
+          const fieldLabel = element.label ?? element.text ?? '';
+          // 防止 DOM token（theSelect/btSelectItem/userName）泄漏为查询字段名：控件缺可读中文标签时跳过，
+          // 不写入 fields（避免 theSelect 类合成名进入用例）。属诚实降级，不伪装覆盖。
+          if (isLeakedToken(fieldLabel)) continue;
           fields.push({
             ref: element.ref,
             selector: element.selector,
@@ -457,7 +531,17 @@ export async function exploreFeatureEvidence(engine: McpEngine, opts: FeatureEvi
     const baseElements = await timed(engine.extractPageElements());
     appendSnapshot(opts.initialState ?? 'base', baseElements);
     const baseUrl = opts.url ?? await currentUrl(engine);
-    const clickAndCheck = async (selector: string, purpose: 'action' | 'sample' | 'container', currentElements: ExploredElement[], allowSafePathChange = false): Promise<boolean> => {
+
+    // 页面反推 actionKind：profile 未分类（other/undefined）时，依据打开页内容保守推断，
+    // 纠正"功能点全 other"塌缩（问题④根因之一）。仅升级 other→list/query，二者覆盖键所需的
+    // 表格/字段在只读 base 快照中即可观测，不会引入伪造或额外 needs_review（见 deriveCoverageKeys）。
+    if (!actionKind || actionKind === 'other') {
+      const hasTable = baseElements.some((e) => e.tableInfo && (e.tableInfo.columns?.length ?? 0) > 0);
+      const hasForm = baseElements.some((e) => e.isFormControl);
+      if (hasTable) actionKind = 'list';
+      else if (hasForm) actionKind = 'query';
+    }
+    const clickAndCheck = async (selector: string, purpose: 'action' | 'sample' | 'container', currentElements: ExploredElement[], allowSafePathChange = false, fallbackText?: string): Promise<boolean> => {
       const node = purpose === 'action'
         ? findCurrentElement(currentElements, selector, opts.actionText)
         : findCurrentElement(currentElements, selector);
@@ -474,8 +558,9 @@ export async function exploreFeatureEvidence(engine: McpEngine, opts: FeatureEvi
       // selector 可能不精确（匹配多个节点）导致 runReadOnlyClick 拒绝：先试节点 selector，
       // 失败时用 Playwright 原生 `tag:has-text("动作文本")` 精确定位重试（allow_all 策略下按钮可点）。
       let result = await timed(engine.runReadOnlyClick(effectiveSelector, purpose));
-      if (result.status !== 'performed' && purpose === 'action' && opts.actionText?.trim() && node?.tag) {
-        const escaped = opts.actionText.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const retryText = fallbackText ?? opts.actionText;
+      if (result.status !== 'performed' && purpose === 'action' && retryText?.trim() && node?.tag) {
+        const escaped = retryText.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         result = await timed(engine.runReadOnlyClick(`${node.tag}:has-text("${escaped}")`, purpose));
       }
       if (result.status !== 'performed') {
@@ -496,6 +581,26 @@ export async function exploreFeatureEvidence(engine: McpEngine, opts: FeatureEvi
         return false;
       }
       return true;
+    };
+
+    // 恢复「干净的目标基页」：点击打开的浮层（弹窗/抽屉/遮罩）不会随 URL 恢复自动关闭，
+    // 会拦截下一次点击（真实系统同理，仅恢复 URL 不够）。entry_click 模式重放菜单点击
+    // （保持「点击进入」语义，不直接 navigate 深链）；navigate 模式重新导航目标页。
+    const resetToBase = async (): Promise<void> => {
+      try {
+        if (opts.entryClick && opts.entryUrl && opts.clickSelector && engine.runReadOnlyClick && isSafeNavigationUrl(opts.entryUrl)) {
+          await timed(engine.navigate(opts.entryUrl));
+          const replay = await timed(engine.runReadOnlyClick(opts.clickSelector, 'action'));
+          if (replay.status !== 'performed') {
+            addUncovered(uncovered, { kind: 'no_safe_sample', reason: `重放菜单点击重建基页失败: ${replay.reason ?? replay.status}` });
+            await restoreBase(engine, baseUrl);
+          }
+        } else {
+          await restoreAndVerifyBase(engine, baseUrl, uncovered);
+        }
+      } catch (e) {
+        addUncovered(uncovered, { kind: 'no_safe_sample', reason: `重建基页失败: ${e instanceof Error ? e.message : String(e)}` });
+      }
     };
 
     if (opts.actionSelector) {
@@ -520,6 +625,44 @@ export async function exploreFeatureEvidence(engine: McpEngine, opts: FeatureEvi
         addUncovered(uncovered, { kind: 'no_safe_sample', reason: '修改功能缺少明确安全样例 data-safe-sample/data-readonly-sample 选择器或独立安全入口，未点击任意行操作' });
       } else if (state) {
         addUncovered(uncovered, { kind: 'write_required_state', reason: observed ? `${state} 入口不是允许的只读打开入口` : `${state} 入口 selector 未匹配当前页面节点，未采集状态` });
+      }
+    }
+
+    // ②-extra：自动发现页面上的只读动作入口（新增/添加/详情/查看），点击打开并采集其状态（满足 #2：
+    // 探索页面所有功能、拿到新增/详情页完整字段去写测试用例）。仅在未显式提供 actionSelector 时启用，
+    // 避免与显式动作路径重复；页面 label（sourceLabel）仅是页面名而非动作，不阻断自动发现。
+    // 每个动作类型最多发现一个，且只点开非写操作（提交/保存/删除等一律不碰）。
+    if (!opts.actionSelector && states.length < budget.maxStates) {
+      const createIntent = /新增|添加|创建|新建|录入|登记/i;
+      const detailIntent = /详情|查看|明细|预览|查阅|打开/i;
+      const candidates = baseElements.filter((element) => {
+        const text = `${element.text ?? ''} ${element.label ?? ''}`.trim();
+        if (!element.interactive || element.isFormControl || element.disabled) return false;
+        // 排除 Tab/折叠等容器节点（由下方容器循环单独处理，避免重复点击同一节点）
+        if ((element.containers ?? []).some((container) => container.kind === 'tab' || container.kind === 'collapse')) return false;
+        if (/提交|保存|删除|移除|导入|导出|发布|审核|修改|编辑|send|submit|save|delete/i.test(text)) return false;
+        return createIntent.test(text) || detailIntent.test(text);
+      });
+      const seenSelector = new Set<string>();
+      for (const candidate of candidates) {
+        if (states.length >= budget.maxStates) break;
+        const selector = candidate.selector || candidate.ref;
+        if (!selector || seenSelector.has(selector)) continue;
+        const text = `${candidate.text ?? ''} ${candidate.label ?? ''}`.trim();
+        const discoveredKind: ActionKind = createIntent.test(text) ? 'create' : 'detail';
+        // 同一动作类型仅采集一个入口（避免重复采集同一模态/详情）
+        if (states.includes(discoveredKind)) continue;
+        if (!isSafeCurrentNode(candidate as ElementReadOnlySemantics, 'action')) continue;
+        seenSelector.add(selector);
+        if (!(await clickAndCheck(selector, 'action', baseElements, true, text))) continue;
+        try {
+          appendSnapshot(discoveredKind, await timed(engine.extractPageElements()));
+          actionEntries.push({ actionKind: discoveredKind, ref: selector, selector, text, triggerable: true, observed: true });
+          // 反推：原 other/undefined 且发现新增入口时，升级为 create 以便覆盖键正确生成
+          if ((!actionKind || actionKind === 'other') && discoveredKind === 'create') actionKind = 'create';
+        } finally {
+          await resetToBase();
+        }
       }
     }
 
@@ -761,12 +904,25 @@ export async function exploreFeatureEvidenceMap(
       }
     }
 
-    // entry_only：跨路径且 profile 带点击选择器时，回到系统入口复用登录、再经菜单点击进入（只读打开），
-    // 避免直接打开 URL 落在登录页；无点击路径时回退直接导航（兼容无点击信息的系统）。
+    // entry_only：跨路径时优先经系统菜单「点击进入」目标页（复用登录会话、避免直接深链落到登录页），
+    // 满足用户要求"在项目基础上点击而非直接打开地址"。命中顺序：显式 clickSelector → 按目标 URL/菜单文本定位菜单链接。
     const entryOnly = crossPathNavigation === 'entry_only';
     const clickSel = profile?.sourceSelector ?? profile?.clickSelector;
     const crossPath = !loc.startsWith('click:') && !!nu && !!baseUrl && !sameDocUrl(baseUrl, nu);
-    const useClickEntry = entryOnly && crossPath && !!clickSel;
+    let menuEntrySelector: string | undefined;
+    let useClickEntry = entryOnly && crossPath && !!clickSel;
+    if (entryOnly && crossPath && !clickSel && !!nu && !!baseUrl && isSafeNavigationUrl(baseUrl)) {
+      // 无显式点击选择器时：先回到系统入口（菜单常驻可点），再按目标 URL/菜单文本定位进入链接
+      try {
+        await engine.navigate(baseUrl);
+        lastPageUrl = baseUrl;
+        menuEntrySelector = await findMenuEntrySelector(engine, nu, profile?.sourceLabel);
+        useClickEntry = !!menuEntrySelector;
+      } catch {
+        menuEntrySelector = undefined;
+        useClickEntry = false;
+      }
+    }
 
     // 同页面（同 origin+path，仅 hash 可能不同）复用当前页，不重复导航；不同页才导航（含跨路径）
     const reusePage = !loc.startsWith('click:') && !useClickEntry && lastPageUrl !== '' && sameDocUrl(lastPageUrl, nu);
@@ -780,12 +936,12 @@ export async function exploreFeatureEvidenceMap(
       if (loc.startsWith('click:')) {
         clickSelector = loc.slice('click:'.length);
       } else if (useClickEntry) {
-        // entry_only：先回到系统入口复用登录会话，再经菜单点击进入（只读打开目标页）
-        if (lastPageUrl !== baseUrl) {
+        // entry_only：回到系统入口（菜单常驻可点）再点击进入（只读打开目标页）；menuEntrySelector 路径已提前导航
+        if (baseUrl && lastPageUrl !== baseUrl) {
           await engine.navigate(baseUrl);
           lastPageUrl = baseUrl;
         }
-        clickSelector = clickSel;
+        clickSelector = clickSel ?? menuEntrySelector;
       } else {
         navUrl = reusePage ? undefined : nu;
       }
@@ -803,6 +959,8 @@ export async function exploreFeatureEvidenceMap(
         pageEntry: loc,
         timeoutMs,
         budget,
+        entryClick: useClickEntry,
+        entryUrl: baseUrl,
       });
       // entry_only：点击进入后复位到系统入口，保证下一功能点从干净菜单开始
       if (useClickEntry && baseUrl) {

@@ -18,8 +18,20 @@ const DOM_WALK = `
 (function walk(root) {
   const interactiveTags = new Set(['A','BUTTON','INPUT','SELECT','TEXTAREA','SUBMIT']);
   const containerTags = new Set(['DIV','SECTION','ASIDE','NAV','UL','OL','LI','FORM','TABLE','DETAILS','HEADER','FOOTER','MAIN','ARTICLE']);
-  const navSelectors = ['nav', '.sidebar', '.menu', '.nav', '.el-menu', '.ant-menu', '.n-menu', '.v-navigation-drawer', '.layout-sidebar', '.layout-menu', '.aside', '[class*="sidebar"]', '[class*="menu"]', '[class*="nav"]', '[class*="aside"]', '[class*="layout"]', '[class*="drawer"]'];
-  const navRoles = ['navigation', 'menubar', 'menu', 'tree'];
+  // 通用判据（AGENTS.md HARD RULE #0）：**只用 HTML5 标准元素 + ARIA 标准 role + 几何形态**。
+  // 禁止列任何框架/系统类名（历史违规已清除：class*=sidebar / class*=menu / class*=layout /
+  // .el-menu / .ant-menu / .n-menu 等）。理由：OA 顶栏 nav 装一级菜单（要收）、
+  // ruoyi 顶栏 nav 装部件（要排），类名清单必错其一。
+  const navRoles = ['navigation', 'menubar', 'tree'];
+  // 无布局引擎（jsdom 单测，rect 恒为 0）时为 false → 几何判据自动跳过，退化为结构判据
+  const layoutAvailable = (function () {
+    try {
+      const r = document.body.getBoundingClientRect();
+      return r.width > 0 || r.height > 0;
+    } catch (e) {
+      return false;
+    }
+  })();
   function stableSelector(el) {
     if (el.id) return '#' + el.id;
     const dataAttrs = ['data-testid','data-id','data-key','name'];
@@ -28,23 +40,24 @@ const DOM_WALK = `
     while (n && n.nodeType === 1 && parts.length < 4) { parts.unshift(n.tagName.toLowerCase()); n = n.parentElement; }
     return parts.join(' > ');
   }
-  function hasNavRole(el) {
-    if (el.tagName === 'NAV') return true;
-    // Check ARIA role
-    const role = (el.getAttribute('role') || '').toLowerCase();
-    if (navRoles.includes(role)) return true;
-    const cls = (el.className || '').toString().toLowerCase();
-    // Check common nav selectors
-    for (const s of navSelectors) {
-      if (s.startsWith('.')) {
-        if (cls.includes(s.slice(1))) return true;
-      } else if (s.startsWith('[')) {
-        try { if (el.matches(s)) return true; } catch(e) {}
-      } else {
-        if (el.tagName === s.toUpperCase()) return true;
-      }
-    }
+  /** 几何形态：侧栏=贴边竖向窄条 / 顶栏=贴顶横向矮条；内容主区天然皆不满足。 */
+  function isNavZoneShape(el) {
+    const r = el.getBoundingClientRect();
+    const vw = window.innerWidth || document.documentElement.clientWidth || 1;
+    const vh = window.innerHeight || document.documentElement.clientHeight || 1;
+    if (r.width <= 0 || r.height <= 0) return false;
+    // 贴边约束是必需的：内容区表格列 / 页脚条同样满足"窄/矮"，但不贴边（实测 AntD Pro）。
+    if ((r.left <= vw * 0.12 || r.right >= vw * 0.88) && r.width <= vw * 0.45 && r.height >= vh * 0.2) return true;
+    if (r.top <= vh * 0.12 && r.height <= vh * 0.15 && r.width >= vw * 0.35) return true;
     return false;
+  }
+  function hasNavRole(el) {
+    // 几何先行：内容主区（既宽又高）不是导航区，从源头排除内容卡片/快捷入口。
+    // 兜底：无布局引擎的环境（jsdom 单测，rect 恒为 0）跳过几何判据，退化为结构判据。
+    if (layoutAvailable && !isNavZoneShape(el)) return false;
+    if (el.tagName === 'NAV') return true; // HTML5 标准语义元素
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    return navRoles.includes(role);
   }
   function isVisible(el) {
     const style = window.getComputedStyle(el);
@@ -56,16 +69,29 @@ const DOM_WALK = `
     const tag = el.tagName; const role = el.getAttribute('aria-role') || el.getAttribute('role');
     const text = (el.textContent || '').trim().slice(0, 200);
     const type = el.getAttribute('type') || el.getAttribute('data-type') || undefined;
-    const name = el.getAttribute('name') || el.getAttribute('aria-label') || el.getAttribute('title') || undefined;
+    // 分离：name 仅取原生 DOM name；aria-label 单独成字段，优先作为可读标签（修复 theSelect 类泄漏）
+    const name = el.getAttribute('name') || undefined;
+    const ariaLabel = el.getAttribute('aria-label') || undefined;
     const placeholder = el.getAttribute('placeholder') || undefined;
     const href = tag === 'A' ? el.getAttribute('href') : undefined;
     const r = el.getBoundingClientRect();
     const isInput = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
     const isSubmit = (tag === 'BUTTON' && (type === 'submit' || /提交|保存|新增|删除|修改/.test(text))) || type === 'submit';
     const interactive = interactiveTags.has(tag) || !!role || el.onclick != null;
+    // 关联 <label> 文本：控件被 label 包裹（closest）时取其可读文本，作为字段标签候选
+    const labelFor = (() => {
+      const l = el.closest('label');
+      const t = l ? (l.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 60) : '';
+      return t || undefined;
+    })();
+    // 表格行选择类复选框（bootstrap-table 的 btSelectAll/btSelectItem 等）：不是业务表单字段，排除出字段采集
+    const isSelectionControl =
+      tag === 'INPUT' && (type === 'checkbox' || type === 'radio') &&
+      /^(btselect(all|item)?|selectall|selectitem|checkall|checkitem|gridselect|rowselection|listselect|batchselect)$/i.test(name || '');
     // —— @T3 字段约束语义（只读抽取） —— //
     const node = {
       tag: tag, role: role || undefined, text: text || undefined, name: name || undefined,
+      ariaLabel: ariaLabel, labelFor, isSelectionControl,
       type: type || undefined, placeholder: placeholder, selector: stableSelector(el), href: href || undefined,
       children: [], rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
       interactive, isDataControl: isInput || isSubmit,
@@ -106,12 +132,16 @@ const DOM_WALK = `
       node.columns = headCells;
       const bodyRows = el.querySelectorAll('tbody tr');
       node.rowCount = bodyRows.length;
-      const paginationEl = el.closest('[class*="pagination"], [class*="page"], [class*="Pagination"]') || el.parentElement && el.parentElement.querySelector('[class*="pagination"], [class*="page"]');
+      // HARD RULE #0：分页识别改用 ARIA 语义（仅打元数据标记，不参与菜单识别）。
+      // 兼容两种常见结构：① 分页是表格祖先（角色 navigation/aria-label 含 page）；
+      // ② 分页是表格同级兄弟（如 RuoYi 的 .pagination 兄弟 div，在父容器内）。
+      const paginationEl = el.closest('[role="navigation"][aria-label], [aria-label*="page" i]')
+        || el.parentElement?.querySelector('[role="navigation"][aria-label*="page" i], [aria-label*="page" i], [class*="pagination" i]');
       if (paginationEl) {
         node.hasPagination = true;
         node.paginationInfo = (paginationEl.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 60);
       }
-      const sortableHeaders = el.querySelectorAll('[class*="sort"], [aria-sort], th[sortable], [class*="is-sortable"]');
+      const sortableHeaders = el.querySelectorAll('[aria-sort], th[aria-sort]');
       if (sortableHeaders.length) {
         node.hasSorting = true;
         node.sortableColumns = Array.from(sortableHeaders).map((h) => (h.textContent || '').trim()).filter(Boolean);
@@ -217,7 +247,8 @@ const DOM_WALK = `
     // Process each nav container
     for (const nav of uniqueContainers) {
       // Broad selector set for menu items
-      const items = nav.querySelectorAll('li, a, [role="menuitem"], .menu-item, .nav-item, .sidebar-item, .el-menu-item, .ant-menu-item, [class*="menu-item"], [class*="nav-item"], [class*="sidebar-item"]');
+      // 结构判据：列表项 / 链接 / 菜单·树 role（零类名，HARD RULE #0）
+      const items = nav.querySelectorAll('li, a[href], [role="menuitem"], [role="treeitem"]');
       const seen = new Set();
       for (const item of items) {
         if (!isVisible(item)) continue;
@@ -237,8 +268,8 @@ const DOM_WALK = `
           children: [],
           rect: { x: 0, y: 0, w: 0, h: 0 },
         };
-        // Check for sub-items with broader selectors
-        const subItems = item.querySelectorAll(':scope > ul > li, :scope > .sub-menu > li, :scope > [class*="sub"] > li, :scope > .el-menu-item-group > .el-menu-item, :scope > .ant-menu-submenu > .ant-menu-item');
+        // 子项：列表项的直接子列表（结构判据，与框架无关）
+        const subItems = item.querySelectorAll(':scope > ul > li, :scope > ol > li, :scope > [role="menu"] > li, :scope > [role="group"] > li');
         if (subItems.length > 0) {
           for (const sub of subItems) {
             if (!isVisible(sub)) continue;
@@ -290,7 +321,7 @@ const DOM_WALK = `
   const navModules = extractNavModules(rootEl);
   if (navModules.length > 0) {
     const contentModules = [];
-    const mainContent = rootEl.querySelector('main, .content, .main, #main, [class*="content"], [class*="main"]');
+    const mainContent = rootEl.querySelector('main, [role="main"]');
     if (mainContent && isVisible(mainContent)) {
       const mc = toNode(mainContent);
       if (mc.children.length > 0 || mc.interactive) contentModules.push(mc);
@@ -304,7 +335,7 @@ const DOM_WALK = `
     return [...navModules, ...contentModules];
   }
   // Strategy 2: Broader nav detection across entire document
-  const allNavs = document.querySelectorAll('nav, [role="navigation"], [role="menubar"], [class*="sidebar"], [class*="menu"]');
+  const allNavs = document.querySelectorAll('nav, [role="navigation"], [role="menubar"], [role="tree"]');
   const fallbackModules = [];
   const fbSeen = new Set();
   for (const nav of allNavs) {
@@ -529,10 +560,9 @@ export class PlaywrightEngine implements CaptureEngine {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     // Try waiting for common navigation elements to appear
     try {
-      await page.waitForSelector(
-        'nav, .sidebar, .menu, .el-menu, .ant-menu, [class*="sidebar"], [class*="menu"], [class*="nav"]',
-        { timeout: 5000 }
-      );
+      await page.waitForSelector('nav, [role="navigation"], [role="menubar"], [role="tree"]', {
+        timeout: 5000,
+      });
     } catch {
       // Navigation elements not found within timeout - continue anyway
     }
@@ -643,8 +673,11 @@ export class PlaywrightEngine implements CaptureEngine {
 
   private toExploredElement(node: SemanticNode): ExploredElement {
     const tag = node.tag.toLowerCase();
-    const isFormControl = ['input', 'select', 'textarea', 'form'].includes(tag);
+    // 表格行选择类复选框（btSelectAll/btSelectItem 等）不是业务表单字段，排除出 isFormControl，避免泄漏为查询字段
+    const isFormControl = ['input', 'select', 'textarea', 'form'].includes(tag) && !node.isSelectionControl;
     const suggestedAction = this.inferAction(tag, node);
+    // 可读标签优先级：aria-label > placeholder > 关联 label > DOM name（最后兜底，疑似 token 由下游过滤）
+    const label = node.ariaLabel || node.placeholder || node.labelFor || node.name;
 
     const el: ExploredElement & { role?: string; ariaHasPopup?: string; safeReadOnlyOpener?: boolean } = {
       ref: node.selector,
@@ -652,7 +685,7 @@ export class PlaywrightEngine implements CaptureEngine {
       text: node.text,
       selector: node.selector,
       interactive: node.interactive,
-      label: node.name,
+      label,
       inputType: node.type,
       href: node.href,
       isFormControl,

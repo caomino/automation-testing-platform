@@ -153,6 +153,9 @@ describe('stage-explore / run', () => {
               text: '新增',
               url: 'https://example.com/x',
               timestamp: 1,
+              // T4（设计 §3.3）：kind='action' 表示这是「页面按钮/功能」→ 入树为 type='action'
+              kind: 'action',
+              parentMenu: '人工补录M',
             },
           ],
           inferredModule: '人工补录M',
@@ -302,7 +305,8 @@ describe('stage-explore / run', () => {
     const ids = modA.children.map((c) => c.label);
     const aIdx = ids.indexOf('页面A1');
     const aboveIds = ids.slice(Math.max(0, aIdx - 3), aIdx);
-    expect(aboveIds).toEqual(['B1', 'B2', 'B3']);
+    // T4：节点名称取「点击文本」（此前误用 inferredModule）
+    expect(aboveIds).toEqual(['b1', 'b2', 'b3']);
 
     // below 插入同样保持顺序
     const below: ManualSupplement = { ...multi, insertPosition: 'below' };
@@ -314,7 +318,8 @@ describe('stage-explore / run', () => {
     const ids2 = modA2.children.map((c) => c.label);
     const aIdx2 = ids2.indexOf('页面A1');
     const belowIds = ids2.slice(aIdx2 + 1, aIdx2 + 4);
-    expect(belowIds).toEqual(['B1', 'B2', 'B3']);
+    // T4：节点名称取「点击文本」
+    expect(belowIds).toEqual(['b1', 'b2', 'b3']);
   });
 
   it('[Minor] 重复 clickPath 被去重（原型要求人工补录已去重）', async () => {

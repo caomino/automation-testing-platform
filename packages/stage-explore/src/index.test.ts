@@ -72,10 +72,11 @@ function baseTree(): ModuleNode[] {
   return [mk('A', 'A'), mk('B', 'B'), mk('C', 'C')];
 }
 
-/** 生成 n 条 clickPath，inferredModule 用以标识顺序 */
+/** 生成 n 条 clickPath；text 与 inferredModule 同值，用于标识插入顺序
+ *  （T4 起 label 取自「点击文本」，让两者一致，顺序断言保持可读） */
 function clickPaths(n: number): ClickPath[] {
   return Array.from({ length: n }, (_, i) => ({
-    steps: [{ selector: `#b${i}`, text: `t${i}`, url: 'https://x/y', timestamp: i }],
+    steps: [{ selector: `#b${i}`, text: `p${i}`, url: 'https://x/y', timestamp: i }],
     inferredModule: `p${i}`,
     confidence: 1,
   }));
@@ -111,7 +112,8 @@ describe('assertActionGranularity 粒度闸门（P-A#4）', () => {
     // 目录级叶子被标 needs_review 且带原因
     const leaf = tree[0].children[0];
     expect(leaf.status).toBe('needs_review');
-    expect(leaf.reviewReason).toContain('操作级功能点');
+    // 文案与实现对齐：2026-09-18 边界调整后 reason 为「动作级功能点 … 由用例阶段负责」
+    expect(leaf.reviewReason).toContain('动作级功能点');
   });
 
   it('含足够 action 功能点 → 不误标', () => {
@@ -154,7 +156,8 @@ describe('assertActionGranularity 粒度闸门（P-A#4）', () => {
     const r = assertActionGranularity(tree);
     expect(r.flagged).toBe(1); // 即便 covered，无 action 子节点仍视为颗粒度不足
     expect(tree[0].status).toBe('needs_review');
-    expect(tree[0].reviewReason).toContain('操作级功能点');
+    // 文案与实现对齐：2026-09-18 边界调整后 reason 为「动作级功能点 … 由用例阶段负责」
+    expect(tree[0].reviewReason).toContain('动作级功能点');
   });
 });
 

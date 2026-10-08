@@ -14,8 +14,14 @@ export interface SemanticNode {
   role?: string;
   /** 可见文本（截断至 200 字） */
   text?: string;
-  /** 表单 name / aria-label / title（可空） */
+  /** 表单 DOM name（仅原生 name 属性，不含 aria-label/title，避免与可读标签混淆） */
   name?: string;
+  /** aria-label 独立字段（与 name 分离，优先作为可读标签） */
+  ariaLabel?: string;
+  /** 关联 <label> 文本（控件被 label 包裹或 for 关联） */
+  labelFor?: string;
+  /** 是否为表格行选择类复选框（btSelectAll/btSelectItem 等），应排除出表单字段采集 */
+  isSelectionControl?: boolean;
   /** input/select/button 类型 */
   type?: string;
   /** input placeholder 文本 */

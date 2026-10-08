@@ -63,6 +63,7 @@ const OPERATION_KEYWORDS: Array<{ re: RegExp; kind: ActionKind; label: string }>
   { re: /(新增|新建|添加|创建|录入)/, kind: 'create', label: '新增' },
   { re: /(修改|编辑|更新)/, kind: 'update', label: '修改' },
   { re: /(删除|移除|作废)/, kind: 'delete', label: '删除' },
+  { re: /(详情|查看|明细|预览|查阅)/, kind: 'detail', label: '详情' },
   { re: /(查询|搜索|筛选|查找|检索)/, kind: 'query', label: '查询' },
   { re: /(导出|下载报表|导出报表)/, kind: 'export', label: '导出' },
   { re: /(导入)/, kind: 'import', label: '导入' },

@@ -23,7 +23,8 @@ function makeFakePage(
   const state: FakeState = { clicks: [], gotos: [], currentUrl: startUrl };
   const frame = {
     async evaluate(_fn: unknown, arg?: unknown) {
-      if (arg && typeof arg === 'object' && 'containerSel' in (arg as object)) return nav;
+      // 采集导航项的调用以「入参含 itemSel」为标识（COLLECT_NAV_FN 新签名，已无 containerSel）
+      if (arg && typeof arg === 'object' && 'itemSel' in (arg as object)) return nav;
       return { controls, hasDataGrid };
     },
     async click() {},
@@ -162,7 +163,8 @@ function makeExpandableFakePage(
 
   const frame = {
     async evaluate(_fn: unknown, arg?: unknown) {
-      if (arg && typeof arg === 'object' && 'containerSel' in (arg as object)) return allNav();
+      // 采集导航项的调用以「入参含 itemSel」为标识（COLLECT_NAV_FN 新签名，已无 containerSel）
+      if (arg && typeof arg === 'object' && 'itemSel' in (arg as object)) return allNav();
       return { controls, hasDataGrid };
     },
     async click() {},

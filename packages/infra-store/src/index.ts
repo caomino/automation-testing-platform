@@ -164,8 +164,10 @@ class SqliteProjectStore implements ProjectStore {
   private inMemory: boolean;
 
   constructor(dbPath?: string) {
-    this.inMemory = !dbPath && process.env.NODE_ENV === 'test';
-    this.dbPath = dbPath ?? (this.inMemory ? ':memory:' : DEFAULT_DB_PATH);
+    // 显式传入 ':memory:' 与「未传路径 + test 环境」同等对待：纯内存库，flush() 不落盘
+    // （否则 writeFileSync(':memory:') 在 Windows 上 ENOENT——冒号不是合法文件名字符）
+    this.inMemory = dbPath === ':memory:' || (!dbPath && process.env.NODE_ENV === 'test');
+    this.dbPath = this.inMemory ? ':memory:' : (dbPath ?? DEFAULT_DB_PATH);
     this.initPromise = this.init();
   }
 
@@ -225,6 +227,10 @@ class SqliteProjectStore implements ProjectStore {
       system_id TEXT PRIMARY KEY, data TEXT NOT NULL, expires_at INTEGER NOT NULL
     )`);
     db.run(`CREATE TABLE IF NOT EXISTS module_trees (
+      system_id TEXT PRIMARY KEY, data TEXT NOT NULL
+    )`);
+    // T6：待入树列表持久化（人工补录两段式 —— 刷新页面/重启后不得丢）
+    db.run(`CREATE TABLE IF NOT EXISTS pending_trees (
       system_id TEXT PRIMARY KEY, data TEXT NOT NULL
     )`);
     db.run(`CREATE TABLE IF NOT EXISTS meta_configs (
@@ -617,6 +623,26 @@ class SqliteProjectStore implements ProjectStore {
   async getModuleTree(systemId: string): Promise<any[] | null> {
     await this.initPromise;
     const stmt = this.ready().prepare('SELECT data FROM module_trees WHERE system_id = ?');
+    stmt.bind([systemId]);
+    const row = this.one(stmt);
+    return row ? JSON.parse(row.data) : null;
+  }
+
+  // --- Pending Tree（T6：待入树列表持久化）---
+
+  async savePendingTree(systemId: string, items: any[]): Promise<void> {
+    await this.initPromise;
+    this.ready().run(
+      `INSERT INTO pending_trees (system_id, data) VALUES (?, ?)
+       ON CONFLICT(system_id) DO UPDATE SET data = excluded.data`,
+      [systemId, JSON.stringify(items)]
+    );
+    this.flush();
+  }
+
+  async getPendingTree(systemId: string): Promise<any[] | null> {
+    await this.initPromise;
+    const stmt = this.ready().prepare('SELECT data FROM pending_trees WHERE system_id = ?');
     stmt.bind([systemId]);
     const row = this.one(stmt);
     return row ? JSON.parse(row.data) : null;

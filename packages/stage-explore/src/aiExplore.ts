@@ -126,8 +126,18 @@ async function markMenuCandidates(
   try {
     const marked = await engine.evaluate<number[]>(
       `(sels) => {
-        const MENU_CONTAINERS = '[class*="sidebar"], [class*="menu"], [class*="nav"], nav, aside, [role="menubar"], [role="navigation"], [role="tree"]';
-        const containers = Array.from(document.querySelectorAll(MENU_CONTAINERS));
+        // HARD RULE #0：导航区只用【标准元素 / ARIA role + 几何形态】，禁止列任何框架类名。
+        // 侧栏 = 贴边竖向窄条；顶栏 = 贴顶横向矮条（与 menu-explorer 的 navZoneShape 同口径）。
+        const NAV_SEL = 'nav, aside, [role="menubar"], [role="navigation"], [role="tree"]';
+        const vw = window.innerWidth || 1;
+        const vh = window.innerHeight || 1;
+        const containers = Array.from(document.querySelectorAll(NAV_SEL)).filter((c) => {
+          const r = c.getBoundingClientRect();
+          if (r.width <= 0 || r.height <= 0) return true; // 无布局信息时退化为结构判据
+          const huggingSide = r.left <= vw * 0.12 || r.right >= vw * 0.88;
+          if (huggingSide && r.width <= vw * 0.45 && r.height >= vh * 0.08) return true;
+          return r.top <= vh * 0.12 && r.height <= vh * 0.15 && r.width >= vw * 0.35;
+        });
         const marks = [];
         sels.forEach((sel, i) => {
           try {
@@ -151,8 +161,9 @@ async function getPageTitle(engine: McpEngine): Promise<string> {
   try {
     const title = await engine.evaluate<string>(
       `() => {
-        const main = document.querySelector('.app-main, main, .main, .content, [class*="content"], [class*="main"]') || document.body;
-        const heading = main.querySelector('h1, h2, .page-title, [class*="page-title"], [class*="page_header"], [class*="title"]');
+        // HARD RULE #0：只用标准元素 / ARIA，不列框架类名
+        const main = document.querySelector('main, [role="main"]') || document.body;
+        const heading = main.querySelector('h1, h2, [role="heading"]');
         const t = heading ? (heading.textContent || '').trim() : '';
         return t || document.title || '';
       }` as unknown as () => string,

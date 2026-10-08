@@ -18,7 +18,6 @@ import {
   mergeRollupModules,
   normalizeModuleTree,
   type RawNavItem,
-  type PageControl,
 } from './nav-tree.js';
 
 /** 探索上限配置 */
@@ -55,76 +54,73 @@ const DANGEROUS_SOURCE = '退出|注销|登出|logout|sign\\s?out|切换账号|�
 const DANGEROUS_TEXT = new RegExp(DANGEROUS_SOURCE, 'i');
 
 /**
- * 非内容导航噪声黑名单（**部件类**，通用后台模板语义，不含任何系统拓扑）。
- * 依据（OA bpms 实证）：右侧顶栏部件区（消息/通知/任务/用户菜单/全屏/便签）、
- * logo、侧栏开关等会被 `a[href]` 宽匹配误收为菜单项。
- * 注意：**不可拉黑 `navbar-custom-menu`** —— 实证该容器在 AdminLTE 布局里同时承载
- * 「顶部一级菜单（.pull-left，即 我的办公/项目管理/…）」与「右侧部件区」，拉黑会误杀一级菜单。
+ * 导航项候选 —— **纯结构性判据，与框架/系统无关**。
+ *
+ * ⛔ 依据 AGENTS.md HARD RULE #0：**禁止**在此加入任何系统/框架专属的 class 名、ID 或裸标签。
+ *    历史违规已清除：`nav`（裸标签）、`[class*="sidebar"]`、`[class*="menu"]`、`.el-menu-item`、
+ *    `.ant-menu-item`、`.n-menu-item`、`li[class*="menu-item"]`、`[class*="tree"]` 等。
+ *
+ * 原理：菜单项的本质是「**可导航的项**」——带 `href` 的链接，或带导航语义 role 的元素。
+ * 这层语义在任何 UI 框架下都成立，无需知道它长什么 class。
  */
-const NOISE_SOURCE =
-  'messages-menu|notifications-menu|tasks-menu|user-menu|user-panel|sidebar-toggle|dropdown-menu|dropdown-toggle|logo|brand';
-/** 内容区选择器：导航菜单绝不在内容区；命中者视为页面内容（卡片/快捷入口），不是菜单项。
- *  覆盖主流后台布局的内容宿主命名（通用，不针对某一系统）：
- *  AdminLTE `.content-wrapper`、ruoyi `#page-wrapper`、Element-Plus `.app-main`、AntD `.ant-layout-content`、
- *  NaiveUI/自研 `.layout-content` / `main` / `#main` / `*main-content`。 */
-const CONTENT_SEL = [
-  'main',
-  '.content',
-  '.content-wrapper',
-  '#main',
-  '#page-wrapper',
-  '.page-wrapper',
-  '.app-main',
-  '.el-main',
-  '.ant-layout-content',
-  '.layout-content',
-  '[class*="content-wrapper"]',
-  '[class*="page-wrapper"]',
-  '[class*="main-content"]',
-  '[class*="page-container"]',
-].join(', ');
+const NAV_ITEM_SEL = 'a[href], [role="menuitem"], [role="treeitem"], [role="tab"], [role="link"]';
 
-/** 菜单容器候选（覆盖主流 UI 库与自研命名） */
-const MENU_CONTAINERS = [
-  '[class*="sidebar"]', '[class*="menu"]', 'nav', 'aside',
-  '[role="menubar"]', '[role="navigation"]', '[class*="tree"]',
-].join(',');
+/**
+ * 子菜单容器判据 —— 结构语义（列表容器 / 菜单·树·分组语义容器）。
+ * 覆盖主流两种结构：① 子菜单嵌在锚点内部（`<a>…<ul>`）；② 子菜单是 `li` 的兄弟（`li>a` + `li>ul`）。
+ */
+const SUBMENU_SEL = 'ul, ol, [role="menu"], [role="group"], [role="tree"]';
 
-/** 菜单项候选（含父菜单 submenu，才能 hover 展开发现折叠的子菜单；否则子菜单折叠时颗粒度缺失） */
-const MENU_ITEMS = [
-  'a[href]', '[role="menuitem"]', '[role="treeitem"]',
-  'li[class*="menu-item"]', 'li[class*="submenu"]', 'li[class*="menu-sub"]',
-  '.el-menu-item', '.el-submenu',
-  '.ant-menu-item', '.ant-menu-submenu',
-  '.n-menu-item', '.n-submenu',
-  '[class*="nav-item"]', '[class*="sidebar-item"]',
-].join(',');
+/**
+ * 分区几何阈值（**比例判据，与系统无关**）：
+ * - 侧栏：**贴左/贴右** + 竖向窄条（宽 ≤ 视口 45%，高 ≥ 视口 20%）
+ * - 顶栏：**贴顶** + 横向矮条（高 ≤ 视口 15%，宽 ≥ 视口 35%）
+ *
+ * 「贴边」是必需的：实测 AntD Pro 的内容区表格（left=320px，572×195）与页脚条
+ * （y=1991，1296×17）都满足"窄条/矮条"，但都不贴边 —— 只靠宽高比会把它们当导航区。
+ * 反过来，内容主区天然三者皆不满足，因此可零类名地区分「导航区 / 内容区」。
+ */
+const SIDEBAR_MAX_W_RATIO = 0.45;
+/**
+ * 侧栏最小高度占视口比。**不能设太高**：实测 OA(AdminLTE) 的侧栏是「每个一级菜单一个
+ * `ul.tab-pane` 组，按需显示」，短组（如「项目管理」只有 2 项，高约 80px ≈ 9%vh）同样合法。
+ * 设为 0.2 会把短组整组判掉 → 该一级菜单被判「无子菜单」→ 误当 UI 控件剔除。
+ * 因为有「贴边 + 宽度 ≤45%vw」双重约束兜底，这里放宽到 0.08 不会引入内容区误判。
+ */
+const SIDEBAR_MIN_H_RATIO = 0.08;
+/** 贴边容忍度：容器边缘落在视口边缘 12% 以内视为贴边 */
+const EDGE_RATIO = 0.12;
+const TOPBAR_MAX_H_RATIO = 0.15;
+const TOPBAR_MIN_W_RATIO = 0.35;
+/** 候选容器至少需含这么多个导航项，才可能是导航区（孤立链接是内容/卡片，不是菜单） */
+const MIN_ITEMS_PER_CONTAINER = 3;
 
 /** 浏览器内收集导航项（含层级 parentSelector）；跨 frame 收集 */
 const COLLECT_NAV_FN = (args: {
-  containerSel: string;
   itemSel: string;
+  submenuSel: string;
   dangerousSource: string;
-  noiseSource: string;
-  contentSel: string;
+  sidebarMaxWRatio: number;
+  sidebarMinHRatio: number;
+  edgeRatio: number;
+  topbarMaxHRatio: number;
+  topbarMinWRatio: number;
+  minItemsPerContainer: number;
 }) => {
-  const { containerSel, itemSel, dangerousSource, noiseSource, contentSel } = args;
-  // 黑名单由 Node 侧注入（DANGEROUS_SOURCE），避免浏览器侧维护第二份正则导致改一处等于没改
+  const {
+    itemSel,
+    submenuSel,
+    dangerousSource,
+    sidebarMaxWRatio,
+    sidebarMinHRatio,
+    edgeRatio,
+    topbarMaxHRatio,
+    topbarMinWRatio,
+    minItemsPerContainer,
+  } = args;
+  // 危险词由 Node 侧注入（DANGEROUS_SOURCE），避免浏览器侧维护第二份正则导致改一处等于没改。
+  // 注意：危险词是**通用语义**（退出/注销/删除…与具体系统无关），仅用于「禁止点击」，不参与菜单识别。
   const dangerous = new RegExp(dangerousSource, 'i');
-  const noise = new RegExp(noiseSource, 'i');
-
-  // 噪声区判定：自身或祖先 className 命中噪声黑名单（logo/顶栏部件区/用户面板等）
-  const inNoise = (el: Element): boolean => {
-    let anc: Element | null = el;
-    while (anc && anc !== document.body) {
-      const cn = (anc as HTMLElement).className;
-      if (typeof cn === 'string' && cn && noise.test(cn)) return true;
-      anc = anc.parentElement;
-    }
-    return false;
-  };
-  // 内容区判定：导航菜单不在内容区；内容区的卡片/快捷入口不是菜单项
-  const inContent = (el: Element): boolean => !!el.closest(contentSel);
 
   const cssPath = (el: Element): string => {
     let cur: Element | null = el;
@@ -157,18 +153,92 @@ const COLLECT_NAV_FN = (args: {
     return parts.join('>');
   };
 
-  // 容器卫生：排除页面根（body/html 常因 sidebar-mini / layout 类被 [class*="sidebar"] 命中，
-  // 一旦当容器会把内容区卡片、快捷入口全部收进来，并污染 containerKey 归属）；
-  // 并排除「非导航」的菜单类容器（通用启发式，框架无关）：
-  //   右键菜单(context-menu)、页签栏(page-tabs/menuTabs)、下拉浮层(dropdown)、消息面板(notice)、
-  //   面包屑(breadcrumb)、分页(pagination)、框架下拉组件(el-dropdown / ant-dropdown / tabs-nav)
-  const NON_NAV_CONTAINER = /(context-menu|page-tabs|menutabs|dropdown|notice|breadcrumb|pagination|tabs-nav|top-links|navbar-right|welcome-message|navbar-top|top-bar)/i;
-  const containers = Array.from(document.querySelectorAll(containerSel)).filter((c) => {
-    if (c === document.body || c.tagName === 'HTML') return false;
-    const cn = typeof (c as HTMLElement).className === 'string' ? (c as HTMLElement).className : '';
-    if (cn && NON_NAV_CONTAINER.test(cn)) return false;
-    return true;
-  });
+  // ==================== 导航区识别：几何 + 结构（零类名依赖） ====================
+  // ⛔ 依据 AGENTS.md HARD RULE #0：此处**不允许**出现任何系统/框架专属的 class/ID/裸标签。
+  //    判据只有三类：① 几何（宽高占视口比）② 结构（同构候选项数量）③ 行为（Node 侧点击验证）。
+  //
+  // 为什么不能用「命中 nav/sidebar/menu 等类名就收」：OA 顶栏 `<nav class="navbar …">` 装的是
+  // **一级菜单**（要收），ruoyi 顶栏 `<nav class="navbar navbar-static-top">` 装的是**部件**
+  // （文档/锁屏/全屏/消息，要排）——结构同构、语义相反，任何类名清单必错其一。
+  const vw = window.innerWidth || document.documentElement.clientWidth || 1;
+  const vh = window.innerHeight || document.documentElement.clientHeight || 1;
+
+  /**
+   * 无布局引擎的环境（jsdom 单测里 rect 恒为 0）→ 几何判据整体不可用，
+   * 自动退化为**纯结构判据**（样式可见性 + 结构计数），避免测试环境全灭。
+   * 真实浏览器一定有布局，此分支不影响线上行为。
+   */
+  const layoutAvailable = (() => {
+    try {
+      const r = document.body.getBoundingClientRect();
+      return r.width > 0 || r.height > 0;
+    } catch {
+      return false;
+    }
+  })();
+
+  const isVisibleEl = (el: Element): boolean => {
+    const s = window.getComputedStyle(el as HTMLElement);
+    if (s.display === 'none' || s.visibility === 'hidden') return false;
+    if (!layoutAvailable) return true; // 无布局信息：仅凭样式判断
+    const r = (el as HTMLElement).getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+
+  /** 导航区形态：侧栏=贴边竖向窄条；顶栏=贴顶横向矮条。内容主区/内容区表格/页脚天然皆不满足。 */
+  const navZoneShape = (el: Element): 'sidebar' | 'topbar' | null => {
+    const r = (el as HTMLElement).getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return null;
+    const huggingSide = r.left <= vw * edgeRatio || r.right >= vw * (1 - edgeRatio);
+    if (huggingSide && r.width <= vw * sidebarMaxWRatio && r.height >= vh * sidebarMinHRatio) {
+      return 'sidebar';
+    }
+    const huggingTop = r.top <= vh * edgeRatio;
+    if (huggingTop && r.height <= vh * topbarMaxHRatio && r.width >= vw * topbarMinWRatio) {
+      return 'topbar';
+    }
+    return null;
+  };
+
+  /**
+   * 浮层排除（通用结构判据）：菜单项位于文档流内；下拉/弹层/气泡面板是 `position:absolute` 的浮层。
+   * 实测：ruoyi 顶栏「消息」的下拉面板项（通知/公告/全部已读）会被误当子菜单。
+   * 只判 `absolute`，**不判 `fixed`** —— 固定侧栏常用 `fixed`，判它会误杀真菜单。
+   */
+  const inOverlay = (el: Element): boolean => {
+    let p: Element | null = el;
+    for (let d = 0; p && p !== document.body && d < 6; d++) {
+      const cs = window.getComputedStyle(p as HTMLElement);
+      if (cs.position === 'absolute') return true;
+      p = p.parentElement;
+    }
+    return false;
+  };
+
+  // 1) 收集全部可见导航项候选，向上累计每个祖先的候选数（一次 O(n·depth)，避免 O(n²)）
+  const allItems = Array.from(document.querySelectorAll(itemSel)).filter(isVisibleEl);
+  const itemCount = new Map<Element, number>();
+  const MAX_UP = 10;
+  for (const it of allItems) {
+    let p: Element | null = it.parentElement;
+    for (let d = 0; p && p !== document.body && d < MAX_UP; d++) {
+      itemCount.set(p, (itemCount.get(p) ?? 0) + 1);
+      p = p.parentElement;
+    }
+  }
+  // 2) 候选导航区 = 候选数达阈值（成组出现）+ 形态为侧栏/顶栏（内容区在此被几何排除；
+  //    无布局引擎时 layoutAvailable=false，几何判据自动跳过，退化为结构判据）
+  const hostCandidates: Element[] = [];
+  for (const [el, n] of itemCount) {
+    if (n < minItemsPerContainer) continue;
+    if (el === document.body || el.tagName === 'HTML') continue;
+    if (layoutAvailable && !navZoneShape(el)) continue;
+    hostCandidates.push(el);
+  }
+  // 3) 祖孙去重：同一批项被祖孙两级同时框住时，保留结构更具体（更深）的那个
+  const containers = hostCandidates.filter(
+    (h) => !hostCandidates.some((o) => o !== h && h.contains(o) && itemCount.get(o) === itemCount.get(h)),
+  );
   const out: RawNavItem[] = [];
   const seen = new Set<string>();
 
@@ -189,17 +259,26 @@ const COLLECT_NAV_FN = (args: {
       if (hasNestedItem && !html.getAttribute('href') && !html.querySelector('ul, ol, [role="menu"]')) {
         continue;
       }
-      // 噪声区过滤：logo/品牌区/侧栏开关/通知角标/用户面板/顶栏部件区不是菜单项
-      if (inNoise(el)) continue;
-      // 内容区过滤：仪表盘卡片、快捷入口等位于内容区，不是导航菜单项
-      if (inContent(el)) continue;
+      // 说明（HARD RULE #0）：此处**不再有**「噪声区 / 内容区」类名黑名单。
+      // 噪声与内容区已在容器层用几何（侧栏/顶栏形态）+ 结构（成组出现）排除；
+      // 顶栏部件（全屏/锁屏/消息/头像…）等残留由 Node 侧的点击行为验证收口（见 exploreNavTree 的 deadSelectors）。
       // 表格区过滤（通用）：表头/数据行/行内操作链（编辑/删除/详情…）是页面内容，不是导航菜单项。
       // 依据：OA（AdminLTE 表格行内链）与 ruoyi（表格操作列）实测都会混入，且各框架同构。
       if (el.closest('table, thead, tbody, tr')) continue;
-      // 品牌/Logo 过滤（通用兜底）：各后台 logo 常是「无 class 的 <a><img></a>」直接挂在导航容器上，
-      // 类名规则（logo|brand）拦不住（ruoyi 实测：<a href="/index">RuoYi</a> 无任何 class）。
-      // 判定：含 <img> 且文本很短 → 视为品牌位，不是菜单项。
-      if (html.querySelector('img') && (html.textContent || '').trim().length <= 12) continue;
+      // 浮层过滤（通用）：下拉/弹层面板项不是菜单项（见 inOverlay 说明）
+      if (inOverlay(el)) continue;
+      // 品牌/Logo 位过滤（**通用，两种形态，零类名**）：
+      //  ① 含 <img> 且文本短 —— 各后台最常见的「图标 logo」；
+      //  ② 位于视口**左上角**（贴左且贴顶 6% 内）且文本较长 —— 「文字 logo / 站点名 / 标语」。
+      //     菜单项文本短且**成组排列**，不会同时满足「左上角 + 长文本」。
+      // 实测来源：OA 顶栏 logo `<a>JFT 数字化项目管理平台…</a>` 曾被当顶层菜单项，
+      // 并抢先把「我的办公」那一组侧栏项采成自己的子级，导致真实一级菜单丢失。
+      const brandText = (html.textContent || '').replace(/\s+/g, ' ').trim();
+      if (html.querySelector('img') && brandText.length <= 12) continue;
+      {
+        const rb = html.getBoundingClientRect();
+        if (rb.left <= vw * 0.06 && rb.top <= vh * 0.06 && brandText.length > 12) continue;
+      }
       keptEls.push(el);
     }
     // 第二阶段：先算文本（去重用）
@@ -211,8 +290,11 @@ const COLLECT_NAV_FN = (args: {
       }
       t = t.replace(/\s+/g, ' ').trim();
       if (!t) {
-        const leaf = html.querySelector('a, span, [class*="title"], [class*="label"], [class*="text"]');
-        t = (leaf ? (leaf.textContent || '') : '').replace(/\s+/g, ' ').trim();
+        // 兜底取文本（**结构判据，零类名**）：菜单项文本通常落在最内层的叶子元素上。
+        const leaf = Array.from(html.querySelectorAll('*')).find(
+          (e) => e.children.length === 0 && (e.textContent || '').trim().length > 0,
+        );
+        t = (leaf?.textContent || '').replace(/\s+/g, ' ').trim();
       }
       if (!t) t = (html.textContent || '').replace(/\s+/g, ' ').trim().replace(/\s*\d+\s*$/, '').trim();
       return t;
@@ -234,24 +316,24 @@ const COLLECT_NAV_FN = (args: {
       const html = el as HTMLElement;
       const text = textCache.get(el) || '';
       if (!text || text.length < 2 || text.length > 30) continue;
+      // 纯数字/纯符号且**极短（≤2 字符）**者视为角标/页码（"10"、"›"），不是菜单项。
+      // ⚠ 必须限制长度：异常页菜单的标签就是 "403"/"404"/"500"（3 位），一刀切会误删真实菜单项。
+      if (text.length <= 2 && /^[\d\s.,:;%‹›«»<>×xX+\-/|]+$/.test(text)) continue;
       if (dangerous.test(text)) continue;
       const style = window.getComputedStyle(html);
       if (style.display === 'none' || style.visibility === 'hidden') continue;
       const rect = html.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) continue;
       const selector = cssPath(html);
-      // 可展开判定（通用，覆盖三种主流结构）：
-      //   ① 子菜单在自身内部（AdminLTE `a` 内含 ul.treeview-menu）；
-      //   ② 子菜单在同一 li 的兄弟位置（Element-UI / AntD / ruoyi：`li > a` + `li > ul`）；
-      //   ③ role/class 语义（role=menu、class*=submenu/children）。
-      const SUBMENU_SEL = 'ul, ol, [role="menu"], [class*="submenu"], [class*="sub-menu"], [class*="children"]';
+      // 可展开判定（**结构语义，零类名**）：
+      //   ① 子菜单嵌在自身内部（`<a>…<ul>`，AdminLTE 形态）；
+      //   ② 子菜单是同一 `li` 的兄弟（`li>a` + `li>ul`，Element-UI / AntD / ruoyi 形态）；
+      //   ③ role 语义（role=menu/group/tree）。
+      // 说明：不再用 `class*=submenu/children` 之类类名判据（HARD RULE #0）。
+      const submenuInSelf = html.querySelector(submenuSel) !== null;
       const parentLi = html.closest('li');
-      const submenuInSelf = html.querySelector(SUBMENU_SEL) !== null;
       const submenuInParentLi =
-        !!parentLi &&
-        Array.from(parentLi.children).some(
-          (c) => c !== html && c.matches?.('ul, ol, [role="menu"], [class*="submenu"], [class*="sub-menu"], [class*="children"]'),
-        );
+        !!parentLi && Array.from(parentLi.children).some((c) => c !== html && !!c.matches?.(submenuSel));
       const expandable = submenuInSelf || submenuInParentLi;
       // href：自身 → 内部 a → 祖先 a（a 包裹 li 的场景）
       let href: string | undefined = html.getAttribute('href') || undefined;
@@ -304,56 +386,11 @@ const COLLECT_NAV_FN = (args: {
   return out;
 };
 
-/** 浏览器内收集页面功能点控件 + 是否含数据表格/列表（只识别、不点击） */
-const COLLECT_CONTROLS_FN = () => {
-  // 多容器扫描：所有 main/.content 容器都扫，而非只取第一个（表格/表单可能不在第一个容器内）
-  const containers = Array.from(document.querySelectorAll('main, .content, #main, [class*="content"], [class*="main"]'));
-  const roots: Element[] = containers.length > 0 ? (containers as Element[]) : [document.body];
-  const hasDataGrid = roots.some((r) => !!r.querySelector('table, [class*="table"], [class*="grid"], [class*="list"], [class*="list-view"]'));
-  const controls: PageControl[] = [];
-  const seen = new Set<string>();
-  // 扩展候选：Tab/标签页、列表项、textarea、分页等，补「页面菜单下的标签」颗粒度
-  const SEL = 'button, a[href], [role="button"], [class*="btn"], input, select, textarea, [role="tab"], .ant-tabs-tab, .el-tabs__item, [role="listitem"], .ant-list-item, .ant-pagination-item';
-  for (const main of roots) {
-    const candidates = main.querySelectorAll(SEL);
-    for (const el of Array.from(candidates)) {
-      const html = el as HTMLElement;
-      // 关键修复（串页污染）：keep-alive 缓存的隐藏页面 DOM 仍在文档中（display:none），
-      // 必须跳过不可见元素，否则会把上一个页面的按钮/导航控件误挂到当前页面。
-      const style = window.getComputedStyle(html);
-      const rect = html.getBoundingClientRect();
-      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0' || rect.width === 0 || rect.height === 0) continue;
-      // 排除全局导航/标签页/顶栏内的控件（个人中心/刷新/公告弹窗等不属于页面功能点）
-      if (html.closest('.navbar, .navbar-container, .tags-view, .tags-view-container, .sidebar, .sidebar-container, header, .header, .topbar, .top-bar, .layout-header, .sidebar-logo-container')) continue;
-      // 排除仪表盘统计部件（小卡片/统计块）：它们是展示型入口，不是页面功能点
-      if (html.closest('.small-box, .info-box, [class*="widget"], [class*="statistic"], [class*="stat-"]')) continue;
-      // 排除分页/页码/表头区：‹ 1 2 3 ›、每页条数、"跳转"等不是业务功能点
-      if (html.closest('[class*="pagination"], .pagination, [class*="pager"], thead')) continue;
-      const tag = html.tagName.toLowerCase();
-      const isTab = !!html.closest('[role="tablist"]') || html.getAttribute('role') === 'tab' || /tabs-tab|tabs__item/i.test(html.className);
-      const text = (html.textContent || '').replace(/\s+/g, ' ').trim();
-      const label = html.getAttribute('aria-label') || text || (html as HTMLInputElement).placeholder || '';
-      if (!label) continue;
-      // 纯数字/分页符号（"1"、"50 50100150"、"‹"、">"、省略号）不是功能点
-      if (/^[\d\s.,:;%‹›«»<>×xX+\-/|]+$/.test(label)) continue;
-      if (/^(\.\.\.|…)+$/.test(label)) continue;
-      const sel =
-        html.id ? `#${html.id}` : `${tag}[${['data-testid', 'data-id', 'name'].map((a) => html.getAttribute(a) ? `${a}="${html.getAttribute(a)}"` : '').filter(Boolean).join('][') || 'class'}='${html.className}']`;
-      const key = sel + label;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      controls.push({
-        selector: sel,
-        tag,
-        text: label,
-        href: tag === 'a' ? (html as HTMLAnchorElement).getAttribute('href') ?? undefined : undefined,
-        type: isTab ? 'tab' : ((html as HTMLInputElement).type || undefined),
-        placeholder: (html as HTMLInputElement).placeholder || undefined,
-      });
-    }
-  }
-  return { controls, hasDataGrid };
-};
+// 说明（AGENTS.md HARD RULE #0）：原 `COLLECT_CONTROLS_FN`（页面按钮级控件采集）已**删除**，原因：
+//   ① 边界：第一次探索只到「菜单子页」粒度，不采页面按钮（动作级归用例阶段）；
+//   ② 它内部依赖大量系统/框架专属类名（`.el-tabs__item`、`.ant-list-item`、`.small-box`、
+//      `.topbar`、`.tags-view`、`[class*="pagination"]` …）属写死，且已无任何调用者（死代码）。
+//   页面按钮级采集由「用例阶段」的 `stage-case` / `pageActionExplorer` 承担。
 
 /** 跨 frame 收集导航项 */
 async function collectNavAll(page: Page): Promise<RawNavItem[]> {
@@ -362,11 +399,15 @@ async function collectNavAll(page: Page): Promise<RawNavItem[]> {
   for (let i = 0; i < frames.length; i++) {
     try {
       const items = (await frames[i].evaluate(COLLECT_NAV_FN, {
-        containerSel: MENU_CONTAINERS,
-        itemSel: MENU_ITEMS,
+        itemSel: NAV_ITEM_SEL,
+        submenuSel: SUBMENU_SEL,
         dangerousSource: DANGEROUS_SOURCE,
-        noiseSource: NOISE_SOURCE,
-        contentSel: CONTENT_SEL,
+        sidebarMaxWRatio: SIDEBAR_MAX_W_RATIO,
+        sidebarMinHRatio: SIDEBAR_MIN_H_RATIO,
+        edgeRatio: EDGE_RATIO,
+        topbarMaxHRatio: TOPBAR_MAX_H_RATIO,
+        topbarMinWRatio: TOPBAR_MIN_W_RATIO,
+        minItemsPerContainer: MIN_ITEMS_PER_CONTAINER,
       })) as RawNavItem[];
       out.push(...items);
     } catch {
@@ -376,29 +417,8 @@ async function collectNavAll(page: Page): Promise<RawNavItem[]> {
   return out;
 }
 
-async function collectControls(page: Page): Promise<{ controls: PageControl[]; hasDataGrid: boolean }> {
-  // iframe/tab 感知：AdminLTE 等系统把功能页加载在 tab iframe 里，只扫主 frame 会全部采空。
-  // 逐 frame 采集后按「selector+text」去重合并；跨域/已卸载 frame 静默跳过。
-  const merged: { controls: PageControl[]; hasDataGrid: boolean } = { controls: [], hasDataGrid: false };
-  for (const f of page.frames()) {
-    try {
-      const r = (await f.evaluate(COLLECT_CONTROLS_FN)) as { controls: PageControl[]; hasDataGrid: boolean };
-      if (!r) continue;
-      merged.controls.push(...(r.controls ?? []));
-      merged.hasDataGrid = merged.hasDataGrid || !!r.hasDataGrid;
-    } catch {
-      // 跨域 frame 或已卸载：跳过
-    }
-  }
-  const seen = new Set<string>();
-  merged.controls = merged.controls.filter((c) => {
-    const k = `${c.selector}|${c.text ?? ''}`;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
-  return merged;
-}
+// 说明（AGENTS.md HARD RULE #0）：原 `collectControls()`（逐 frame 采集页面按钮控件）已删除 ——
+// 它是死代码（无调用者），且其采集规则依赖系统专属类名，违反通用性铁律。
 
 async function waitSettled(page: Page, settleMs: number): Promise<void> {
   await page.waitForTimeout(settleMs);
@@ -429,9 +449,8 @@ async function waitForContentLoaded(page: Page): Promise<void> {
     for (const f of page.frames()) {
       const t = await f
         .evaluate(() => {
-          const el =
-            document.querySelector('.app-main, main, .main, .content, [class*="content"], [class*="main"]') ??
-            document.body;
+          // HARD RULE #0：内容区只认标准元素 / ARIA，不列任何框架类名
+          const el = document.querySelector('main, [role="main"]') ?? document.body;
           return ((el as HTMLElement).innerText ?? '').replace(/\s+/g, ' ').trim().slice(0, 500);
         })
         .catch(() => '');
@@ -456,10 +475,9 @@ async function waitForContentLoaded(page: Page): Promise<void> {
   }
 
   // 2) 等待 marker 出现（table / button / toolbar 等），3 秒兜底
-  const contentSel =
-    'main, .content, .app-main, [class*="content"], [class*="main"], #app, body';
-  const markerSel =
-    'table, .el-table, .ant-table, .btn, button, [role="button"], [class*="toolbar"], [class*="operation"], [class*="actions"]';
+  // HARD RULE #0：只用标准元素 / ARIA role，不列任何框架类名（`main` 为 HTML5 标准元素，`role="main"` 为标准 ARIA）。
+  const contentSel = 'main, [role="main"], body';
+  const markerSel = 'table, button, [role="button"], [role="grid"], [role="table"], input, select';
   try {
     await page.waitForFunction(
       (args: { contentSel: string; markerSel: string }) => {
@@ -501,15 +519,20 @@ function frameUrlOf(f: { url?: () => string }): string {
 export async function pageFingerprint(page: Page): Promise<string> {
   // iframe 感知：主 frame 不变但 tab iframe 内容变化的「落地」必须能被识别，
   // 否则 AdminLTE 类系统（功能页在 iframe）会被误判未落地而跳过采集。
+  //
+  // ⚠ 两个**通用**稳定性要求（缺一则落地判定失效）：
+  //  ① **数字骨架化**：把连续数字替换为 `#`。后台首页普遍含动态数字（当前时间、未读计数、
+  //     待办条数），否则同一页面每次采样都不同 → 所有点击都被判「有落地」→
+  //     顶栏部件（全屏/便签/更多模块/导航切换）无法被剔除。
+  //  ② **不含「元素总数」**：元素数同样随动态内容/轮播浮动，是假变化的另一来源。
   const parts: string[] = [page.url()];
   for (const f of page.frames()) {
     const body = await f
       .evaluate(() => {
-        const el =
-          document.querySelector('main, .main, .app-main, .content, [class*="content"], [class*="main"]') ??
-          document.body;
+        // HARD RULE #0：内容区只认标准元素 / ARIA，不列任何框架类名
+        const el = document.querySelector('main, [role="main"]') ?? document.body;
         const text = (el as HTMLElement).innerText ?? '';
-        return `${el.querySelectorAll('*').length}:${text.slice(0, 300)}`;
+        return text.replace(/\d+/g, '#').replace(/\s+/g, ' ').trim().slice(0, 300);
       })
       .catch(() => '');
     parts.push(`${f === page.mainFrame() ? 'main' : 'sub'}:${frameUrlOf(f)}::${body}`);
@@ -747,15 +770,20 @@ async function expandAndCollect(
   // 点击前快照：支撑「点击因果」发现。AdminLTE 等系统点击一级菜单后，二三级菜单在
   // 另一容器（如侧栏）刷新出现，与点击项无 DOM 祖先关系，parentSelector 永远匹配不上；
   // 只能靠「点击后新出现的导航项」建立因果父子（运行时改写 parentSelector，下游不感知）。
-  const beforeKeys = new Set((await collectNavAll(page)).map((c) => c.selector));
+  //
+  // ⚠ 用 **text** 而非 selector 做「新增」判定（通用性关键）：
+  //   selector 含结构路径，页面重渲染（换页/局部刷新）后同一菜单项的 selector 会变，
+  //   会把**长期存在的项**误判成「点击产生的子项」——实测 ruoyi 点 logo 后整条顶栏被当成子菜单。
+  //   text 稳定得多：长期存在的项其 text 不变，只有真正新出现的项 text 才不在快照里。
+  const beforeTexts = new Set((await collectNavAll(page)).map((c) => c.text));
 
   const collectChildren = async (): Promise<RawNavItem[]> => {
     const after = await collectNavAll(page);
     // 1) 常规：DOM 祖先关系（Element-UI / AntD 等子菜单在点击项子树内）
     const byParent = after.filter((c) => c.parentSelector === item.selector);
     if (byParent.length > 0) return byParent;
-    // 2) 因果：点击后新出现且非自身的导航项 → 挂为点击项子级
-    const causalNew = after.filter((c) => !beforeKeys.has(c.selector) && c.selector !== item.selector);
+    // 2) 因果：点击后**新出现**（按 text 判定，避免重渲染误判）且非自身的导航项 → 挂为点击项子级
+    const causalNew = after.filter((c) => !beforeTexts.has(c.text) && c.selector !== item.selector);
     if (causalNew.length > 0) {
       for (const c of causalNew) {
         // 只补空、不覆盖：保留同批新项之间 DOM 已确定的分组父子关系
@@ -780,21 +808,38 @@ async function expandAndCollect(
     return [];
   };
 
-  // 1) 文本定位点击展开（Element-UI / Ant Design 侧边栏常见）
-  try {
-    await page.getByText(item.text, { exact: true }).first().click({ timeout: 3000 });
-    await page.waitForTimeout(Math.min(cfg.settleMs, 400));
-    const children = await collectChildren();
-    if (children.length > 0) return children;
-  } catch {
-    // 继续尝试 cssPath
-  }
+  /**
+   * 采集子项；**一次为空则加长等待重采**（通用容错，不是针对某系统）。
+   * 依据（OA AdminLTE 实测）：点击一级菜单后是「切换另一个 `ul.tab-pane` 组的可见性」，
+   * 项少的短组（如「项目管理」仅 2 项）需要约 1s 才完成切换/渲染；400ms 就采集会拿到空集，
+   * 该一级菜单随即被误判「无子菜单」当作 UI 控件剔除 → **真实菜单缺失**。
+   * 正常路径不受影响（第一次采集非空就不再等）。
+   */
+  const collectChildrenWithRetry = async (): Promise<RawNavItem[]> => {
+    let children = await collectChildren();
+    if (children.length === 0) {
+      await page.waitForTimeout(900);
+      children = await collectChildren();
+    }
+    return children;
+  };
 
-  // 2) cssPath selector 点击展开（无稳定文本的场景）
+  // 1) cssPath 精确 selector 优先（**顺序很关键**）：同名文本在页面常有多份
+  //    （顶栏一级菜单「项目管理」与侧栏组内首项同名），先按文本点会点到另一份 → 导航到错页面 → 子菜单采空。
   try {
     await page.click(item.selector, { timeout: 3000 });
     await page.waitForTimeout(Math.min(cfg.settleMs, 400));
-    const children = await collectChildren();
+    const children = await collectChildrenWithRetry();
+    if (children.length > 0) return children;
+  } catch {
+    // selector 失效，继续尝试文本定位
+  }
+
+  // 2) 文本定位点击展开（Element-UI / Ant Design 侧边栏常见；仅作 selector 失效时的兜底）
+  try {
+    await page.getByText(item.text, { exact: true }).first().click({ timeout: 3000 });
+    await page.waitForTimeout(Math.min(cfg.settleMs, 400));
+    const children = await collectChildrenWithRetry();
     if (children.length > 0) return children;
   } catch {
     // 无法展开
@@ -804,7 +849,7 @@ async function expandAndCollect(
   try {
     await page.hover(item.selector, { timeout: 2000 });
     await page.waitForTimeout(Math.min(cfg.settleMs, 400));
-    const children = await collectChildren();
+    const children = await collectChildrenWithRetry();
     if (children.length > 0) return children;
   } catch {
     // 无法展开

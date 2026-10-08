@@ -5,7 +5,25 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { McpEngine, ExploredElement, FeatureRow } from '@test-platform/contracts';
 import { DEFAULT_FEATURE_COLUMNS, FeatureEvidenceSchema } from '@test-platform/contracts';
-import { exploreFeatureEvidence, exploreFeatureEvidenceMap } from '../featureEvidenceExplorer.js';
+import { exploreFeatureEvidence, exploreFeatureEvidenceMap, isLeakedToken } from '../featureEvidenceExplorer.js';
+
+describe('isLeakedToken（防止 DOM token 泄漏为字段名）', () => {
+  it('识别纯英文标识 token（theSelect / btSelectItem / userName）为泄漏', () => {
+    expect(isLeakedToken('theSelect')).toBe(true);
+    expect(isLeakedToken('btSelectItem')).toBe(true);
+    expect(isLeakedToken('btSelectAll')).toBe(true);
+    expect(isLeakedToken('userName')).toBe(true);
+  });
+  it('带中文的标签（含 placeholder/aria-label）不算泄漏', () => {
+    expect(isLeakedToken('请输入用户名')).toBe(false);
+    expect(isLeakedToken('查询条件')).toBe(false);
+    expect(isLeakedToken('status状态')).toBe(false);
+  });
+  it('空/undefined 不算泄漏', () => {
+    expect(isLeakedToken(undefined)).toBe(false);
+    expect(isLeakedToken('')).toBe(false);
+  });
+});
 
 const SAMPLE_ELEMENTS: ExploredElement[] = [
   {
@@ -576,5 +594,101 @@ describe('Fix-A entry_only 跨路径改由菜单点击进入（复用登录会�
     await exploreFeatureEvidenceMap(engine, { ...common, crossPathNavigation: 'allow' });
     const navCalls = (engine.navigate as any).mock.calls.map((c: string[]) => c[0]);
     expect(navCalls).toContain(featureUrl);
+  });
+
+  it('entry_only 且无显式 clickSelector：回到系统入口后按目标 URL 定位菜单链接并点击进入（不直接打开深链）', async () => {
+    const menuLink = {
+      ref: 'menu-user', tag: 'a', selector: 'a[href="/cross/path"]', href: 'https://x.com/cross/path',
+      text: '用户管理', label: '用户管理', interactive: true, isFormControl: false, suggestedAction: 'click',
+    } as unknown as ExploredElement;
+    const engine = {
+      navigate: vi.fn().mockResolvedValue(undefined),
+      runReadOnlyClick: vi.fn().mockResolvedValue({ status: 'performed', beforeUrl: baseUrl, afterUrl: baseUrl }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      extractPageElements: vi.fn().mockResolvedValue([menuLink, addBtn]),
+      getCurrentUrl: vi.fn().mockResolvedValue(baseUrl),
+      evaluate: vi.fn().mockResolvedValue('a[href="/cross/path"]'),
+    } as unknown as McpEngine;
+    await exploreFeatureEvidenceMap(engine, {
+      featurePaths: { tp_01: featureUrl } as Record<string, string>,
+      featureTable: buildFeatureTable(['tp_01']),
+      featureProfiles: [{ featureId: 'tp_01', actionKind: 'list', sourceLabel: '用户管理' }] as any,
+      selectedModuleIds: [],
+      scope: 'all' as const,
+      baseUrl,
+      featureIds: new Set(['tp_01']),
+      systemId: 'sys1',
+      featureRevision: 'rev1',
+      crossPathNavigation: 'entry_only',
+    });
+    const navCalls = (engine.navigate as any).mock.calls.map((c: string[]) => c[0]);
+    // 仅回到系统入口（复用登录），不打开深链
+    expect(navCalls).toContain(baseUrl);
+    expect(navCalls).not.toContain(featureUrl);
+    // 经菜单链接点击进入目标页（满足 #1：点击而非直接跳转）
+    expect(engine.runReadOnlyClick).toHaveBeenCalledWith('a[href="/cross/path"]', 'action');
+  });
+});
+
+describe('Fix-B 自动发现动作入口并采集新增/详情页字段（满足 #2：探索页面所有功能、拿到完整字段）', () => {
+  // 列表页：含表格 + "新增用户"按钮 + "查看"按钮（无显式 actionSelector，应自动发现并点击）
+  const listPage: ExploredElement[] = [
+    {
+      ref: 'r2', tag: 'table', selector: 'table', text: '列表', interactive: false,
+      label: '列表', isFormControl: false, suggestedAction: 'navigate',
+      tableInfo: { columns: ['名称', '状态'], rowCount: 2, hasPagination: true, paginationInfo: '第1/5页', hasSorting: false, sortableColumns: [], hasFilter: false, isVirtualList: false },
+    },
+    { ref: 'add', tag: 'button', selector: '#add', text: '新增用户', interactive: true, isFormControl: false, suggestedAction: 'click' },
+    { ref: 'detail', tag: 'button', selector: '#detail', text: '查看', interactive: true, isFormControl: false, suggestedAction: 'click' },
+  ];
+  const createForm: ExploredElement[] = [
+    { ref: 'c1', tag: 'input', selector: '#cname', label: '用户名称', inputType: 'text', interactive: true, isFormControl: true, required: true, suggestedAction: 'fill' },
+    { ref: 'c2', tag: 'input', selector: '#cphone', label: '手机号', inputType: 'text', interactive: true, isFormControl: true, suggestedAction: 'fill' },
+  ];
+  const detailForm: ExploredElement[] = [
+    { ref: 'd1', tag: 'input', selector: '#dname', label: '用户名称', inputType: 'text', interactive: true, isFormControl: true, readonly: true, suggestedAction: 'fill' },
+  ];
+
+  function engineWithFlow() {
+    const extract = vi.fn();
+    extract.mockResolvedValueOnce(listPage).mockResolvedValueOnce(createForm).mockResolvedValueOnce(detailForm).mockResolvedValue(listPage);
+    return {
+      navigate: vi.fn().mockResolvedValue(undefined),
+      runStep: vi.fn().mockResolvedValue(undefined),
+      runReadOnlyClick: vi.fn().mockResolvedValue({ status: 'performed', beforeUrl: 'https://x.com/users', afterUrl: 'https://x.com/users#dialog' }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      extractPageElements: extract,
+      getCurrentUrl: vi.fn().mockResolvedValue('https://x.com/users'),
+      evaluate: vi.fn().mockResolvedValue(true),
+    } as unknown as McpEngine;
+  }
+
+  it('无 actionSelector 时：自动发现"新增用户"并点击，采集新增表单字段（含中文 label，无 token 泄漏）', async () => {
+    const engine = engineWithFlow();
+    const res = await exploreFeatureEvidence(engine, { featureId: 'tp_list', url: 'https://x.com/users' });
+
+    // 必须点击了"新增用户"按钮（而非直接跳转）
+    expect(engine.runReadOnlyClick).toHaveBeenCalledWith('#add', 'action');
+    // 必须点击了"查看"按钮（详情页）
+    expect(engine.runReadOnlyClick).toHaveBeenCalledWith('#detail', 'action');
+    // 证据含 create 状态与新增表单字段
+    expect(res.evidence.states).toContain('create');
+    expect(res.evidence.states).toContain('detail');
+    const fieldNames = res.evidence.fields.map((field) => field.name);
+    expect(fieldNames).toContain('用户名称');
+    expect(fieldNames).toContain('手机号');
+    // 不得出现任何 DOM token 泄漏字段名
+    expect(fieldNames.some((name) => isLeakedToken(name))).toBe(false);
+    // 动作入口被记录
+    expect(res.evidence.actionEntries.some((entry) => entry.actionKind === 'create' && entry.triggerable)).toBe(true);
+    expect(res.evidence.actionEntries.some((entry) => entry.actionKind === 'detail' && entry.triggerable)).toBe(true);
+  });
+
+  it('仅发现一个 create 与一个 detail，不重复采集同名模态', async () => {
+    const engine = engineWithFlow();
+    const res = await exploreFeatureEvidence(engine, { featureId: 'tp_dedup', url: 'https://x.com/users' });
+    // create / detail 各一个入口
+    expect(res.evidence.actionEntries.filter((entry) => entry.actionKind === 'create').length).toBe(1);
+    expect(res.evidence.actionEntries.filter((entry) => entry.actionKind === 'detail').length).toBe(1);
   });
 });

@@ -129,18 +129,37 @@ export function mergeManualSupplement(
     );
   }
 
+  // 验收 7（幂等）：同名节点已在树中则不再新增 —— 重复入树不得产生重复节点。
+  const labelExists = (nodes: ModuleNode[], label: string): boolean =>
+    nodes.some((n) => n.label === label || labelExists(n.children || [], label));
+  const justAdded: ModuleNode[] = [];
+
   deduped.forEach((cp, idx) => {
+    // T4（设计 §3.3）人工补录入树的三条硬要求：
+    //  ① 名称取「点击文本」—— 此前误用 inferredModule（归属模块名），列表里看到的不是用户点的那个菜单
+    //  ② 类型按 kind 映射：menu→page（用户拍板"默认页面、可手改"）、action→action（页面按钮/功能=最小颗粒度）
+    //  ③ **必须带真实 URL** —— 此前完全没写 url，补录节点对「功能点→用例」无价值（URL 就是导航入口）
+    const last = cp.steps[cp.steps.length - 1];
+    const isAction = last?.kind === 'action';
     const actionNode: ModuleNode = {
       id: genActionId(`${relativeToNodeId ?? 'root'}_${idx}`),
-      label: cp.inferredModule || `人工补录路径 ${idx + 1}`,
+      label: last?.text || cp.inferredModule || `人工补录路径 ${idx + 1}`,
       parentId: null,
       subsystemId,
-      type: 'action',
+      type: isAction ? 'action' : 'page',
+      url: last?.url || cp.menuUrl,
       status: 'covered',
       children: [],
       depth: 0,
       manuallyAdded: true,
     };
+
+    // 验收 7（幂等）：树中已存在同名节点（或本批已加过）→ 跳过，避免重复入树产生重复节点。
+    // （实测：连续入树同一菜单 3 次，原先会得到 3 个同名节点。）
+    if (labelExists(next, actionNode.label) || labelExists(justAdded, actionNode.label)) {
+      return;
+    }
+    justAdded.push(actionNode);
 
     if (!target) {
       // relativeToNodeId 为 null / 'end'（或根级）→ 追加到根
@@ -211,8 +230,10 @@ export function assertActionGranularity(
 ): { totalLeaves: number; actionCount: number; flagged: number } {
   const all = flatten(tree);
   // covered 动作 = 浏览器实采确认的操作级功能点（needs_review 推断占位不计入）
+  // ⚠ 排除 `manuallyAdded`（人工补录）节点：人工补录是"兜底"，**不得影响自动探索的质量闸门**——
+  //   否则补录一个按钮就会切换下面的分支（actionCount 0 → >0），把原本合格的页面误标 needs_review。
   const actionCount = all.filter(
-    (n) => n.type === 'action' && n.status === 'covered',
+    (n) => n.type === 'action' && n.status === 'covered' && !n.manuallyAdded,
   ).length;
 
   const pages = all.filter((n) => n.type === 'page');

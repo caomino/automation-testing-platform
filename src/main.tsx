@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from '../packages/app/src/App';
+import { warnIfApiUnreachable } from '../packages/app/src/services/apiReachability';
 import '../packages/app/src/styles.css';
 
 const container = document.getElementById('root');
@@ -10,5 +11,6 @@ if (container) {
       <App />
     </StrictMode>,
   );
+  // 若当前地址没有把 /api/* 代理到后端（页面能开但所有按钮都会"无反应"），给出醒目提示
+  void warnIfApiUnreachable();
 }
-
