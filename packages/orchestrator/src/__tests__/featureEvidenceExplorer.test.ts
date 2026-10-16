@@ -207,7 +207,7 @@ describe('exploreFeatureEvidence 单功能点采集', () => {
 
     expect(engine.runStep).not.toHaveBeenCalled();
     expect(res.evidence.states).toEqual(['base']);
-    expect(res.evidence).toEqual(expect.objectContaining({ needsReview: true, reviewReason: expect.stringContaining('安全样例') }));
+    expect(res.evidence).toEqual(expect.objectContaining({ needsReview: true, reviewReason: expect.stringContaining('样例行') }));
   });
 
   it('actionSelector 失效时不标记 observed、不点击，并记录待复核原因', async () => {
@@ -580,13 +580,26 @@ describe('Fix-A entry_only 跨路径改由菜单点击进入（复用登录会�
     } as unknown as McpEngine;
   }
 
-  it('entry_only：跨路径功能点先回到系统入口，再经菜单点击进入（不直接打开目标 URL，避免落在登录页）', async () => {
+  it('entry_only：已在入口同文档时**不整页 reload**，直接经菜单点击进入（不直接打开目标 URL）', async () => {
     const engine = recordingEngine();
+    await exploreFeatureEvidenceMap(engine, { ...common, crossPathNavigation: 'entry_only' });
+    const navCalls = (engine.navigate as any).mock.calls.map((c: string[]) => c[0]);
+    // 已在入口同文档（getCurrentUrl 恒为 baseUrl）→ 不应再 reload 回首页。
+    // 真实事故：每个功能点前都 navigate(baseUrl)，iframe 形态下连带重置菜单与页签，
+    // 用户可见症状就是「每次第一跳都回首页」，且菜单被重置后点不动。
+    expect(navCalls).not.toContain(baseUrl);
+    expect(navCalls).not.toContain(featureUrl);
+    expect(engine.runReadOnlyClick).toHaveBeenCalledWith('#add-btn', 'action');
+  });
+
+  it('entry_only：确实离开入口文档时才导航回入口（不是无条件 reload）', async () => {
+    const engine = recordingEngine();
+    // 模拟上一个功能点把浏览器带离了入口文档（如被重定向到其它路径）
+    (engine.getCurrentUrl as any).mockResolvedValue('https://x.com/elsewhere');
     await exploreFeatureEvidenceMap(engine, { ...common, crossPathNavigation: 'entry_only' });
     const navCalls = (engine.navigate as any).mock.calls.map((c: string[]) => c[0]);
     expect(navCalls).toContain(baseUrl);
     expect(navCalls).not.toContain(featureUrl);
-    expect(engine.runReadOnlyClick).toHaveBeenCalledWith('#add-btn', 'action');
   });
 
   it('allow（默认兼容）：跨路径功能点仍直接打开目标 URL', async () => {
@@ -622,8 +635,8 @@ describe('Fix-A entry_only 跨路径改由菜单点击进入（复用登录会�
       crossPathNavigation: 'entry_only',
     });
     const navCalls = (engine.navigate as any).mock.calls.map((c: string[]) => c[0]);
-    // 仅回到系统入口（复用登录），不打开深链
-    expect(navCalls).toContain(baseUrl);
+    // 已在入口同文档（getCurrentUrl 恒为 baseUrl）→ 不 reload；无论如何都不打开深链
+    expect(navCalls).not.toContain(baseUrl);
     expect(navCalls).not.toContain(featureUrl);
     // 经菜单链接点击进入目标页（满足 #1：点击而非直接跳转）
     expect(engine.runReadOnlyClick).toHaveBeenCalledWith('a[href="/cross/path"]', 'action');
@@ -991,5 +1004,94 @@ describe('浮层关闭：跨系统通用性（不依赖可见文本、不依赖�
     await exploreFeatureEvidenceMap(engine, opts);
     const keys = (engine.runStep as any).mock.calls.map((c: any[]) => c[0]?.key);
     expect(keys).toContain('Escape');
+  });
+});
+
+/**
+ * 回归锁定：本次两个用户可见问题的修复
+ *  ① 每个功能点「首跳回首页」—— 已在入口同文档时不得再整页 reload
+ *  ② 「新增/修改」按钮未被探索 —— 修改类入口必须与新增同等可达
+ * 判据全部为通用动作语义，无任何系统/框架指纹。
+ */
+describe('回归：修改/编辑入口与新增同等可达（打开表单≠写入）', () => {
+  /** 列表页：含表格 + 「修改」按钮 + 「保存」按钮（后者必须永不点击） */
+  const listWithEdit: ExploredElement[] = [
+    {
+      ref: 't1', tag: 'table', selector: 'table', text: '列表', interactive: false,
+      label: '列表', isFormControl: false, suggestedAction: 'navigate',
+      tableInfo: {
+        columns: ['用户ID', '登录名称', '用户状态'], rowCount: 2, hasPagination: true,
+        paginationInfo: '第1/2页', hasSorting: false, sortableColumns: [], hasFilter: false, isVirtualList: false,
+      },
+    },
+    {
+      ref: 'b1', tag: 'button', selector: 'button:has-text("修改")', text: '修改', interactive: true,
+      label: '修改', isFormControl: false, suggestedAction: 'click',
+    },
+    {
+      ref: 'b2', tag: 'button', selector: 'button:has-text("保存")', text: '保存', interactive: true,
+      label: '保存', isFormControl: false, suggestedAction: 'click',
+    },
+  ];
+  /** 点击「修改」后弹出的编辑表单（含只读字段） */
+  const editForm: ExploredElement[] = [
+    ...listWithEdit,
+    {
+      ref: 'f1', tag: 'input', selector: "input[name='loginName']", text: '登录名称', interactive: true,
+      label: '登录名称', inputType: 'text', isFormControl: true, readonly: true, suggestedAction: 'fill',
+    },
+    {
+      ref: 'f2', tag: 'input', selector: "input[name='nickName']", text: '用户名称', interactive: true,
+      label: '用户名称', inputType: 'text', isFormControl: true, required: true, suggestedAction: 'fill',
+    },
+  ];
+
+  function editEngine(): McpEngine {
+    return {
+      navigate: vi.fn().mockResolvedValue(undefined),
+      runStep: vi.fn().mockResolvedValue(undefined),
+      // 只有「修改」能点成功；「保存」一律被引擎层拦截（模拟写请求守卫）
+      runReadOnlyClick: vi.fn().mockImplementation(async (selector: string) =>
+        /保存/.test(selector)
+          ? { status: 'blocked', beforeUrl: 'https://x.com/users', afterUrl: 'https://x.com/users', reason: '写操作已拦截' }
+          : { status: 'performed', beforeUrl: 'https://x.com/users', afterUrl: 'https://x.com/users' }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      extractPageElements: vi
+        .fn()
+        .mockResolvedValueOnce(listWithEdit)   // base
+        .mockResolvedValueOnce(editForm)      // 点「修改」后
+        .mockResolvedValue(listWithEdit),
+      getCurrentUrl: vi.fn().mockResolvedValue('https://x.com/users'),
+      evaluate: vi.fn().mockResolvedValue(true),
+    } as unknown as McpEngine;
+  }
+
+  it('「修改」按钮进入遍历候选并被点击，采集到编辑表单字段（states 含 update）', async () => {
+    const engine = editEngine();
+    const res = await exploreFeatureEvidence(engine, {
+      featureId: 'tp_edit',
+      actionKind: 'list',
+      url: 'https://x.com/users',
+    });
+
+    const clicked = (engine.runReadOnlyClick as any).mock.calls.map((c: string[]) => c[0]);
+    expect(clicked.some((s: string) => /修改/.test(s))).toBe(true);
+    expect(res.evidence.states).toContain('update');
+    expect(res.evidence.actionEntries.some((e) => e.actionKind === 'update' && e.observed)).toBe(true);
+    // 编辑表单独有的字段被采到
+    expect(res.evidence.fields.map((f) => f.name)).toContain('用户名称');
+  });
+
+  it('「保存」按钮永不被点击（提交类写操作红线）', async () => {
+    const engine = editEngine();
+    const res = await exploreFeatureEvidence(engine, {
+      featureId: 'tp_edit2',
+      actionKind: 'list',
+      url: 'https://x.com/users',
+    });
+    const clicked = (engine.runReadOnlyClick as any).mock.calls.map((c: string[]) => c[0]);
+    expect(clicked.some((s: string) => /保存/.test(s))).toBe(false);
+    // 未因「保存」不可点而阻断：编辑表单证据仍应保留
+    expect(res.evidence.fields.length).toBeGreaterThan(0);
   });
 });
