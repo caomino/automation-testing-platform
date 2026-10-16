@@ -36,7 +36,9 @@ describe('PlaywrightEngine.runReadOnlyClick', () => {
 
       await expect(engine.runReadOnlyClick('#detail', 'action')).resolves.toMatchObject({
         status: 'blocked',
-        reason: expect.stringContaining('fetch(POST)'),
+        // GET 放行改造后，POST 写入由客户端写入守卫拦截（reason 为"已阻断客户端写入: fetch"）——
+        // 拦截层从 route 迁移到写入守卫，红线结果不变（sideEffectWrites 仍为 0）
+        reason: expect.stringContaining('已阻断客户端写入'),
       });
       expect(sideEffectWrites).toBe(0);
     } finally {

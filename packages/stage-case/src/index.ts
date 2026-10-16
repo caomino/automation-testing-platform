@@ -234,10 +234,20 @@ export const run = async (input: CaseInput, opts?: CaseRunOptions): Promise<Case
 
     // 3/4/5. 五类覆盖 + 确定性候选（无 AI 基础）
     const candidates = generateActionScenarios(profile, evidence, ctx);
-    const unsafeEvidence = evidence?.needsReview === true
-      || evidence?.evidenceLevel === 'needs_review'
-      || (evidence?.reviewReason?.includes('写入风险') === true
-        || evidence?.uncovered?.some((item) => item.kind === 'write_required_state' || item.kind === 'no_safe_sample' || item.kind === 'cross_origin_iframe' || item.kind === 'closed_shadow_dom'));
+    // 阻断条件（严格按设计文档 §13「写操作在只读探索下必然 evidence_missing，属正常诚实标注」）：
+    // 已观测到真实内容（字段/表格/动作入口）时，只有**真实写入风险**才阻断 —— uncovered 里的
+    // 「写操作入口按红线拒绝」「个别可选按钮未执行/快照定位失败」都是正常诚实标注，
+    // 此前一律判 unsafe 会把真实表格列证据的用例候选全部清空（真实事故：0 张用例）。
+    // 无任何观测内容时维持原判定：诚实 needs_review。
+    const hasObservedContent = (evidence?.fields?.length ?? 0) > 0
+      || (evidence?.tables?.length ?? 0) > 0
+      || (evidence?.actionEntries?.length ?? 0) > 0;
+    const unsafeEvidence = hasObservedContent
+      ? evidence?.reviewReason?.includes('写入风险') === true
+      : evidence?.needsReview === true
+        || evidence?.evidenceLevel === 'needs_review'
+        || (evidence?.reviewReason?.includes('写入风险') === true
+          || evidence?.uncovered?.some((item) => item.kind === 'write_required_state' || item.kind === 'no_safe_sample' || item.kind === 'cross_origin_iframe' || item.kind === 'closed_shadow_dom'));
     const visibleCandidates = unsafeEvidence
       ? []
       : candidates.filter((candidate) => candidate.evidenceLevel === 'observed' && !candidate.needsReview);

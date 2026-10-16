@@ -146,6 +146,12 @@ export interface EngineConfig {
   ai?: AIClient;
   /** @新增 只读点击安全策略：strict=仅放行 a[href]/dialog/safe-opener（默认）；allow_all=放行所有非写操作按钮（新增/详情/查询等），仍拦截提交/保存/删除/导出/导入/审核等写操作与危险导航 */
   readOnlyClickPolicy?: 'strict' | 'allow_all';
+  /** @新增 真实页直点模式：跳过只读沙箱副本，直接在当前（用户可见的登录浏览器）页面上点击 ——
+   *  用于用例生成的二次探索：用户需亲眼看到"像人一样点菜单/点按钮"，页面保持真实渲染。
+   *  安全不依赖沙箱：写操作词按钮硬拦截 + 点击期间 route 拦截写请求 + 客户端写入守卫 + 下载/弹窗拦截照常生效。 */
+  clickOnLivePage?: boolean;
+  /** @新增 playwright-mcp 长驻 HTTP 服务地址（stdio 在 Windows 有管道死锁，默认 http://localhost:8931/mcp） */
+  mcpHttpUrl?: string;
   /** @新增 连接已运行浏览器（用户 Chrome / agent-browser）的 CDP 端点：复用其已登录会话，免验证码独立开窗 */
   cdpUrl?: string;
 }

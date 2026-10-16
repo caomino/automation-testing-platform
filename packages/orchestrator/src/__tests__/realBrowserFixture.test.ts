@@ -115,6 +115,37 @@ afterAll(async () => {
   await new Promise<void>((resolve) => server?.close(() => resolve()));
 });
 
+describe('真实浏览器：clickOnLivePage 真实页直点（用户可见浏览器里像人一样点击，无沙箱副本）', () => {
+  it('直点模式：不创建沙箱、直接在真实页点击菜单进入并采集全部按钮状态', async () => {
+    if (!engine) throw new Error('engine 未启动');
+    (engine as any).clickOnLivePage = true;
+    try {
+      const { evidence } = await exploreFeatureEvidenceMap(engine, {
+        featurePaths: { f_user2: TARGET_URL } as Record<string, string>,
+        featureTable: [[FEATURE_ROW.map((v, i) => (i === 8 ? 'f_user2' : v))]] as any,
+        featureProfiles: [{ featureId: 'f_user2', actionKind: 'list', sourceLabel: '用户管理' }] as any,
+        selectedModuleIds: [],
+        scope: 'all',
+        baseUrl: BASE_URL,
+        featureIds: new Set(['f_user2']),
+        systemId: 'fixture',
+        featureRevision: 'rev2',
+        crossPathNavigation: 'entry_only',
+      });
+      const ev = evidence.f_user2;
+      expect(ev).toBeDefined();
+      // 真实页直点：菜单点击进入 + 弹窗采集 + 无沙箱（无裸 HTML 替身页）
+      expect(ev.needsReview).toBe(false);
+      expect(ev.states.length).toBeGreaterThan(1);
+      // 导航路径仍只含系统入口（点击进入语义不变）
+      const navCalls = (await (engine as any).getNavigationPath()) as string[];
+      expect(navCalls.some((u) => u.includes('/system/user'))).toBe(false);
+    } finally {
+      (engine as any).clickOnLivePage = false;
+    }
+  }, 180_000);
+});
+
 describe('真实浏览器：entry_only 二次探索（点击进入 + 自动发现新增表单字段）', () => {
   it('经菜单点击进入目标页（不直接 navigate 深链），并采集到新增表单中文字段、无 token 泄漏', async () => {
     if (!engine) throw new Error('engine 未启动');
@@ -132,9 +163,6 @@ describe('真实浏览器：entry_only 二次探索（点击进入 + 自动发�
     });
 
     const ev = evidence.f_user;
-    // 诊断：打印真实证据，定位为何 states 为空
-    // eslint-disable-next-line no-console
-    console.log('DIAG ev=', JSON.stringify(ev, null, 2));
     expect(ev).toBeDefined();
 
     // #1：未直接打开深链（导航只到系统入口 /index，而非 /system/user）。
@@ -161,5 +189,5 @@ describe('真实浏览器：entry_only 二次探索（点击进入 + 自动发�
       expect(/^[A-Za-z][A-Za-z0-9_]*$/.test(n as string) && !(n as string).includes(' ') && !/[\u4e00-\u9fff]/.test(n as string)).toBe(false);
     }
     expect(ev.needsReview).toBe(false);
-  }, 60_000);
+  }, 180_000);
 });

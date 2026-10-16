@@ -1453,52 +1453,46 @@ export class PipelineOrchestrator {
           try {
             // 优先复用登录浏览器；否则恢复 storageState，再回退到 SessionHandle。
             // case 阶段也必须在已登录上下文中二次探索，不能新建匿名浏览器后扫描登录页。
-            const takeoverEngine = systemId ? getTakeoverEngine(systemId) : undefined;
-            const storedState = systemId && !takeoverEngine ? await this.store.getStorageState(systemId) : null;
-            const engineConfig: EngineConfig = {
+            // ── playwright-mcp 侧车模式（用户裁定，对齐 D:\Test 参考实现）──
+            // 二次探索的点击必须发生在**用户可见的真实 Chrome**里（browser_snapshot →
+            // browser_click 循环，等价"测试者手动操作"），页面永远真实渲染；侧车 Chrome
+            // 独立 profile，未登录时引导用户在侧车窗口登录（用户已确认配合登录）。
+            const mcpEngine = this.engineFactory({
               ...this.engineConfig,
-              ...(storedState ? { storageState: storedState as PlaywrightStorageState } : {}),
-              ...(rawInput.readOnlyClickPolicy ? { readOnlyClickPolicy: rawInput.readOnlyClickPolicy } : {}),
-            };
-            const engine = takeoverEngine ?? this.engineFactory(engineConfig);
-            if (!takeoverEngine) await engine.launch();
-            if (!takeoverEngine && !storedState) {
-              const session = rawInput.sessionHandle?.expiresAt > Date.now()
-                ? rawInput.sessionHandle as SessionHandle
-                : systemId ? await this.tryReuseSession(systemId) : null;
-              if (session) {
-                // Browser session rule: navigate to http(s) before injecting cookies/headers/tokens.
-                if (systemUrl) await engine.navigate(systemUrl);
-                await engine.applySession({
-                  cookies: session.cookies,
-                  headers: session.headers,
-                  tokens: session.tokens,
-                });
-                this.logger.info('orchestrator', `case: restored SessionHandle for ${systemId}`);
-              }
-            } else if (!takeoverEngine && storedState && systemUrl) {
-              // storageState is applied by the browser context; navigate before extraction.
-              await engine.navigate(systemUrl);
-            }
-            // 复用登录会话并按路径进入：入口取登录后应用页（capturedUrl 优先，避免直接打开目标 URL 落在登录页），
-            // 导航入口并验证登录态；若落在登录页则标记会话失效并跳过二次探索（不反复重新登录）。
+              engineType: 'mcp',
+              // 默认 chromium（本机 playwright 已装，headful 可见）；默认持久 profile —— 登录一次后续轮次保持会话。
+              // 注意：0.0.42 的 --browser chrome 在 Windows 上 channel 路径解析损坏（找 MacOS 路径），不可用
+              mcpArgs: [],
+            } as EngineConfig);
+            const engine = mcpEngine;
+            await engine.launch();
+            // 侧车 Chrome 独立 profile：打开系统入口，若落在登录页则**等待用户在侧车窗口登录**
+            // （用户已确认配合登录；轮询最长 3 分钟，登录成功后继续二次探索）。
             const entryUrl = systemId
               ? ((await this.resolveCaseEntryUrl(systemId)) ?? systemUrl)
               : systemUrl;
             let sessionValid = true;
-            // 入口本身是登录页（capturedUrl 未保存 = 登录未完成/未记录）：无有效会话，直接标记需要登录/人工接管，不在登录页空跑。
-            if (entryUrl && isLoginPageUrl(entryUrl)) {
-              this.logger.warn('orchestrator', `case: 入口 ${entryUrl} 为登录页（无 capturedUrl），需登录/人工接管后重试`);
-              sessionValid = false;
-            }
             try {
               if (engine && entryUrl && isSafeNavigationUrl(entryUrl)) {
                 await engine.navigate(entryUrl);
-                await engine.waitForTimeout(800);
-                const after = await engine.getCurrentUrl().catch(() => '');
-                if (after && isLoginPageUrl(after) && !isLoginPageUrl(entryUrl)) {
-                  this.logger.warn('orchestrator', `case: 登录会话失效（${after} 为登录页），跳过二次探索避免反复重新登录`);
+                await engine.waitForTimeout(1500);
+                let onLogin = await (engine as unknown as { hasLoginForm?: () => Promise<boolean> }).hasLoginForm?.().catch(() => false)
+                  || isLoginPageUrl(await engine.getCurrentUrl().catch(() => ''));
+                if (onLogin) {
+                  this.logger.info('orchestrator', 'case: 侧车浏览器未登录 —— 请在弹出的 Chrome 窗口中完成登录（等待最多 3 分钟）');
+                  const deadline = Date.now() + 180_000;
+                  while (Date.now() < deadline) {
+                    await engine.waitForTimeout(5000);
+                    onLogin = await (engine as unknown as { hasLoginForm?: () => Promise<boolean> }).hasLoginForm?.().catch(() => false)
+                      || isLoginPageUrl(await engine.getCurrentUrl().catch(() => ''));
+                    if (!onLogin) break;
+                  }
+                }
+                if (onLogin || isLoginPageUrl(await engine.getCurrentUrl().catch(() => ''))) {
+                  this.logger.warn('orchestrator', 'case: 侧车浏览器登录等待超时/失败，跳过二次探索');
                   sessionValid = false;
+                } else {
+                  this.logger.info('orchestrator', 'case: 侧车浏览器已登录，开始按功能点点击探索');
                 }
               }
             } catch (e) {
@@ -1560,8 +1554,7 @@ export class PipelineOrchestrator {
                 }
               }
             } finally {
-              // 复用登录浏览器不关闭（保持会话），新建引擎才关闭
-              if (!takeoverEngine) await engine.close().catch(() => {});
+              // mcp 侧车浏览器保持运行（shared context，登录会话保留给下一轮），不关闭
             }
           } catch (e) {
             this.logger.warn('orchestrator', `case engine launch failed: ${e instanceof Error ? e.message : e}`);

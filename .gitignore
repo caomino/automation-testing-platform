@@ -29,3 +29,12 @@ playwright-report/
 .tmp_storetest.mjs
 *_probe.mts
 *_explore_test.mts
+
+# 浏览器自动化 MCP 运行副产物（页面快照 yml / 控制台 log）
+.playwright-mcp/
+
+# 本地服务运行日志
+logs/
+*.backend.log
+*.frontend.log
+*.service.log

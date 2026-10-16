@@ -712,10 +712,16 @@ async function safeClick(
   await waitSettled(page, settleMs);
 
   // 落地校验：SPA 路由渲染有延迟，轮询到指纹变化即判定落地（首次立即检查，正常路径零额外开销）
-  // 窗口 3s：兼容慢加载（iframe 首帧较晚）场景，避免真实菜单被误判未落地而剔除
+  // 窗口 3s：兼容慢加载（iframe 首帧较晚）场景，避免真实菜单被误判未落地而剔除。
+  // 行为信号（HARD RULE #0 最高权重）：点击导致任一 frame 发生导航（主 URL 变化 /
+  // 子 frame src 集合变化）即判定落地 —— 内容指纹要等 XHR 渲染完才变，而 frame 导航
+  // 是点击后的即时因果信号，AdminLTE 类 tab-iframe 系统全靠它。
   const deadline = Date.now() + 3000;
   let landed = false;
   for (;;) {
+    if (page.url() !== mainBefore) { landed = true; break; }
+    const framesNow = await childFrameUrls(page);
+    if (framesNow.some((u) => !framesBefore.includes(u))) { landed = true; break; }
     if ((await pageFingerprint(page)) !== before) {
       landed = true;
       break;

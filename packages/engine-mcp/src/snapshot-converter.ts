@@ -23,10 +23,11 @@ function parseLine(line: string): McpSnapshotEntry | null {
   if (!refMatch) return null;
 
   const ref = refMatch[1];
-  const withoutRef = line.replace(/\s*\[ref=[^\]]+\]/, '').trim();
+  const withoutRef = line.replace(/\s*\[ref=[^\]]+\]/, '').replace(/\s*\[cursor=pointer\]/, '').trim();
 
-  // 提取元素类型（第一个词）
-  const parts = withoutRef.split(/\s+/);
+  // 提取元素类型（第一个词）—— 0.0.79 的 yaml 行首带 "- " 列表标记，须剔除（真实事故：
+  // '-' 被当作元素类型 → interactive 恒 false → 全部元素被过滤）
+  const parts = withoutRef.split(/\s+/).filter((w) => w !== '-');
   const elementType = parts[0] || 'element';
 
   // 提取描述（引号内的内容）
@@ -49,6 +50,8 @@ function isInteractiveElement(element: string): boolean {
     'checkbox', 'radio', 'switch', 'link', 'menuitem',
     'tab', 'treeitem', 'combobox', 'listbox', 'searchbox',
     'spinbutton', 'slider', 'scrollbar',
+    // @playwright/mcp 0.0.79 的 aria role 名（真实 snapshot 实证）
+    'textbox', 'searchbox', 'menu', 'menubar', 'option', 'img', 'document',
   ]);
   return interactiveSet.has(element.toLowerCase());
 }

@@ -9,12 +9,13 @@ import type { EngineConfig, SemanticNode, BrowserCommand, CaptureEngine, Explore
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { exploreViaMenus } from './menu-explorer.js';
+import { semanticNodesToElements } from './semantic-elements.js';
 
 /** 浏览器内 DOM 遍历：返回语义节点树（JSON 可序列化）
  *  策略：识别导航容器（NAV/sidebar/menu）提取菜单项作为根模块，
  *  主内容区按容器分组，避免 BODY 单点导致模块树扁平。
  */
-const DOM_WALK = `
+export const DOM_WALK = `
 (function walk(root) {
   const interactiveTags = new Set(['A','BUTTON','INPUT','SELECT','TEXTAREA','SUBMIT']);
   const containerTags = new Set(['DIV','SECTION','ASIDE','NAV','UL','OL','LI','FORM','TABLE','DETAILS','HEADER','FOOTER','MAIN','ARTICLE']);
@@ -410,8 +411,16 @@ export class PlaywrightEngine implements CaptureEngine {
    */
   lastExploreDegraded = false;
 
+  /**
+   * 真实页直点模式（运行时可切换）：true 时 runReadOnlyClick 跳过沙箱副本，
+   * 直接在当前真实页面上点击（用例生成二次探索用 —— 用户可见浏览器里"像人一样点击"）。
+   * 构造时取 config.clickOnLivePage 初始值；orchestrator 可在复用登录引擎时运行时置 true。
+   */
+  clickOnLivePage = false;
+
   constructor(config: EngineConfig) {
     this.config = config;
+    this.clickOnLivePage = config.clickOnLivePage === true;
   }
 
   async launch(): Promise<void> {
@@ -520,8 +529,17 @@ export class PlaywrightEngine implements CaptureEngine {
         const initialUrl = sourceUrl.replace(/#.*$/, '');
         const initialize = async (routeValue: Route): Promise<void> => {
           const request = routeValue.request();
+          // 主文档：fulfill 本地副本（复制页语义 —— 服务器页面可能已变化，沙箱必须与采集时一致）
           if (request.method() === 'GET' && request.isNavigationRequest() && request.resourceType() === 'document' && request.url().replace(/#.*$/, '') === initialUrl) {
             await routeValue.fulfill({ body: html, contentType: 'text/html' });
+            return;
+          }
+          // 只读资源放行（GET = 只读语义）：CSS/JS/图片/同源 XHR 必须真实加载，
+          // 否则页面 JS 行为全部失效 —— 无 href 菜单（JS handler 驱动）点击零反应、
+          // 动态渲染内容采不到，探索/二次采集在死文档上进行（真实事故：沙箱裸 HTML）。
+          // 写请求（POST/PUT/DELETE/PATCH）与非 GET 一律拦截 —— 只读红线不变。
+          if (request.method() === 'GET') {
+            await routeValue.fallback();
             return;
           }
           await routeValue.abort('blockedbyclient');
@@ -642,23 +660,7 @@ export class PlaywrightEngine implements CaptureEngine {
     }
 
     const dom = await this.extractSemanticDom();
-    const elements: ExploredElement[] = [];
-
-    const walkNodes = (nodes: SemanticNode[]) => {
-      for (const node of nodes) {
-        const tag = node.tag.toLowerCase();
-        // 交互/表单控件、表格或语义容器 → 抽取为可消费元素。
-        if (node.interactive || this.isFormNodeSafe(node) || tag === 'table' || node.isVirtualList || node.containers?.length || node.uncovered?.length) {
-          elements.push(this.toExploredElement(node));
-        }
-        if (node.children.length > 0) {
-          walkNodes(node.children);
-        }
-      }
-    };
-    walkNodes(dom);
-
-    return elements;
+    return semanticNodesToElements(dom);
   }
 
   private isFormNode(node: SemanticNode): boolean {
@@ -778,7 +780,10 @@ export class PlaywrightEngine implements CaptureEngine {
         return { status: 'blocked', beforeUrl, reason: '目标节点不满足只读点击语义约束' };
       }
 
-      if (page.context() === this.context) {
+      // 真实页直点模式（clickOnLivePage）：跳过沙箱副本，直接在当前真实页面上点击 ——
+      // 用例生成二次探索要求用户可见浏览器里"像人一样点击"、页面保持真实渲染。
+      // 安全不依赖沙箱：写请求 route 拦截 / 客户端写入守卫 / 下载与弹窗拦截在真实页同样生效。
+      if (!this.clickOnLivePage && page.context() === this.context) {
         page = await this.createReadOnlySandbox(page);
         createdSandbox = true;
         locator = page.locator(selector);
@@ -802,13 +807,20 @@ export class PlaywrightEngine implements CaptureEngine {
           && request.isNavigationRequest()
           && request.resourceType() === 'document'
           && request.url().replace(/#.*$/, '') === allowedDocumentUrl;
-        if (!allowedNavigation) {
-          writeRequest = { method, url: request.url() };
-          await routeValue.abort('blockedbyclient');
+        if (allowedNavigation) {
+          await routeValue.fallback();
           return;
         }
-        // Only the exact, preflighted same-origin href may navigate. Dynamic reads are untrusted and become needs_review.
-        await routeValue.fallback();
+        // GET = 只读语义，一律放行：点击菜单/按钮触发的页面跳转，其新页面的 CSS/JS/XHR
+        // 必须真实加载，否则页面渲染成裸 HTML（真实事故：直点模式下每个被点击进入的页面
+        // 都因"点击期间拦截一切非导航请求"而变成死文档）。写请求（POST/PUT/DELETE/PATCH）
+        // 与非 GET 一律拦截 —— 只读红线不变。
+        if (method === 'GET') {
+          await routeValue.fallback();
+          return;
+        }
+        writeRequest = { method, url: request.url() };
+        await routeValue.abort('blockedbyclient');
       };
       const onDownload = (download: Download): void => {
         downloaded = true;

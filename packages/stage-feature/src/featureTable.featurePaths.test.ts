@@ -56,3 +56,32 @@ describe('featurePaths 由功能点 URL 生成（根因修复回归）', () => {
     expect(explored!.source).toBe('web'); // 后端用真实 manuallyAdded(false) → web
   });
 });
+
+describe('外链剔除：featurePaths 不含非系统站 URL（2026-10-08 真实实跑回归）', () => {
+  it('官网/外站菜单 URL 不写入 featurePaths；站内相对路径与同站 URL 正常写入；功能点本身保留', () => {
+    const sys = (id: string, label: string, type: ModuleNode['type'], depth: number, url: string | undefined, children: ModuleNode[]): ModuleNode => ({
+      id, label, type, depth, url, manuallyAdded: false, children,
+      parentId: null, subsystemId: 'sys1', status: 'unexplored',
+    });
+    const tree: ModuleNode[] = [
+      sys('home', 'RuoYi', 'page', 0, 'https://demo.ruoyi.vip/index', [
+        sys('user', '用户管理', 'page', 1, 'https://demo.ruoyi.vip/system/user', []),
+        sys('rel', '相对路径页', 'page', 1, '/monitor/online', []),
+      ]),
+      // 外链页面：官网与帮助站（不同 origin）——菜单真实存在但不是被测系统功能
+      sys('site', '若依官网', 'page', 0, 'http://www.ruoyi.vip', []),
+      sys('doc', '文档', 'page', 0, 'http://doc.ruoyi.vip/ruoyi', []),
+    ];
+    const res = buildFeatureTable(tree, 'RuoYi', false);
+
+    // 站内路径保留
+    expect(Object.values(res.featurePaths)).toContain('https://demo.ruoyi.vip/system/user');
+    expect(Object.values(res.featurePaths)).toContain('/monitor/online');
+    // 外链剔除
+    expect(Object.values(res.featurePaths).some((u) => u.includes('ruoyi.vip') && !u.includes('demo.ruoyi.vip'))).toBe(false);
+    // 功能点本身不剔除（全功能点不剔除规则）：外链页面仍产出功能点行
+    const labels = res.featureTable.flat().map((r) => r[6]).filter(Boolean);
+    expect(labels).toContain('若依官网');
+    expect(labels).toContain('文档');
+  });
+});

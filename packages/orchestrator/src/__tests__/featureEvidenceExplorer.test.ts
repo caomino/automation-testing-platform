@@ -692,3 +692,304 @@ describe('Fix-B 自动发现动作入口并采集新增/详情页字段（满足
     expect(res.evidence.actionEntries.filter((entry) => entry.actionKind === 'detail').length).toBe(1);
   });
 });
+
+describe('Fix-E 无 href 菜单点击进入 + entryClick 基础安全 + 有界全按钮遍历（真实若依 AdminLTE 形态回归）', () => {
+  const baseUrl = 'https://x.com/index';
+  const featureUrl = 'https://x.com/system/role';
+  // AdminLTE 形态：菜单 a[data-id] 无 href、无 opener 动词 —— 路径信号在 data-id 上
+  const menuNoHref = {
+    ref: 'menu-role', tag: 'a', selector: 'a[data-id="/system/role"]',
+    'data-id': '/system/role',
+    text: '角色管理', label: '角色管理', interactive: true, isFormControl: false, suggestedAction: 'click',
+  } as unknown as ExploredElement;
+
+  it('findMenuEntrySelector：无 href 菜单按 data-id 路径信号定位并打标返回 selector，点击进入不 navigate 深链', async () => {
+    const engine = {
+      navigate: vi.fn().mockResolvedValue(undefined),
+      runReadOnlyClick: vi.fn().mockResolvedValue({ status: 'performed', beforeUrl: baseUrl, afterUrl: baseUrl }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      extractPageElements: vi.fn().mockResolvedValue([menuNoHref]),
+      getCurrentUrl: vi.fn().mockResolvedValue(featureUrl),
+      evaluate: vi.fn().mockResolvedValue('[data-explore-target="mabc123"]'),
+    } as unknown as McpEngine;
+    await exploreFeatureEvidenceMap(engine, {
+      featurePaths: { tp_01: featureUrl } as Record<string, string>,
+      featureTable: buildFeatureTable(['tp_01']),
+      featureProfiles: [{ featureId: 'tp_01', actionKind: 'list', sourceLabel: '角色管理' }] as any,
+      selectedModuleIds: [],
+      scope: 'all' as const,
+      baseUrl,
+      featureIds: new Set(['tp_01']),
+      systemId: 'sys1',
+      featureRevision: 'rev1',
+      crossPathNavigation: 'entry_only',
+    });
+    const navCalls = (engine.navigate as any).mock.calls.map((c: string[]) => c[0]);
+    expect(navCalls).toContain(baseUrl);
+    expect(navCalls).not.toContain(featureUrl); // 不直接打开深链
+    // 点击经打标 selector（runReadOnlyClick 由 clickSelector 驱动）
+    const clickCalls = (engine.runReadOnlyClick as any).mock.calls.map((c: string[]) => c[0]);
+    expect(clickCalls.some((s: string) => typeof s === 'string' && s.includes('data-explore-target'))).toBe(true);
+  });
+
+  it('entryClick 模式：无 href、无 opener 动词的菜单按基础安全放行（isSafeCurrentNode 的动作级校验不再误拒）', async () => {
+    const engine = {
+      navigate: vi.fn().mockResolvedValue(undefined),
+      runReadOnlyClick: vi.fn().mockResolvedValue({ status: 'performed', beforeUrl: baseUrl, afterUrl: baseUrl }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      extractPageElements: vi.fn().mockResolvedValue([menuNoHref]),
+      getCurrentUrl: vi.fn().mockResolvedValue(featureUrl),
+      evaluate: vi.fn().mockResolvedValue('[data-explore-target="mxyz"]'),
+    } as unknown as McpEngine;
+    const { evidence } = await exploreFeatureEvidenceMap(engine, {
+      featurePaths: { tp_01: featureUrl } as Record<string, string>,
+      featureTable: buildFeatureTable(['tp_01']),
+      featureProfiles: [{ featureId: 'tp_01', actionKind: 'list', sourceLabel: '角色管理' }] as any,
+      selectedModuleIds: [],
+      scope: 'all' as const,
+      baseUrl,
+      featureIds: new Set(['tp_01']),
+      systemId: 'sys1',
+      featureRevision: 'rev1',
+      crossPathNavigation: 'entry_only',
+    });
+    const ev = (evidence as any).tp_01;
+    // 菜单点击进入成功（此前误拒 → needs_review「clickSelector 未匹配当前安全语义节点」）
+    expect(ev.needsReview).toBe(false);
+  });
+
+  it('②-extra-b 全按钮遍历：普通安全按钮（如「查询」）也被点击并采集 views 状态', async () => {
+    const queryBtn = {
+      ref: '#q-btn', selector: '#q-btn', tag: 'button', text: '查询', label: '查询',
+      interactive: true, isFormControl: false, suggestedAction: 'click',
+    } as unknown as ExploredElement;
+    const engine = {
+      navigate: vi.fn().mockResolvedValue(undefined),
+      runReadOnlyClick: vi.fn().mockResolvedValue({ status: 'performed', beforeUrl: featureUrl, afterUrl: featureUrl }),
+      waitForTimeout: vi.fn().mockResolvedValue(undefined),
+      extractPageElements: vi.fn().mockResolvedValue([queryBtn]),
+      getCurrentUrl: vi.fn().mockResolvedValue(featureUrl),
+    } as unknown as McpEngine;
+    const { evidence } = await exploreFeatureEvidence(engine, {
+      featureId: 'tp_02',
+      actionKind: 'list',
+      url: featureUrl,
+    });
+    // 「查询」按钮被点击（此前 create/detail 两类之外完全不点）
+    expect(engine.runReadOnlyClick).toHaveBeenCalledWith('#q-btn', 'action');
+    const ev = (evidence as any);
+    expect(ev.needsReview).toBe(false);
+  });
+});
+
+describe('二次探索「只点不跳」回归（用户裁定：禁止按地址跳转功能页）', () => {
+  const baseUrl = 'https://x.com/index';
+  const featureUrl = 'https://x.com/system/user';
+
+  const mkEngine = (opts: { elements: any[]; clickStatus?: string } = { elements: [] }) => {
+    const calls: { navigate: string[]; click: string[] } = { navigate: [], click: [] };
+    const engine = {
+      navigate: vi.fn(async (u: string) => { calls.navigate.push(u); }),
+      runReadOnlyClick: vi.fn(async (sel: string) => {
+        calls.click.push(sel);
+        return { status: (opts.clickStatus ?? 'performed') as 'performed', beforeUrl: baseUrl, afterUrl: baseUrl };
+      }),
+      waitForTimeout: vi.fn(async () => {}),
+      extractPageElements: vi.fn(async () => opts.elements),
+      getCurrentUrl: vi.fn(async () => baseUrl),
+      // 菜单路径打标：clickMenuByPath 先用 evaluate 给目标元素打 data-explore-target，
+      // 再回读可见文本按 text= 点击。mock 需如实模拟这两步，否则菜单点击链路走不到。
+      evaluate: vi.fn(async (fn: unknown, ...args: unknown[]) => {
+        const text = typeof args[0] === 'string' ? (args[0] as string) : '';
+        if (text) return `[data-explore-target="m-${text}"]`;   // 打标结果
+        return text;                                             // 回读元素文本
+      }),
+    };
+    return { engine: engine as unknown as McpEngine, calls };
+  };
+
+  const mkProfile = (extra: Record<string, unknown> = {}) => [{
+    featureId: 'F1', testPoint: '用户管理', actionKind: 'list', sourceLabel: '用户管理',
+    sourceSelector: 'menu:系统管理>用户管理', ...extra,
+  }] as any;
+
+  it('① 菜单路径进入：绝不导航功能页 URL（navigate 只允许系统入口）', async () => {
+    const { engine, calls } = mkEngine();
+    await exploreFeatureEvidenceMap(engine, {
+      featurePaths: { F1: featureUrl } as Record<string, string>,
+      featureTable: [[['1', '功能性测试', '1.0.0', 'A', 'B', '用户管理', '用户管理', '用户列表', 'F1']]] as any,
+      featureProfiles: mkProfile(),
+      selectedModuleIds: [], scope: 'all' as const, baseUrl,
+      featureIds: new Set(['F1']), systemId: 's1', featureRevision: 'r1',
+      crossPathNavigation: 'entry_only',
+    });
+    expect(calls.navigate.some((u) => u.includes('/system/user'))).toBe(false);
+    expect(calls.click.length).toBeGreaterThan(0);
+  });
+
+  it('② 全按钮遍历跳过导航链接（带真实 href 的 <a>）：点它会离开当前功能页，导致后续按钮全超时', async () => {
+    const navLink = { ref: 'a1', selector: '#menu-role', tag: 'a', text: '角色管理', label: '角色管理',
+      href: '/system/role', interactive: true, isFormControl: false, suggestedAction: 'navigate' } as unknown as ExploredElement;
+    const queryBtn = { ref: '#q', selector: '#q', tag: 'button', text: '查询', label: '查询',
+      interactive: true, isFormControl: false, suggestedAction: 'click' } as unknown as ExploredElement;
+    const { engine, calls } = mkEngine({ elements: [navLink, queryBtn] });
+    await exploreFeatureEvidenceMap(engine, {
+      featurePaths: { F1: featureUrl } as Record<string, string>,
+      featureTable: [[['1', '功能性测试', '1.0.0', 'A', 'B', '用户管理', '用户管理', '用户列表', 'F1']]] as any,
+      featureProfiles: mkProfile(),
+      selectedModuleIds: [], scope: 'all' as const, baseUrl,
+      featureIds: new Set(['F1']), systemId: 's1', featureRevision: 'r2',
+      crossPathNavigation: 'entry_only',
+    });
+    expect(calls.click).not.toContain('#menu-role');   // 导航链接不作为功能按钮遍历
+  });
+
+  it('③ entryClick 模式下菜单点击失败：诚实记 needs_review，不退回按地址打开功能页', async () => {
+    const { engine, calls } = mkEngine({ elements: [], clickStatus: 'blocked' });
+    const { evidence } = await exploreFeatureEvidenceMap(engine, {
+      featurePaths: { F1: featureUrl } as Record<string, string>,
+      featureTable: [[['1', '功能性测试', '1.0.0', 'A', 'B', '用户管理', '用户管理', '用户列表', 'F1']]] as any,
+      featureProfiles: [{ featureId: 'F1', testPoint: '用户管理', actionKind: 'list', sourceLabel: '用户管理',
+        sourceSelector: 'click:#menu-user' }] as any,
+      selectedModuleIds: [], scope: 'all' as const, baseUrl,
+      featureIds: new Set(['F1']), systemId: 's1', featureRevision: 'r3',
+      crossPathNavigation: 'entry_only',
+    });
+    expect(calls.navigate.some((u) => u.includes('/system/user'))).toBe(false);
+    expect((evidence as any).F1.needsReview).toBe(true);
+  });
+});
+
+describe('全按钮遍历：事前跳过导航/结构标签（点了就离开当前功能页）', () => {
+  const baseUrl = 'https://x.com/index';
+  const navLi = { ref: 'li1', selector: 'div > div > ul > li', tag: 'li', text: '用户管理 用户管理',
+    label: '用户管理 用户管理', interactive: true, isFormControl: false, suggestedAction: 'click' } as unknown as ExploredElement;
+  const addBtn = { ref: '#add', selector: '#add', tag: 'button', text: '新增', label: '新增',
+    interactive: true, isFormControl: false, suggestedAction: 'click' } as unknown as ExploredElement;
+
+  it('侧栏 li 菜单项不进遍历，动作按钮进遍历', async () => {
+    const clicks: string[] = [];
+    const engine = {
+      navigate: vi.fn(async () => {}),
+      runReadOnlyClick: vi.fn(async (sel: string) => { clicks.push(sel); return { status: 'performed' as const, beforeUrl: baseUrl, afterUrl: baseUrl }; }),
+      waitForTimeout: vi.fn(async () => {}),
+      extractPageElements: vi.fn(async () => [navLi, addBtn]),
+      getCurrentUrl: vi.fn(async () => baseUrl),
+      evaluate: vi.fn(async (_fn: unknown, ...args: unknown[]) => {
+        const t = typeof args[0] === 'string' ? (args[0] as string) : '';
+        return t ? `[data-explore-target="m-${t}"]` : t;
+      }),
+    };
+    await exploreFeatureEvidenceMap(engine as unknown as McpEngine, {
+      featurePaths: { F1: 'https://x.com/system/user' } as Record<string, string>,
+      featureTable: [[['1', '功能性测试', '1.0.0', 'A', 'B', '用户管理', '用户管理', '用户列表', 'F1']]] as any,
+      featureProfiles: [{ featureId: 'F1', testPoint: '用户管理', actionKind: 'list', sourceLabel: '用户管理',
+        sourceSelector: 'menu:系统管理>用户管理' }] as any,
+      selectedModuleIds: [], scope: 'all' as const, baseUrl,
+      featureIds: new Set(['F1']), systemId: 's1', featureRevision: 'r-nav',
+      crossPathNavigation: 'entry_only',
+    });
+    expect(clicks).not.toContain('div > div > ul > li');
+    expect(clicks).toContain('#add');
+  });
+});
+
+describe('导航 vs 动作：判据是 href 而非标签（大量后台把按钮写成 <a href="javascript:;">）', () => {
+  const baseUrl = 'https://x.com/index';
+  it('<a href="javascript:;">动作按钮应被遍历；<a href="/path">导航链接应被跳过', async () => {
+    const jsBtn = { ref: 'j1', selector: 'a.btn-primary', tag: 'a', text: '新增', label: '新增',
+      href: 'javascript:;', interactive: true, isFormControl: false, suggestedAction: 'click' } as unknown as ExploredElement;
+    const navLink = { ref: 'n1', selector: 'a[href="/system/role"]', tag: 'a', text: '角色管理', label: '角色管理',
+      href: '/system/role', interactive: true, isFormControl: false, suggestedAction: 'navigate' } as unknown as ExploredElement;
+    const clicks: string[] = [];
+    const engine = {
+      navigate: vi.fn(async () => {}),
+      runReadOnlyClick: vi.fn(async (sel: string) => { clicks.push(sel); return { status: 'performed' as const, beforeUrl: baseUrl, afterUrl: baseUrl }; }),
+      waitForTimeout: vi.fn(async () => {}),
+      extractPageElements: vi.fn(async () => [jsBtn, navLink]),
+      getCurrentUrl: vi.fn(async () => baseUrl),
+      evaluate: vi.fn(async (_fn: unknown, ...args: unknown[]) => {
+        const t = typeof args[0] === 'string' ? (args[0] as string) : '';
+        return t ? `[data-explore-target="m-${t}"]` : t;
+      }),
+    };
+    await exploreFeatureEvidenceMap(engine as unknown as McpEngine, {
+      featurePaths: { F1: 'https://x.com/system/user' } as Record<string, string>,
+      featureTable: [[['1', '功能性测试', '1.0.0', 'A', 'B', '用户管理', '用户管理', '用户列表', 'F1']]] as any,
+      featureProfiles: [{ featureId: 'F1', testPoint: '用户管理', actionKind: 'list', sourceLabel: '用户管理',
+        sourceSelector: 'menu:系统管理>用户管理' }] as any,
+      selectedModuleIds: [], scope: 'all' as const, baseUrl,
+      featureIds: new Set(['F1']), systemId: 's1', featureRevision: 'r-href',
+      crossPathNavigation: 'entry_only',
+    });
+    expect(clicks).toContain('a.btn-primary');                                   // 动作按钮必须进遍历
+    expect(clicks).not.toContain('a[href="/system/role"]');                     // 导航链接必须跳过
+  });
+});
+
+describe('浮层关闭：跨系统通用性（不依赖可见文本、不依赖框架类名）', () => {
+  const baseUrl = 'https://x.com/index';
+  const listPage: ExploredElement[] = [
+    { ref: 'btn', selector: '#btn', tag: 'button', text: '新增', label: '新增', interactive: true, isFormControl: false, suggestedAction: 'click' } as unknown as ExploredElement,
+  ];
+  // 弹窗态：多出若干表单字段（特征变化 ⇒ 同页叠加层）+ 一个关闭控件
+  const withOverlay = (closeEl: ExploredElement): ExploredElement[] => [
+    ...listPage,
+    closeEl,
+    { ref: 'f1', selector: '#f1', tag: 'input', label: '用户名称', interactive: true, isFormControl: true, suggestedAction: 'fill' } as unknown as ExploredElement,
+    { ref: 'f2', selector: '#f2', tag: 'input', label: '手机号', interactive: true, isFormControl: true, suggestedAction: 'fill' } as unknown as ExploredElement,
+    { ref: 'f3', selector: '#f3', tag: 'input', label: '邮箱', interactive: true, isFormControl: true, suggestedAction: 'fill' } as unknown as ExploredElement,
+  ];
+  const build = (closeEl: ExploredElement | undefined) => {
+    const clicks: string[] = [];
+    const extract = vi.fn();
+    extract.mockResolvedValueOnce(listPage);                                  // base
+    if (closeEl) extract.mockResolvedValueOnce(withOverlay(closeEl));           // 点击后：弹窗打开
+    extract.mockResolvedValue(listPage);                                       // 恢复后
+    const engine = {
+      navigate: vi.fn(async () => {}),
+      runStep: vi.fn(async () => ({})),
+      runReadOnlyClick: vi.fn(async (sel: string) => { clicks.push(sel); return { status: 'performed' as const, beforeUrl: baseUrl, afterUrl: baseUrl }; }),
+      waitForTimeout: vi.fn(async () => {}),
+      extractPageElements: extract,
+      getCurrentUrl: vi.fn(async () => baseUrl),
+      evaluate: vi.fn(async (_fn: unknown, ...args: unknown[]) => {
+        const t = typeof args[0] === 'string' ? (args[0] as string) : '';
+        return t ? `[data-explore-target="m-${t}"]` : t;
+      }),
+    };
+    return { engine: engine as unknown as McpEngine, clicks };
+  };
+  const opts = {
+    featurePaths: { F1: 'https://x.com/system/user' } as Record<string, string>,
+    featureTable: [[['1', '功能性测试', '1.0.0', 'A', 'B', '用户管理', '用户管理', '用户列表', 'F1']]] as any,
+    featureProfiles: [{ featureId: 'F1', testPoint: '用户管理', actionKind: 'list', sourceLabel: '用户管理',
+      sourceSelector: 'menu:系统管理>用户管理' }] as any,
+    selectedModuleIds: [], scope: 'all' as const, baseUrl,
+    featureIds: new Set(['F1']), systemId: 's1', featureRevision: 'r-ov',
+    crossPathNavigation: 'entry_only' as const,
+  };
+
+  it('图标化关闭钮（无可见文本、只有 aria-label）也能被点掉', async () => {
+    const { engine, clicks } = build({ ref: 'x', selector: '.icon-x', tag: 'i', text: '', label: '', ariaLabel: 'Close',
+      interactive: true, isFormControl: false, suggestedAction: 'click' } as unknown as ExploredElement);
+    await exploreFeatureEvidenceMap(engine, opts);
+    expect(clicks).toContain('.icon-x');
+  });
+
+  it('英文关闭语义（Close）同样命中 —— 非中文专属清单', async () => {
+    const { engine, clicks } = build({ ref: 'c', selector: '#close-btn', tag: 'button', text: 'Close', label: 'Close',
+      interactive: true, isFormControl: false, suggestedAction: 'click' } as unknown as ExploredElement);
+    await exploreFeatureEvidenceMap(engine, opts);
+    expect(clicks).toContain('#close-btn');
+  });
+
+  it('弹窗里没有任何可识别关闭控件时，退化为 Escape 键（零文案依赖兜底）', async () => {
+    // 弹窗打开但没有关闭语义控件 → 关闭控件通道落空 → 走 Escape
+    const { engine } = build({ ref: 'junk', selector: '#junk', tag: 'span', text: '提示', label: '提示',
+      interactive: false, isFormControl: false, suggestedAction: 'click' } as unknown as ExploredElement);
+    await exploreFeatureEvidenceMap(engine, opts);
+    const keys = (engine.runStep as any).mock.calls.map((c: any[]) => c[0]?.key);
+    expect(keys).toContain('Escape');
+  });
+});

@@ -90,6 +90,39 @@ function resolvePageUrl(node: ModuleNode, parentOf: Map<string, ModuleNode | nul
   return node.url;
 }
 
+/**
+ * 推断系统站 origin：树上全部 http(s) URL 的 origin 频次统计，最高者为系统站。
+ * 通用判据（HARD RULE #0）：不引用任何系统名/域名 —— 官网/帮助等外链菜单的 URL
+ * 属于其它站点，不应作为功能点的可导航路径写入 featurePaths（否则用例阶段会
+ * 拿外网地址去导航，探索的是外部系统）。
+ */
+function inferSiteOrigin(nodes: ModuleNode[]): string | undefined {
+  const counts = new Map<string, number>();
+  const walk = (list: ModuleNode[]): void => {
+    for (const n of list) {
+      const m = /^https?:\/\/([^/]+)/i.exec((n.url ?? '').trim());
+      if (m) counts.set(m[1].toLowerCase(), (counts.get(m[1].toLowerCase()) ?? 0) + 1);
+      walk(n.children);
+    }
+  };
+  walk(nodes);
+  let best: string | undefined;
+  let bestCount = 0;
+  for (const [origin, count] of counts) {
+    if (count > bestCount) { best = origin; bestCount = count; }
+  }
+  return best;
+}
+
+/** 站内路径判定：相对路径（/开头）恒站内；绝对 URL 仅当 host 与系统站一致 */
+function isSameSiteUrl(url: string, siteHost: string | undefined): boolean {
+  const v = url.trim();
+  if (v.startsWith('/')) return true;
+  const m = /^https?:\/\/([^/]+)/i.exec(v);
+  if (!m) return false;
+  return siteHost === undefined || m[1].toLowerCase() === siteHost;
+}
+
 export interface BuildResult {
   featureTable: FeatureRow[][];
   featureIds: string[];
@@ -120,6 +153,7 @@ export function buildFeatureTable(
   requirementSections?: Map<string, string>,
 ): BuildResult {
   const { leaves, parentOf } = buildIndex(moduleTree);
+  const siteHost = inferSiteOrigin(moduleTree);
 
   interface Resolved {
     node: ModuleNode;
@@ -218,12 +252,24 @@ export function buildFeatureTable(
       featureIds.push(testPointId);
       // 根因解法：把功能点所在「真实页面 URL」带出，供用例阶段按所选模块精准探索。
       // action 节点自身 href 常为 javascript:，须回退到祖先页面 URL（见 resolvePageUrl）。
+      // 外链（与系统站不同 origin 的官网/帮助菜单）不写入 featurePaths ——
+      // 否则用例阶段会拿外网地址去导航；功能点保留，由用例阶段诚实降级标注。
       const pageUrl = resolvePageUrl(r.node, parentOf);
-      if (pageUrl) featurePaths[testPointId] = pageUrl;
+      if (pageUrl && isSameSiteUrl(pageUrl, siteHost)) featurePaths[testPointId] = pageUrl;
       // 动作类型：探索阶段已写入则透传；缺失（AI 补全 / 人工补录 / 旧探索产物）时
       // 按节点标签的**通用动词语义**兜底分类（见 actionKind.ts），避免功能点全量塌成 other。
       const actionText = r.node.actionText ?? r.node.label;
       const actionKind = r.node.actionKind ?? classifyActionLabel(actionText) ?? 'other';
+      // 菜单点击路径（评审文档 #1 处方的数据层落地）：沿模块树祖先链生成 'menu:一级>二级'，
+      // 供用例阶段二次探索**按菜单文本逐级点击进入**（复用登录会话、不直接打开地址）。
+      // 天然免疫 URL 脏数据（路径退化成站点根地址时菜单路径仍精确指向真实菜单）。
+      const menuLabels = moduleAncestors(r.node, parentOf)
+        .filter((a) => a.type === 'module' || a.type === 'page')
+        .map((a) => a.label)
+        .filter(Boolean)
+        .reverse();
+      if (r.node.type !== 'action' && r.node.label) menuLabels.push(r.node.label);
+      const menuPath = menuLabels.length > 0 ? menuLabels.join('>') : undefined;
       featureProfiles.push({
         featureId: testPointId,
         testPoint,
@@ -235,7 +281,8 @@ export function buildFeatureTable(
         // actionText 兜底为节点标签：二次探索需要「入口文本」在页面内按文本定位动作按钮
         // （新增/详情等）。此前 actionText 恒为空 → 即便动作类型正确也无法定位按钮。
         sourceLabel: actionText,
-        sourceSelector: r.node.actionSelector,
+        // 菜单路径优先 —— 二次探索的「点击进入」依据；无菜单路径时回退动作选择器（旧行为）
+        sourceSelector: menuPath ? `menu:${menuPath}` : r.node.actionSelector,
         source: r.node.actionSelector?.startsWith('design:openapi:') ? 'openapi' : r.node.actionSelector?.startsWith('design:workflow:') ? 'workflow' : r.node.manuallyAdded ? 'manual' : 'web',
       });
 

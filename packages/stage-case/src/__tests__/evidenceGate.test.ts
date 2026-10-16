@@ -12,7 +12,7 @@ function makeEvidence(overrides: Partial<FeatureEvidence> = {}): FeatureEvidence
   return {
     featureId: 'F_01',
     actionKind: 'list',
-    states: ['base', 'list'],
+    states: ['base', 'views'],
     fields: [],
     tables: [],
     actionEntries: [],
@@ -66,5 +66,45 @@ describe('gateFeatureEvidence — DOM token 泄漏脏证据必须判为不一致
     });
     const result = gateFeatureEvidence('F_01', undefined, clean, 'https://x.com/users');
     expect(result.reasons.some((reason) => reason.includes('token'))).toBe(false);
+  });
+});
+
+describe('gateFeatureEvidence — 入口一致性用同文档判定（hash 差异不算不一致）', () => {
+  it('pageUrl/pageEntry 与功能点路径仅差 hash：不判入口不一致', () => {
+    const ev = makeEvidence({ pageUrl: 'https://demo.ruoyi.vip/index#/system/user', pageEntry: 'https://demo.ruoyi.vip/index#/system/user' });
+    const out = gateFeatureEvidence('F_01', { featureId: 'F_01', testPoint: '用户管理', actionKind: 'list', pageUrl: 'https://demo.ruoyi.vip/index' } as any, ev, 'https://demo.ruoyi.vip/index');
+    expect(out.reasons.some((r) => r.includes('入口不一致'))).toBe(false);
+  });
+
+  it('不同 origin（外链证据）：仍判入口不一致', () => {
+    const ev = makeEvidence({ pageUrl: 'http://www.ruoyi.vip', pageEntry: 'http://www.ruoyi.vip' });
+    const out = gateFeatureEvidence('F_02', { featureId: 'F_02', testPoint: '官网', actionKind: 'other', pageUrl: 'https://demo.ruoyi.vip/index' } as any, ev, 'https://demo.ruoyi.vip/index');
+    expect(out.reasons.some((r) => r.includes('入口不一致'))).toBe(true);
+  });
+
+  it('query/path 不同但同 origin：判一致（AdminLTE iframe 形态主文档 URL 恒为入口页，path 级会误判）', () => {
+    const ev = makeEvidence({ pageUrl: 'https://demo.ruoyi.vip/index', pageEntry: 'https://demo.ruoyi.vip/index' });
+    const out = gateFeatureEvidence('F_03', { featureId: 'F_03', testPoint: '列表', actionKind: 'list', pageUrl: 'https://demo.ruoyi.vip/system/user' } as any, ev, 'https://demo.ruoyi.vip/system/user');
+    expect(out.reasons.some((r) => r.includes('入口不一致'))).toBe(false);
+  });
+});
+
+describe('二次探索菜单路径语义（menu: 前缀是页面进入方式，不是动作入口）', () => {
+  const pageUrl = 'https://demo.example/index';
+  it('sourceSelector 为 menu:路径时，不要求 actionEntries 含该路径（否则全量误判缺动作入口）', () => {
+    const ev = makeEvidence({ featureId: 'F_10', pageUrl, pageEntry: pageUrl });
+    ev.tables = [{ columns: ['用户ID', '登录名称'], rowCount: 3 } as any];
+    const profile = { featureId: 'F_10', testPoint: '用户管理', actionKind: 'list', source: 'web', sourceSelector: 'menu:系统管理>用户管理' } as any;
+    const out = gateFeatureEvidence('F_10', profile, ev, pageUrl, { systemId: 'sys1', featureRevision: 'rev1' });
+    expect(out.reasons.some((r) => r.includes('动作入口'))).toBe(false);
+    expect(out.hasEvidence).toBe(true);
+  });
+
+  it('真实动作入口（无 menu: 前缀）仍要求与 actionEntries 匹配', () => {
+    const ev = makeEvidence({ featureId: 'F_11', pageUrl, pageEntry: pageUrl });
+    ev.tables = [{ columns: ['用户ID'], rowCount: 1 } as any];
+    const profile = { featureId: 'F_11', testPoint: '用户管理', actionKind: 'list', source: 'web', clickSelector: '#add-user' } as any;
+    const out = gateFeatureEvidence('F_11', profile, ev, pageUrl, { systemId: 'sys1', featureRevision: 'rev1' });
+    expect(out.reasons.some((r) => r.includes('动作入口'))).toBe(true);
   });
 });
